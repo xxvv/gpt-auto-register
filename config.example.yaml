@@ -1,0 +1,38 @@
+# 注册配置
+registration:
+  total_accounts: 1      # 批量注册的账号数量
+  min_age: 20            # 随机生日的最小年龄
+  max_age: 40            # 随机生日的最大年龄
+
+# 临时邮箱服务 (mail.tm 公共服务，无需配置)
+email:
+  wait_timeout: 120     # 等待验证邮件的最大超时时间(秒)
+  poll_interval: 3      # 轮询检查邮件的间隔(秒)
+
+# 浏览器自动化配置
+browser:
+  max_wait_time: 600    # 全局最大等待时间
+  short_wait_time: 120  # 短任务等待时间
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# 账号密码规则
+password:
+  length: 16
+  # 密码字符集 (包含大小写字母和数字)
+  charset: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+# 错误重试策略
+retry:
+  http_max_retries: 5       # HTTP 请求最大重试次数
+  http_timeout: 30          # HTTP 请求超时时间
+  error_page_max_retries: 5 # 遇到错误页面的最大刷新重试次数
+  button_click_max_retries: 3 # 按钮点击最大重试次数
+
+# 批量注册间隔
+batch:
+  interval_min: 5  # 最小间隔(秒)
+  interval_max: 15 # 最大间隔(秒)
+
+# 文件路径配置
+files:
+  accounts_file: "registered_accounts.txt"  # 注册成功账号的保存路径

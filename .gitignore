@@ -1,0 +1,66 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project Specific
+config.yaml
+config.yml
+config.local.yaml
+config.local.yml
+registered_accounts.txt
+*.log
+*.png
+*.jpg
+browser.log
+geckodriver.log
+
+# Temporary / Debug
+api_response.txt
+test_*.py
+verify_*.py
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
+
+# Linter / Formatter cache
+.ruff_cache/
+.mypy_cache/
+
+# UV
+.uv/
