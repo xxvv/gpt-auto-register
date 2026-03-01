@@ -122,3 +122,11 @@ uv run main.py
 ## 免责声明
 
 本工具仅供教育机构内部使用，旨在辅助老师和学生快速开通 ChatGPT 账号用于教学和学习。使用者应遵守 OpenAI 的[使用条款](https://openai.com/policies/terms-of-use)，并自行承担使用本工具产生的任何后果。本项目不提供任何形式的担保。
+
+## 致谢
+
+本项目基于 [gpt-auto-register](https://github.com/7836246/gpt-auto-register) 二次开发，感谢原作者的开源贡献。
+
+## 开源协议
+
+本项目遵循 [MIT License](LICENSE) 开源。
