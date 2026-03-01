@@ -25,7 +25,7 @@ TEMPORAM_URL = "https://temporam.com/zh"
 API_MESSAGES = "https://temporam.com/api/email/messages?email={email}"
 
 # 可用域名（已验证 Cookie 鉴权均返回 200）
-AVAILABLE_DOMAINS = ["nooboy.com", "temporam.xin", "guanshuyun.com"]
+AVAILABLE_DOMAINS = ["nooboy.com"]
 
 # ── 全局 Cookie 缓存 ──────────────────────────────────────
 _cookies: dict = {}

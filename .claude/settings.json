@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://10minutemail.com/10MinuteMail/resources/session/address\")",
+      "Bash(curl -s \"https://www.10minutemail.com/session/address\")",
+      "Bash(python3 -c \":*)",
+      "WebFetch(domain:temporam.com)",
+      "WebFetch(domain:www.temporam.com)",
+      "Bash(.venv/bin/python3 -c \":*)",
+      "Bash(python test_temporam_custom.py)",
+      "Bash(python3 test_temporam_custom.py)",
+      "Read(//Users/xiangjun/.venv/**)",
+      "Read(//usr/local/**)",
+      "Bash(ls *.sh run* start*)",
+      "Bash(/opt/homebrew/Cellar/python@3.10/3.10.8/Frameworks/Python.framework/Versions/3.10/bin/python3.10 -c \"import undetected_chromedriver; print\\(''ok''\\)\")",
+      "Bash(uv run python3 test_temporam_custom.py)",
+      "Bash(ls .venv/bin/python*)",
+      "Bash(.venv/bin/python3 test_temporam_custom.py)",
+      "Bash(.venv/bin/python3 -:*)",
+      "Bash(ls /Users/xiangjun/gpt-auto-register-main/*.png /Users/xiangjun/gpt-auto-register-main/*.txt)",
+      "Bash(.venv/bin/pip install pysocks -q)",
+      "Bash(curl -x \"socks5://b47f6ad33e1b57f072cd__cr.us:dbcf00770f8614c6@gw.dataimpulse.com:824\" https://api.ipify.org/ --max-time 15)",
+      "Bash(curl -x \"http://b47f6ad33e1b57f072cd__cr.us:dbcf00770f8614c6@gw.dataimpulse.com:823\" https://api.ipify.org/ --max-time 15)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl --socks5 \"gw.dataimpulse.com:823\" -U \"b47f6ad33e1b57f072cd__cr.us:dbcf00770f8614c6\" https://api.ipify.org/ --max-time 15)",
+      "Bash(git init)",
+      "Bash(git add .gitignore .python-version README.md browser.py config.py config.yaml email_providers.py mailtm_service.py main.py pyproject.toml server.py temporam_service.py utils.py uv.lock static/index.html static/script.js static/style.css)",
+      "Bash(git add .gitignore .python-version README.md browser.py config.py config.example.yaml email_providers.py mailtm_service.py main.py pyproject.toml server.py temporam_service.py utils.py uv.lock static/index.html static/script.js static/style.css)",
+      "Bash(git commit:*)",
+      "Bash(git remote add origin https://github.com/carlos2521-hub/-GPT-.git)",
+      "Bash(git push -u origin main)",
+      "Bash(brew install gh)",
+      "Bash(gh auth status)",
+      "Bash(/usr/local/bin/gh auth status)",
+      "Bash(/opt/homebrew/bin/gh auth status)",
+      "Bash(/opt/homebrew/bin/gh repo rename gpt-auto-register --repo carlos2521-hub/-GPT- --yes)",
+      "Bash(/opt/homebrew/bin/gh repo rename gpt-register-assistant --repo carlos2521-hub/gpt-auto-register --yes)",
+      "Bash(git remote set-url origin https://github.com/carlos2521-hub/gpt-register-assistant.git)",
+      "Bash(/opt/homebrew/bin/gh api repos/7836246/gpt-auto-register/license)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      "/Users/xiangjun/gpt-auto-register-main"
+    ]
+  }
+}
