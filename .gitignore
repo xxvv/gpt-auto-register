@@ -49,6 +49,9 @@ api_response.txt
 test_*.py
 verify_*.py
 
+# Claude Code
+.claude/
+
 # Editor
 .vscode/
 .idea/
