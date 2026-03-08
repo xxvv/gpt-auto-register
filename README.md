@@ -77,7 +77,7 @@ files:
   accounts_file: "data/accounts/registered_accounts.txt"
 
 oauth:
-  enabled: false
+  enabled: true
   required: false
   issuer: "https://auth.openai.com"
   client_id: "app_EMoamEEZ73f0CkXaXp7hrann"

@@ -39,7 +39,7 @@ files:
 
 # Codex OAuth 配置
 oauth:
-  enabled: false  # 注册成功后是否继续获取 Codex OAuth token
+  enabled: true  # 注册成功后是否继续获取 Codex OAuth token
   required: false # 若获取失败，是否将本次任务视为失败
   issuer: "https://auth.openai.com"
   client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
