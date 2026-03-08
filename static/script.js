@@ -8,20 +8,30 @@ document.addEventListener('DOMContentLoaded', () => {
     startPolling();
     loadProviders();
     loadSettings();
+    loadTokenImportSettings();
 });
 
 // 切换视图
 function switchTab(tabName) {
-    document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.view-section').forEach(el => {
+        el.classList.remove('active');
+        el.classList.add('hidden');
+    });
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
 
-    document.getElementById(`view-${tabName}`).classList.add('active');
-
-    const navIndex = tabName === 'dashboard' ? 0 : 1;
-    document.querySelectorAll('.nav-item')[navIndex].classList.add('active');
+    const section = document.getElementById(`view-${tabName}`);
+    if (section) {
+        section.classList.add('active');
+        section.classList.remove('hidden');
+    }
+    const activeNav = document.querySelector(`.nav-item[data-tab="${tabName}"]`);
+    if (activeNav) activeNav.classList.add('active');
 
     if (tabName === 'accounts') {
         loadAccounts();
+    }
+    if (tabName === 'tokens') {
+        loadTokenImportSettings();
     }
 }
 
@@ -42,10 +52,21 @@ async function pollStatus() {
 }
 
 function updateUI(data) {
+    const progress = data.progress || {};
+
     document.getElementById('valAction').textContent = data.current_action;
     document.getElementById('valSuccess').textContent = data.success;
     document.getElementById('valFail').textContent = data.fail;
     document.getElementById('valInventory').textContent = data.total_inventory;
+    document.getElementById('valTaskTotal').textContent = progress.total ?? 0;
+    document.getElementById('valCompleted').textContent = progress.completed ?? 0;
+    document.getElementById('valSkipped').textContent = progress.skipped ?? 0;
+    document.getElementById('valRemaining').textContent = progress.remaining ?? 0;
+    document.getElementById('tokenTotal').textContent = progress.total ?? 0;
+    document.getElementById('tokenCompleted').textContent = progress.completed ?? 0;
+    document.getElementById('tokenFail').textContent = data.fail ?? 0;
+    document.getElementById('tokenSkipped').textContent = progress.skipped ?? 0;
+    document.getElementById('tokenRemaining').textContent = progress.remaining ?? 0;
 
     isRunning = data.is_running;
     const btnStart = document.getElementById('btnStart');
@@ -220,6 +241,50 @@ async function stopTask() {
         await fetch('/api/stop', { method: 'POST' });
     } catch (e) {
         console.error(e);
+    }
+}
+
+async function loadTokenImportSettings() {
+    try {
+        const res = await fetch('/api/token-import/settings');
+        const data = await res.json();
+        document.getElementById('tokenAccountsFile').value = data.accounts_file || '';
+        document.getElementById('tokenOutputDir').value = data.output_dir || '';
+    } catch (e) {
+        console.error("加载 Token 设置失败:", e);
+    }
+}
+
+async function startTokenImportTask() {
+    const accountsFile = document.getElementById('tokenAccountsFile').value.trim();
+    const outputDir = document.getElementById('tokenOutputDir').value.trim();
+
+    if (!accountsFile || !outputDir) {
+        alert('请填写 TXT 路径和输出目录');
+        return;
+    }
+
+    clearLogs();
+
+    try {
+        const res = await fetch('/api/token-import/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                accounts_file: accountsFile,
+                output_dir: outputDir
+            })
+        });
+
+        if (!res.ok) {
+            const data = await res.text();
+            alert("启动失败: " + data);
+            return;
+        }
+
+        switchTab('dashboard');
+    } catch (e) {
+        alert("请求失败: " + e);
     }
 }
 

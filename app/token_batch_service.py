@@ -1,0 +1,131 @@
+"""
+批量从已有 TXT 账号记录中补取 Codex token。
+"""
+
+from __future__ import annotations
+
+import os
+from types import SimpleNamespace
+
+from .config import cfg
+from .mailtm_service import login_existing_email
+from .oauth_service import perform_codex_oauth_login, save_codex_tokens
+from .stored_accounts import (
+    OAUTH_SUCCESS_STATUS,
+    is_oauth_success_status,
+    load_accounts_from_file,
+    update_account_status_in_file,
+)
+
+
+def _build_output_oauth_cfg(output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    return SimpleNamespace(
+        ak_file=cfg.oauth.ak_file,
+        rk_file=cfg.oauth.rk_file,
+        token_json_dir=output_dir,
+    )
+
+
+def process_accounts_from_file(
+    accounts_file: str,
+    output_dir: str,
+    proxy: dict | None = None,
+    stop_requested=None,
+    progress_callback=None,
+    mail_login_func=login_existing_email,
+    oauth_login_func=perform_codex_oauth_login,
+    save_tokens_func=save_codex_tokens,
+):
+    records = load_accounts_from_file(accounts_file)
+    oauth_cfg = _build_output_oauth_cfg(output_dir)
+    success = 0
+    fail = 0
+    processed = 0
+    skipped = 0
+    total = len(records)
+
+    def report_progress(current_email: str = "", status: str = ""):
+        completed = success + fail + skipped
+        if progress_callback:
+            progress_callback(
+                {
+                    "task_type": "token_import",
+                    "total": total,
+                    "processed": processed,
+                    "completed": completed,
+                    "success": success,
+                    "fail": fail,
+                    "skipped": skipped,
+                    "remaining": max(total - completed, 0),
+                    "current_email": current_email,
+                    "status": status,
+                }
+            )
+
+    report_progress(status="starting")
+
+    for record in records:
+        if stop_requested and stop_requested():
+            break
+
+        email = record["email"]
+        provider = record["provider"].strip().lower()
+        print(f"📄 处理账号: {email} ({provider})")
+
+        if is_oauth_success_status(record["status"]):
+            skipped += 1
+            print(f"⏭️ 跳过 {email}: 已是 OAuth 成功状态")
+            report_progress(current_email=email, status="skipped_existing_success")
+            continue
+
+        if provider != "mailtm":
+            fail += 1
+            print(f"⚠️ 跳过 {email}: 当前仅支持 mailtm")
+            report_progress(current_email=email, status="unsupported_provider")
+            continue
+
+        mailbox_credential = record["mailbox_credential"]
+        if not mailbox_credential:
+            fail += 1
+            print(f"⚠️ 跳过 {email}: 缺少邮箱密码")
+            report_progress(current_email=email, status="missing_mailbox_credential")
+            continue
+
+        try:
+            mail_token = mail_login_func(email, mailbox_credential)
+            tokens = oauth_login_func(
+                email=email,
+                password=record["password"],
+                email_provider="mailtm",
+                mail_token=mail_token,
+                proxy=proxy,
+            )
+            save_tokens_func(
+                email=email,
+                tokens=tokens,
+                oauth_cfg=oauth_cfg,
+                proxy=proxy,
+            )
+            update_account_status_in_file(accounts_file, email, OAUTH_SUCCESS_STATUS)
+            success += 1
+            processed += 1
+            print(f"✅ 已生成 Token: {email}")
+            report_progress(current_email=email, status="success")
+        except Exception as exc:
+            fail += 1
+            print(f"❌ 处理失败 {email}: {exc}")
+            report_progress(current_email=email, status="failed")
+
+    completed = success + fail + skipped
+
+    return {
+        "total": total,
+        "processed": processed,
+        "completed": completed,
+        "success": success,
+        "fail": fail,
+        "skipped": skipped,
+        "remaining": max(total - completed, 0),
+        "output_dir": output_dir,
+    }

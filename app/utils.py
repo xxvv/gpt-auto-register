@@ -5,23 +5,19 @@
 
 import random
 import string
-import csv
 import os
 import re
-import time
 from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from config import (
+from .config import (
+    cfg,
+    PROJECT_ROOT,
     PASSWORD_LENGTH,
     PASSWORD_CHARS,
-    PASSWORD_CHARS,
-    TXT_FILE,
     HTTP_MAX_RETRIES,
-    HTTP_MAX_RETRIES,
-    HTTP_TIMEOUT,
     USER_AGENT,
     MIN_AGE,
     MAX_AGE
@@ -174,7 +170,10 @@ def save_to_txt(email: str, password: str = None, status="已注册",
     如果账号已存在，则更新其信息
     """
     try:
-        file_path = os.path.join(os.path.dirname(__file__), TXT_FILE)
+        file_path = cfg.files.accounts_file
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(PROJECT_ROOT, file_path)
+        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
         current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # 读取现有内容
@@ -361,9 +360,6 @@ def generate_japan_address():
     使用 Faker 生成更真实多样的日本地址
     """
     if FAKER_AVAILABLE:
-        # 创建日本本地化的 Faker 实例
-        fake_jp = Faker('ja_JP')
-        
         # 日本主要城市的区域信息
         tokyo_wards = [
             {"ward": "Chiyoda-ku", "zip_prefix": "100"},
@@ -489,11 +485,9 @@ def generate_billing_info(country="JP"):
         "country": country.upper()
     }
     
-    print(f"📋 完整账单信息已生成:")
+    print("📋 完整账单信息已生成:")
     print(f"   姓名: {billing_info['name']}")
     print(f"   地址: {billing_info['address1']}, {billing_info['city']}")
     print(f"   州/省: {billing_info['state']}, 邮编: {billing_info['zip']}")
     
     return billing_info
-
-

@@ -12,6 +12,8 @@
 - **并行加速**：可配置并行数（1~10），多线程同时开通
 - **Headless 模式**：支持无界面运行，适合服务器部署
 - **多邮箱源**：内置 mail.tm 和 Temporam 两个临时邮箱服务，可同时启用
+- **Codex OAuth**：注册成功后可继续获取 Codex `access_token` / `refresh_token`
+- **CPA 上传**：可将生成的 token JSON 自动上传到 CPA 面板
 
 ## 环境要求
 
@@ -72,12 +74,33 @@ password:
   length: 16             # 密码长度
 
 files:
-  accounts_file: "registered_accounts.txt"
+  accounts_file: "data/accounts/registered_accounts.txt"
+
+oauth:
+  enabled: false
+  required: false
+  issuer: "https://auth.openai.com"
+  client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+  redirect_uri: "http://localhost:1455/auth/callback"
+  ak_file: "token_exports/ak.txt"
+  rk_file: "token_exports/rk.txt"
+  token_json_dir: "data/tokens"
+
+cpa:
+  upload_api_url: ""
+  upload_api_token: ""
 ```
+
+说明：
+
+- `oauth.enabled=true` 时，注册完成后会继续尝试获取 Codex token
+- `oauth.required=true` 时，若 OAuth 获取失败，本次账号会标记为失败
+- `cpa.upload_api_token` 建议优先通过环境变量 `CPA_UPLOAD_API_TOKEN` 提供
+- `ak_file` / `rk_file` 会在项目根目录下的目标目录中自动再创建一层时间戳子目录，例如 `token_exports/20260309_053000/ak.txt`
 
 ## 输出
 
-开通成功的账号保存在 `registered_accounts.txt`：
+开通成功的账号保存在 `data/accounts/registered_accounts.txt`：
 
 ```
 邮箱|密码|时间|状态|临时邮箱凭证|提供商
@@ -85,17 +108,32 @@ user@dollicons.com|Abc1!xyz|20260301_030238|已注册|token|mailtm
 user@nooboy.com|Def2@abc|20260301_032123|已注册||temporam
 ```
 
+若开启 OAuth，还会额外输出到：
+
+- `token_exports/<时间戳>/ak.txt`：一行一个 access token
+- `token_exports/<时间戳>/rk.txt`：一行一个 refresh token
+- `data/tokens/codex-*.json`：按邮箱保存的 token JSON，可选自动上传到 CPA
+
 ## 项目结构
 
 ```
-├── server.py              # Web 服务端（Flask + Waitress）
-├── main.py                # 开通核心逻辑
-├── browser.py             # 浏览器自动化（undetected-chromedriver）
-├── email_providers.py     # 邮箱服务注册表
-├── mailtm_service.py      # mail.tm 邮箱服务
-├── temporam_service.py    # Temporam 邮箱服务
-├── config.py              # 配置加载
-├── utils.py               # 工具函数
+├── app/                   # 核心应用代码
+│   ├── server.py          # Web 服务端（Flask + Waitress）
+│   ├── main.py            # 开通核心逻辑
+│   ├── browser.py         # 浏览器自动化（undetected-chromedriver）
+│   ├── email_providers.py # 邮箱服务注册表
+│   ├── mailtm_service.py  # mail.tm 邮箱服务
+│   ├── oauth_service.py   # Codex OAuth + token 保存/CPA 上传
+│   ├── temporam_service.py# Temporam 邮箱服务
+│   ├── config.py          # 配置加载
+│   └── utils.py           # 工具函数
+├── scripts/
+│   └── get_codex_token.py # 为已有账号单独补取 token
+├── data/                  # 运行产物
+│   ├── accounts/
+│   └── tokens/
+├── server.py              # 兼容启动入口
+├── main.py                # 兼容命令行入口
 ├── config.yaml            # 运行时配置
 ├── pyproject.toml         # 依赖定义
 └── static/                # 前端资源

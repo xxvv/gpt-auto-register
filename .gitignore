@@ -1,12 +1,10 @@
-
-# Python
+# Python cache / build
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -23,47 +21,44 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# Virtual environments
 .env
-.venv
+.env.*
+.venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
 
-# Project Specific
+# Local config / secrets
 config.yaml
 config.yml
 config.local.yaml
 config.local.yml
-registered_accounts.txt
+
+# Runtime data
+data/accounts/*.txt
+data/tokens/
+token_exports/
 *.log
-*.png
-*.jpg
 browser.log
 geckodriver.log
-
-# Temporary / Debug
 api_response.txt
-test_*.py
-verify_*.py
 
-# Claude Code
+# Tooling caches / local automation artifacts
 .claude/
+.playwright-cli/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.uv/
+.coverage
+htmlcov/
 
-# Editor
+# Editor / OS
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# MacOS
 .DS_Store
-
-# Linter / Formatter cache
-.ruff_cache/
-.mypy_cache/
-
-# UV
-.uv/

@@ -19,6 +19,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ACCOUNTS_FILE = "data/accounts/registered_accounts.txt"
+DEFAULT_TOKEN_DIR = "data/tokens"
+DEFAULT_TOKEN_EXPORT_DIR = "token_exports"
+
 # 尝试导入 yaml，如果未安装则提示
 try:
     import yaml
@@ -81,7 +86,27 @@ class BatchConfig:
 @dataclass
 class FilesConfig:
     """文件路径配置"""
-    accounts_file: str = "registered_accounts.txt"
+    accounts_file: str = DEFAULT_ACCOUNTS_FILE
+
+
+@dataclass
+class OAuthConfig:
+    """Codex OAuth 配置"""
+    enabled: bool = False
+    required: bool = False
+    issuer: str = "https://auth.openai.com"
+    client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
+    redirect_uri: str = "http://localhost:1455/auth/callback"
+    ak_file: str = f"{DEFAULT_TOKEN_EXPORT_DIR}/ak.txt"
+    rk_file: str = f"{DEFAULT_TOKEN_EXPORT_DIR}/rk.txt"
+    token_json_dir: str = DEFAULT_TOKEN_DIR
+
+
+@dataclass
+class CpaConfig:
+    """CPA 上传配置"""
+    upload_api_url: str = ""
+    upload_api_token: str = ""
 
 
 @dataclass
@@ -94,6 +119,8 @@ class AppConfig:
     retry: RetryConfig = field(default_factory=RetryConfig)
     batch: BatchConfig = field(default_factory=BatchConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
+    oauth: OAuthConfig = field(default_factory=OAuthConfig)
+    cpa: CpaConfig = field(default_factory=CpaConfig)
 
 
 # ==============================================================
@@ -129,8 +156,7 @@ class ConfigLoader:
     
     def _find_config_file(self) -> Optional[Path]:
         """查找配置文件"""
-        # 获取脚本所在目录
-        base_dir = Path(__file__).parent
+        base_dir = PROJECT_ROOT
         
         for filename in self.CONFIG_FILES:
             config_file = base_dir / filename
@@ -227,8 +253,36 @@ class ConfigLoader:
         if 'files' in self.raw_config:
             files = self.raw_config['files']
             self.config.files = FilesConfig(
-                accounts_file=files.get('accounts_file', 'registered_accounts.txt')
+                accounts_file=files.get('accounts_file', DEFAULT_ACCOUNTS_FILE)
             )
+
+        # OAuth 配置
+        oauth = self.raw_config.get('oauth', {})
+        self.config.oauth = OAuthConfig(
+            enabled=self._as_bool(os.environ.get('OAUTH_ENABLED', oauth.get('enabled', False))),
+            required=self._as_bool(os.environ.get('OAUTH_REQUIRED', oauth.get('required', False))),
+            issuer=os.environ.get('OAUTH_ISSUER', oauth.get('issuer', 'https://auth.openai.com')),
+            client_id=os.environ.get('OAUTH_CLIENT_ID', oauth.get('client_id', 'app_EMoamEEZ73f0CkXaXp7hrann')),
+            redirect_uri=os.environ.get('OAUTH_REDIRECT_URI', oauth.get('redirect_uri', 'http://localhost:1455/auth/callback')),
+            ak_file=os.environ.get('OAUTH_AK_FILE', oauth.get('ak_file', f'{DEFAULT_TOKEN_EXPORT_DIR}/ak.txt')),
+            rk_file=os.environ.get('OAUTH_RK_FILE', oauth.get('rk_file', f'{DEFAULT_TOKEN_EXPORT_DIR}/rk.txt')),
+            token_json_dir=os.environ.get('OAUTH_TOKEN_JSON_DIR', oauth.get('token_json_dir', DEFAULT_TOKEN_DIR)),
+        )
+
+        # CPA 上传配置
+        cpa = self.raw_config.get('cpa', {})
+        self.config.cpa = CpaConfig(
+            upload_api_url=os.environ.get('CPA_UPLOAD_API_URL', cpa.get('upload_api_url', '')),
+            upload_api_token=os.environ.get('CPA_UPLOAD_API_TOKEN', cpa.get('upload_api_token', '')),
+        )
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
         
     def reload(self) -> None:
         """重新加载配置文件"""
@@ -302,6 +356,20 @@ BATCH_INTERVAL_MAX = cfg.batch.interval_max
 
 # 文件配置
 TXT_FILE = cfg.files.accounts_file
+
+# OAuth 配置
+OAUTH_ENABLED = cfg.oauth.enabled
+OAUTH_REQUIRED = cfg.oauth.required
+OAUTH_ISSUER = cfg.oauth.issuer
+OAUTH_CLIENT_ID = cfg.oauth.client_id
+OAUTH_REDIRECT_URI = cfg.oauth.redirect_uri
+OAUTH_AK_FILE = cfg.oauth.ak_file
+OAUTH_RK_FILE = cfg.oauth.rk_file
+OAUTH_TOKEN_JSON_DIR = cfg.oauth.token_json_dir
+
+# CPA 配置
+CPA_UPLOAD_API_URL = cfg.cpa.upload_api_url
+CPA_UPLOAD_API_TOKEN = cfg.cpa.upload_api_token
 
 
 # ==============================================================

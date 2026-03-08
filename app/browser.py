@@ -17,13 +17,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 
-from config import (
+from .config import (
     MAX_WAIT_TIME,
     SHORT_WAIT_TIME,
     ERROR_PAGE_MAX_RETRIES,
     BUTTON_CLICK_MAX_RETRIES,
 )
-from utils import generate_user_info
+from .utils import generate_user_info
 
 
 class SafeChrome(uc.Chrome):
@@ -560,7 +560,7 @@ def click_button_with_retry(driver, selector, max_retries=None, monitor_callback
             )
             driver.execute_script("arguments[0].click();", button)
             return True
-        except Exception as e:
+        except Exception:
             print(f"  第 {attempt + 1} 次点击失败，正在重试...")
             _sleep_with_heartbeat(
                 driver,
@@ -638,9 +638,9 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
                             driver.execute_script("arguments[0].click();", checkbox[0])
                             time.sleep(5)
                         driver.switch_to.default_content()
-                    except:
+                    except Exception:
                         driver.switch_to.default_content()
-            except:
+            except Exception:
                 pass
 
         # 0. 检查是否在着陆页，需要点击注册/登录
@@ -783,14 +783,14 @@ def login(driver, email, password):
                             break
                     if login_btn:
                         break
-                except:
+                except Exception:
                     continue
 
             if login_btn:
                 # 确保点击
                 try:
                     login_btn.click()
-                except:
+                except Exception:
                     driver.execute_script("arguments[0].click();", login_btn)
                 print("✅ 点击了登录按钮")
             else:
@@ -862,7 +862,7 @@ def login(driver, email, password):
                         clicked_switch = True
                         time.sleep(2)
                         break
-                    except:
+                    except Exception:
                         # 可能是被遮挡，尝试 JS 点击
                         driver.execute_script("arguments[0].click();", el)
                         clicked_switch = True
@@ -914,7 +914,7 @@ def login(driver, email, password):
                     By.CSS_SELECTOR, '.error-message, [role="alert"]'
                 )
                 print(f"❌登录错误提示: {err.text}")
-            except:
+            except Exception:
                 pass
             return True
 

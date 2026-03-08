@@ -7,8 +7,8 @@ import random
 import string
 import time
 
-from config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL, HTTP_TIMEOUT
-from utils import http_session, get_user_agent, extract_verification_code
+from .config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL, HTTP_TIMEOUT
+from .utils import http_session, get_user_agent, extract_verification_code
 
 MAILTM_API = "https://api.mail.tm"
 
@@ -89,6 +89,29 @@ def create_temp_email():
     return None, None, None
 
 
+def login_existing_email(address: str, password: str, session=None):
+    """
+    使用已保存的 mail.tm 邮箱地址和密码重新换取 JWT token。
+    """
+    active_session = session or http_session
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": get_user_agent()
+    }
+    resp = active_session.post(
+        f"{MAILTM_API}/token",
+        headers=headers,
+        json={"address": address, "password": password},
+        timeout=HTTP_TIMEOUT
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"获取 mail.tm token 失败: HTTP {resp.status_code} - {resp.text[:200]}")
+    token = resp.json().get("token")
+    if not token:
+        raise RuntimeError("mail.tm 未返回 token")
+    return token
+
+
 def wait_for_verification_email(token: str, timeout: int = None):
     """
     等待并提取 OpenAI 验证码
@@ -129,7 +152,7 @@ def wait_for_verification_email(token: str, timeout: int = None):
                     from_addr = str(from_info.get("address", "")).lower()
 
                     if "openai" in from_addr or "chatgpt" in subject.lower():
-                        print(f"\n📧 收到 OpenAI 验证邮件!")
+                        print("\n📧 收到 OpenAI 验证邮件!")
                         print(f"   主题: {subject}")
 
                         # 先从主题提取
@@ -166,3 +189,48 @@ def wait_for_verification_email(token: str, timeout: int = None):
 
     print("\n⏰ 等待验证邮件超时")
     return None
+
+
+def list_verification_codes(token: str) -> list[str]:
+    """列出当前收件箱中可见的验证码，按最新邮件顺序返回。"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": get_user_agent()
+    }
+    codes = []
+    seen = set()
+    try:
+        resp = http_session.get(
+            f"{MAILTM_API}/messages",
+            headers=headers,
+            timeout=HTTP_TIMEOUT
+        )
+        if resp.status_code != 200:
+            return []
+        messages = resp.json().get("hydra:member", [])
+        for msg in messages[:12]:
+            msg_id = msg.get("id")
+            if not msg_id:
+                continue
+            detail_resp = http_session.get(
+                f"{MAILTM_API}/messages/{msg_id}",
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+            if detail_resp.status_code != 200:
+                continue
+            detail = detail_resp.json()
+            parts = [
+                msg.get("subject", "") or "",
+                detail.get("text", "") or "",
+            ]
+            html_list = detail.get("html", []) or []
+            parts.extend(str(item) for item in html_list if item)
+            for content in parts:
+                code = extract_verification_code(content)
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+    except Exception as e:
+        print(f"  列出 mail.tm 验证码失败: {e}")
+    return codes

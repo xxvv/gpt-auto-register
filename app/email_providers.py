@@ -11,8 +11,8 @@
   对应 .py 文件保留，可用于其他非 OpenAI 服务的注册
 """
 
-import mailtm_service
-import temporam_service
+from . import mailtm_service
+from . import temporam_service
 
 PROVIDERS = {
     "mailtm": {
@@ -74,3 +74,16 @@ def wait_for_verification_email(provider_id: str, token: str, timeout: int = Non
     if timeout is not None:
         return info["module"].wait_for_verification_email(token, timeout)
     return info["module"].wait_for_verification_email(token)
+
+
+def list_verification_codes(provider_id: str, token: str) -> list[str]:
+    """列出指定 provider 当前收件箱中的验证码候选。"""
+    info = PROVIDERS.get(provider_id)
+    if not info:
+        print(f"❌ 未知邮箱提供商: {provider_id}")
+        return []
+
+    func = getattr(info["module"], "list_verification_codes", None)
+    if not callable(func):
+        return []
+    return func(token)

@@ -18,8 +18,8 @@ import uuid
 import requests as _requests
 import undetected_chromedriver as uc
 
-from config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL
-from utils import extract_verification_code
+from .config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL
+from .utils import extract_verification_code
 
 TEMPORAM_URL = "https://temporam.com/zh"
 API_MESSAGES = "https://temporam.com/api/email/messages?email={email}"
@@ -50,7 +50,7 @@ def _fetch_cookies(proxy: dict = None) -> dict:
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--lang=zh-CN,zh;q=0.9")
-    from browser import SafeChrome, apply_proxy_to_options
+    from .browser import SafeChrome, apply_proxy_to_options
     apply_proxy_to_options(options, proxy)
     driver = SafeChrome(options=options, use_subprocess=True, headless=False, version_main=145)
     try:
@@ -143,7 +143,7 @@ def wait_for_verification_email(session_id: str, timeout: int = None) -> str | N
         timeout = EMAIL_WAIT_TIMEOUT
 
     with _sessions_lock:
-        session = _sessions.pop(session_id, None)
+        session = _sessions.get(session_id)
 
     if not session:
         print("❌ 未找到 Temporam 会话")
@@ -188,3 +188,40 @@ def wait_for_verification_email(session_id: str, timeout: int = None) -> str | N
 
     print(f"\n⏰ 等待 Temporam 验证邮件超时（收件箱: {email}）")
     return None
+
+
+def list_verification_codes(session_id: str) -> list[str]:
+    """列出 Temporam 收件箱中可见的验证码。"""
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+
+    if not session:
+        return []
+
+    email = session["email"]
+    cookies = session["cookies"]
+    openai_kw = ("openai", "noreply@openai", "chatgpt")
+    codes = []
+    seen = set()
+
+    with _cookies_lock:
+        if _cookies:
+            cookies = dict(_cookies)
+
+    messages = _api_get_messages(cookies, email)
+    for msg in messages[:12]:
+        from_email = str(msg.get("from_email", "")).lower()
+        content = str(msg.get("content", ""))
+        summary = str(msg.get("summary", ""))
+        is_openai = any(kw in from_email for kw in openai_kw)
+        if not is_openai:
+            merged = f"{content}\n{summary}".lower()
+            is_openai = any(kw in merged for kw in openai_kw)
+        if not is_openai:
+            continue
+        for source in (content, summary):
+            code = extract_verification_code(source)
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+    return codes
