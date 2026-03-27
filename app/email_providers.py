@@ -3,14 +3,16 @@
 统一管理所有可用的临时邮箱提供商
 
 已验证可用（OpenAI 不拦截）:
-  - mailtm   : mail.tm  REST API，动态域名
-  - temporam  : temporam.com，Cookie 缓存 + REST API
+  - mailtm     : mail.tm REST API，动态域名
+  - temporam   : temporam.com，Cookie 缓存 + REST API
+  - custom2925 : 2925 自有邮箱别名 + IMAP 收件箱
 
 已移除（OpenAI 返回 "The email you provided is not supported"）:
   - mailgw / guerrillamail / tempmail_lol
   对应 .py 文件保留，可用于其他非 OpenAI 服务的注册
 """
 
+from . import custom2925_service
 from . import mailtm_service
 from . import temporam_service
 
@@ -27,10 +29,16 @@ PROVIDERS = {
         "inbox_url": "https://temporam.com/zh",
         "has_password": False,  # 基于浏览器会话，无独立密码
     },
+    "custom2925": {
+        "name": "2925邮箱",
+        "module": custom2925_service,
+        "inbox_url": "https://mail.2925.com",
+        "has_password": False,
+    },
 }
 
-# 默认两个都启用
-DEFAULT_PROVIDERS = list(PROVIDERS.keys())
+# 默认两个公开服务都启用，自有邮箱按需勾选
+DEFAULT_PROVIDERS = ["mailtm", "temporam"]
 
 
 def get_provider_info(provider_id: str) -> dict:
@@ -52,7 +60,6 @@ def create_temp_email(provider_id: str, proxy: dict = None):
         return None, None, None
 
     module = info["module"]
-    # temporam_service 的 create_temp_email 接受 proxy 参数
     if hasattr(module.create_temp_email, "__code__") and \
        "proxy" in module.create_temp_email.__code__.co_varnames:
         return module.create_temp_email(proxy=proxy)

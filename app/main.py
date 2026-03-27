@@ -81,11 +81,15 @@ def register_one_account(
         _report("open_page")
 
         # 5. 填写注册表单（邮箱和密码）
-        if not fill_signup_form(
+        form_ok, password_entered = fill_signup_form(
             driver, email, password, monitor_callback=monitor_callback
-        ):
+        )
+        if not form_ok:
             print("❌ 填写注册表单失败")
             return email, password, False
+        if not password_entered:
+            print("ℹ️ 本次流程直接进入邮箱验证码页，未设置密码")
+            password = None
         _report("fill_form")
 
         # 6. 等待验证邮件

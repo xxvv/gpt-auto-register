@@ -110,6 +110,25 @@ class CpaConfig:
 
 
 @dataclass
+class Custom2925Config:
+    """2925 自有邮箱配置"""
+    enabled: bool = False
+    base_email: str = "your-main-mail@2925.com"
+    domain: str = "2925.com"
+    alias_prefix: str = "youralias"
+    alias_separator: str = "b"
+    start_index: int = 1
+    imap_host: str = "imap.2925.com"
+    imap_port: int = 993
+    imap_ssl: bool = True
+    imap_user: str = "your-main-mail@2925.com"
+    imap_password: str = ""
+    mailbox: str = "INBOX"
+    lookback_seconds: int = 300
+    counter_file: str = "data/state/custom2925_counter.json"
+
+
+@dataclass
 class AppConfig:
     """应用程序完整配置"""
     registration: RegistrationConfig = field(default_factory=RegistrationConfig)
@@ -121,6 +140,7 @@ class AppConfig:
     files: FilesConfig = field(default_factory=FilesConfig)
     oauth: OAuthConfig = field(default_factory=OAuthConfig)
     cpa: CpaConfig = field(default_factory=CpaConfig)
+    custom2925: Custom2925Config = field(default_factory=Custom2925Config)
 
 
 # ==============================================================
@@ -274,6 +294,25 @@ class ConfigLoader:
         self.config.cpa = CpaConfig(
             upload_api_url=os.environ.get('CPA_UPLOAD_API_URL', cpa.get('upload_api_url', '')),
             upload_api_token=os.environ.get('CPA_UPLOAD_API_TOKEN', cpa.get('upload_api_token', '')),
+        )
+
+        # 2925 自有邮箱配置
+        custom2925 = self.raw_config.get('custom2925', {})
+        self.config.custom2925 = Custom2925Config(
+            enabled=self._as_bool(os.environ.get('CUSTOM2925_ENABLED', custom2925.get('enabled', False))),
+            base_email=os.environ.get('CUSTOM2925_BASE_EMAIL', custom2925.get('base_email', 'your-main-mail@2925.com')),
+            domain=os.environ.get('CUSTOM2925_DOMAIN', custom2925.get('domain', '2925.com')),
+            alias_prefix=os.environ.get('CUSTOM2925_ALIAS_PREFIX', custom2925.get('alias_prefix', 'youralias')),
+            alias_separator=os.environ.get('CUSTOM2925_ALIAS_SEPARATOR', custom2925.get('alias_separator', 'b')),
+            start_index=int(os.environ.get('CUSTOM2925_START_INDEX', custom2925.get('start_index', 1))),
+            imap_host=os.environ.get('CUSTOM2925_IMAP_HOST', custom2925.get('imap_host', 'imap.2925.com')),
+            imap_port=int(os.environ.get('CUSTOM2925_IMAP_PORT', custom2925.get('imap_port', 993))),
+            imap_ssl=self._as_bool(os.environ.get('CUSTOM2925_IMAP_SSL', custom2925.get('imap_ssl', True))),
+            imap_user=os.environ.get('CUSTOM2925_IMAP_USER', custom2925.get('imap_user', 'your-main-mail@2925.com')),
+            imap_password=os.environ.get('CUSTOM2925_IMAP_PASSWORD', custom2925.get('imap_password', '')),
+            mailbox=os.environ.get('CUSTOM2925_MAILBOX', custom2925.get('mailbox', 'INBOX')),
+            lookback_seconds=int(os.environ.get('CUSTOM2925_LOOKBACK_SECONDS', custom2925.get('lookback_seconds', 300))),
+            counter_file=os.environ.get('CUSTOM2925_COUNTER_FILE', custom2925.get('counter_file', 'data/state/custom2925_counter.json')),
         )
 
     @staticmethod

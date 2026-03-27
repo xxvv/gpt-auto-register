@@ -11,6 +11,7 @@ from flask import Flask, jsonify, request, send_from_directory
 # 导入业务逻辑
 from . import main
 from . import browser
+from . import custom2925_service
 from . import mailtm_service
 from . import temporam_service
 from . import email_providers
@@ -41,8 +42,8 @@ class AppState:
         self.logs = []
         self.lock = threading.Lock()
 
-        # 选中的邮箱提供商列表（默认全部启用）
-        self.selected_providers = list(email_providers.PROVIDERS.keys())
+        # 选中的邮箱提供商列表（默认启用公开 provider）
+        self.selected_providers = list(email_providers.DEFAULT_PROVIDERS)
 
         # 并行注册数（1 = 串行）
         self.parallel_count = 1
@@ -130,6 +131,7 @@ def hooked_print(*args, **kwargs):
 # 应用劫持到所有服务模块
 main.print = hooked_print
 browser.print = hooked_print
+custom2925_service.print = hooked_print
 mailtm_service.print = hooked_print
 temporam_service.print = hooked_print
 email_providers.print = hooked_print

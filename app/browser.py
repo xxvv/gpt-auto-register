@@ -26,6 +26,90 @@ from .config import (
 from .utils import generate_user_info
 
 
+def _page_text(driver) -> str:
+    try:
+        return (driver.page_source or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_email_verification_page(driver) -> bool:
+    try:
+        current_url = (driver.current_url or "").lower()
+    except Exception:
+        current_url = ""
+
+    if any(token in current_url for token in ["email-verification", "verification", "/code", "enter-code"]):
+        return True
+
+    page_text = _page_text(driver)
+    text_markers = [
+        "检查您的收件箱",
+        "验证邮箱",
+        "验证码",
+        "verify your email",
+        "check your inbox",
+        "enter code",
+        "verification code",
+    ]
+    if any(marker in page_text for marker in text_markers):
+        return True
+
+    verification_selectors = [
+        'input[name="code"]',
+        'input[name*="code"]',
+        'input[autocomplete="one-time-code"]',
+        'input[placeholder*="代码"]',
+        'input[placeholder*="验证码"]',
+        'input[placeholder*="code" i]',
+        'input[aria-label*="代码"]',
+        'input[aria-label*="验证码"]',
+        'input[aria-label*="code" i]',
+    ]
+    for selector in verification_selectors:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            if any(el.is_displayed() for el in elements):
+                return True
+        except Exception:
+            continue
+
+    try:
+        otp_boxes = driver.find_elements(
+            By.CSS_SELECTOR,
+            'input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]',
+        )
+        visible_count = sum(1 for el in otp_boxes if el.is_displayed())
+        if visible_count >= 4:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _wait_for_post_email_step(driver, timeout: int = 10) -> str:
+    end_time = time.time() + timeout
+    print(f"🔀 等待密码或验证码页面...（最长 {timeout}s）")
+    while time.time() < end_time:
+        try:
+            password_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[autocomplete="new-password"], input[type="password"]')
+            if any(el.is_displayed() for el in password_inputs):
+                print("✅ 检测到密码页，继续输入密码")
+                return "password"
+        except Exception:
+            pass
+
+        if _is_email_verification_page(driver):
+            print("✅ 检测到验证码页，跳过密码设置")
+            return "verification"
+
+        time.sleep(0.5)
+
+    print("❌ 邮箱提交后未识别到密码页或验证码页")
+    return "unknown"
+
+
 class SafeChrome(uc.Chrome):
     """
     自定义 Chrome 类，修复 Windows 下退出时的 WinError 6
@@ -597,7 +681,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         password: 密码
 
     返回:
-        bool: 是否成功填写
+        tuple: (是否成功, 是否已输入密码)
     """
     wait = WebDriverWait(driver, MAX_WAIT_TIME)
 
@@ -614,21 +698,17 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             or "请稍候" in driver.title
         ):
             print("⚠️ 检测到 Cloudflare 验证页面...")
-            # 尝试等待
             time.sleep(10)
             if "Just a moment" in driver.title or "请稍候" in driver.title:
                 print("  🔄 尝试刷新页面以突破验证...")
                 driver.refresh()
                 time.sleep(10)
 
-            # 再次检查，尝试点击验证框
             try:
-                # 寻找 CF 验证 iframe
                 frames = driver.find_elements(By.TAG_NAME, "iframe")
                 for frame in frames:
                     try:
                         driver.switch_to.frame(frame)
-                        # 常见的验证框 ID 或 Class
                         checkbox = driver.find_elements(
                             By.CSS_SELECTOR,
                             "#checkbox, .checkbox, input[type='checkbox'], #challenge-stage",
@@ -643,10 +723,8 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             except Exception:
                 pass
 
-        # 0. 检查是否在着陆页，需要点击注册/登录
         print("🔍 检查是否需要点击 注册/登录 按钮...")
         try:
-            # 寻找 Sign up / Log in 按钮
             signup_btns = driver.find_elements(
                 By.XPATH,
                 '//button[contains(., "Sign up")] | //button[contains(., "注册")] | //div[contains(text(), "Sign up")] | //div[contains(text(), "注册")]',
@@ -680,7 +758,6 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             )
         )
 
-        # 使用 ActionChains 模拟真实用户操作
         print("📝 正在输入邮箱...")
         actions = ActionChains(driver)
         actions.move_to_element(email_input)
@@ -690,8 +767,6 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         actions.perform()
 
         time.sleep(1)
-
-        # 验证输入是否成功
         actual_value = email_input.get_attribute("value")
         if actual_value == email:
             print(f"✅ 已输入邮箱: {email}")
@@ -700,7 +775,6 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
 
         time.sleep(1)
 
-        # 2. 点击继续按钮
         print("🔘 点击继续按钮...")
         continue_btn = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
@@ -710,13 +784,18 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         actions.click()
         actions.perform()
         print("✅ 已点击继续")
-        time.sleep(3)
+        time.sleep(2)
 
-        # 4. 输入密码
+        next_step = _wait_for_post_email_step(driver, timeout=10)
+        if next_step == "verification":
+            return True, False
+        if next_step != "password":
+            return False, False
+
         print("🔑 等待密码输入框...")
         password_input = WebDriverWait(driver, SHORT_WAIT_TIME).until(
             EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, 'input[autocomplete="new-password"]')
+                (By.CSS_SELECTOR, 'input[autocomplete="new-password"], input[type="password"]')
             )
         )
         password_input.clear()
@@ -725,13 +804,12 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         print("✅ 已输入密码")
         time.sleep(2)
 
-        # 5. 点击继续
         print("🔘 点击继续按钮...")
         if not click_button_with_retry(
             driver, 'button[type="submit"]', monitor_callback=monitor_callback
         ):
             print("❌ 点击继续按钮失败")
-            return False
+            return False, False
         print("✅ 已点击继续")
 
         time.sleep(3)
@@ -743,11 +821,11 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
                 step_name="error_recheck_wait",
             )
 
-        return True
+        return True, True
 
     except Exception as e:
         print(f"❌ 填写表单失败: {e}")
-        return False
+        return False, False
 
 
 def login(driver, email, password):
@@ -923,6 +1001,51 @@ def login(driver, email, password):
         return False
 
 
+def _find_verification_inputs(driver, code: str):
+    selectors = [
+        'input[name="code"]',
+        'input[name*="code"]',
+        'input[autocomplete="one-time-code"]',
+        'input[placeholder*="代码"]',
+        'input[placeholder*="验证码"]',
+        'input[placeholder*="code" i]',
+        'input[placeholder*="verification" i]',
+        'input[aria-label*="代码"]',
+        'input[aria-label*="验证码"]',
+        'input[aria-label*="code" i]',
+        'input[aria-label*="verification" i]',
+    ]
+    for selector in selectors:
+        try:
+            elements = [
+                el for el in driver.find_elements(By.CSS_SELECTOR, selector)
+                if el.is_displayed() and el.is_enabled()
+            ]
+            if elements:
+                return "single", elements
+        except Exception:
+            continue
+
+    try:
+        otp_candidates = [
+            el for el in driver.find_elements(
+                By.CSS_SELECTOR,
+                'input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]',
+            )
+            if el.is_displayed() and el.is_enabled()
+        ]
+        if len(otp_candidates) >= 4:
+            otp_candidates = sorted(
+                otp_candidates,
+                key=lambda el: (el.location.get("y", 0), el.location.get("x", 0)),
+            )
+            return "multi", otp_candidates[: len(code)]
+    except Exception:
+        pass
+
+    return None, []
+
+
 def enter_verification_code(driver, code: str, monitor_callback=None):
     """
     输入验证码
@@ -937,7 +1060,6 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
     try:
         print("🔢 正在输入验证码...")
 
-        # 先检查错误
         while check_and_handle_error(driver, monitor_callback=monitor_callback):
             _sleep_with_heartbeat(
                 driver,
@@ -946,21 +1068,39 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                 step_name="code_error_recheck_wait",
             )
 
-        code_input = WebDriverWait(driver, 60).until(
-            EC.visibility_of_element_located(
-                (
-                    By.CSS_SELECTOR,
-                    'input[name="code"], input[placeholder*="代码"], input[aria-label*="代码"]',
-                )
-            )
-        )
-        code_input.clear()
-        time.sleep(0.5)
-        type_slowly(code_input, code, delay=0.1)
+        input_mode = None
+        input_elements = []
+        end_time = time.time() + 60
+        while time.time() < end_time:
+            input_mode, input_elements = _find_verification_inputs(driver, code)
+            if input_elements:
+                break
+            time.sleep(0.5)
+
+        if not input_elements:
+            raise RuntimeError("未找到验证码输入框")
+
+        if input_mode == "single":
+            code_input = input_elements[0]
+            code_input.clear()
+            time.sleep(0.5)
+            type_slowly(code_input, code, delay=0.1)
+        else:
+            for idx, digit in enumerate(code):
+                if idx >= len(input_elements):
+                    break
+                box = input_elements[idx]
+                try:
+                    box.clear()
+                except Exception:
+                    pass
+                box.click()
+                time.sleep(0.1)
+                box.send_keys(digit)
+
         print(f"✅ 已输入验证码: {code}")
         time.sleep(2)
 
-        # 点击继续
         print("🔘 点击继续按钮...")
         if not click_button_with_retry(
             driver, 'button[type="submit"]', monitor_callback=monitor_callback

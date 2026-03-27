@@ -4,10 +4,27 @@ registration:
   min_age: 20            # 随机生日的最小年龄
   max_age: 40            # 随机生日的最大年龄
 
-# 临时邮箱服务 (mail.tm 公共服务，无需配置)
+# 临时邮箱服务
 email:
   wait_timeout: 120     # 等待验证邮件的最大超时时间(秒)
   poll_interval: 3      # 轮询检查邮件的间隔(秒)
+
+# 2925 自有邮箱（共享 IMAP 收件箱 + alias）
+custom2925:
+  enabled: false
+  base_email: "your-main-mail@2925.com"
+  domain: "2925.com"
+  alias_prefix: "youralias"
+  alias_separator: "b"
+  start_index: 1
+  imap_host: "imap.2925.com"
+  imap_port: 993
+  imap_ssl: true
+  imap_user: "your-main-mail@2925.com"
+  imap_password: ""   # 建议改用环境变量 CUSTOM2925_IMAP_PASSWORD
+  mailbox: "INBOX"
+  lookback_seconds: 300
+  counter_file: "data/state/custom2925_counter.json"
 
 # 浏览器自动化配置
 browser:

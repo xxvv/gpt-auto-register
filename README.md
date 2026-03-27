@@ -11,7 +11,7 @@
 - **批量开通**：支持设置数量，一次性为班级/课题组批量开通账号
 - **并行加速**：可配置并行数（1~10），多线程同时开通
 - **Headless 模式**：支持无界面运行，适合服务器部署
-- **多邮箱源**：内置 mail.tm 和 Temporam 两个临时邮箱服务，可同时启用
+- **多邮箱源**：内置 mail.tm、Temporam，以及可选的 2925 自有邮箱 alias + IMAP 模式
 - **Codex OAuth**：注册成功后可继续获取 Codex `access_token` / `refresh_token`
 - **CPA 上传**：可将生成的 token JSON 自动上传到 CPA 面板
 
@@ -70,6 +70,22 @@ email:
   wait_timeout: 120      # 等待验证邮件超时（秒）
   poll_interval: 3       # 轮询邮件间隔（秒）
 
+custom2925:
+  enabled: false
+  base_email: "your-main-mail@2925.com"
+  domain: "2925.com"
+  alias_prefix: "youralias"
+  alias_separator: "b"
+  start_index: 1
+  imap_host: "imap.2925.com"
+  imap_port: 993
+  imap_ssl: true
+  imap_user: "your-main-mail@2925.com"
+  imap_password: ""   # 建议改用环境变量 CUSTOM2925_IMAP_PASSWORD
+  mailbox: "INBOX"
+  lookback_seconds: 300
+  counter_file: "data/state/custom2925_counter.json"
+
 password:
   length: 16             # 密码长度
 
@@ -97,6 +113,9 @@ cpa:
 - `oauth.required=true` 时，若 OAuth 获取失败，本次账号会标记为失败
 - `cpa.upload_api_token` 建议优先通过环境变量 `CPA_UPLOAD_API_TOKEN` 提供
 - `ak_file` / `rk_file` 会在项目根目录下的目标目录中自动再创建一层时间戳子目录，例如 `token_exports/20260309_053000/ak.txt`
+- `custom2925.enabled=true` 后，可在 Web 面板里勾选 `2925邮箱`
+- `custom2925.imap_password` 建议通过环境变量 `CUSTOM2925_IMAP_PASSWORD` 提供，避免明文写入配置
+- `custom2925` 会生成 `youraliasbN@2925.com` 形式的别名，并通过共享 IMAP 收件箱读取验证码
 
 ## 输出
 
@@ -106,6 +125,7 @@ cpa:
 邮箱|密码|时间|状态|临时邮箱凭证|提供商
 user@dollicons.com|Abc1!xyz|20260301_030238|已注册|token|mailtm
 user@nooboy.com|Def2@abc|20260301_032123|已注册||temporam
+youraliasb1@2925.com|Xyz3#123|20260327_114500|已注册|your-main-mail@2925.com|custom2925
 ```
 
 若开启 OAuth，还会额外输出到：
@@ -123,6 +143,7 @@ user@nooboy.com|Def2@abc|20260301_032123|已注册||temporam
 │   ├── browser.py         # 浏览器自动化（undetected-chromedriver）
 │   ├── email_providers.py # 邮箱服务注册表
 │   ├── mailtm_service.py  # mail.tm 邮箱服务
+│   ├── custom2925_service.py # 2925 自有邮箱 alias + IMAP 服务
 │   ├── oauth_service.py   # Codex OAuth + token 保存/CPA 上传
 │   ├── temporam_service.py# Temporam 邮箱服务
 │   ├── config.py          # 配置加载
@@ -156,6 +177,8 @@ uv run main.py
 2. 建议间隔一定时间分批开通，避免触发风控
 3. 并行数建议 2~3，过高可能导致资源不足
 4. 首次使用 Temporam 邮箱时会自动打开浏览器获取 Cookie，后续纯 API 收信
+5. 使用 `custom2925` 前，需要先在 2925 邮箱网页里开启 IMAP，并设置 `CUSTOM2925_IMAP_PASSWORD`
+6. `custom2925` 依赖共享收件箱，建议并发先控制在 2~3，避免验证码串线
 
 ## 免责声明
 
