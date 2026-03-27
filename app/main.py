@@ -35,6 +35,7 @@ def register_one_account(
     email = None
     password = None
     success = False
+    temp_credential = None
 
     # 获取提供商信息
     provider_info = email_providers.get_provider_info(email_provider)
@@ -57,6 +58,14 @@ def register_one_account(
         email, token, temp_credential = email_providers.create_temp_email(
             email_provider
         )
+        if email and temp_credential:
+            save_to_txt(
+                email,
+                password,
+                "邮箱已创建",
+                mailtm_password=str(temp_credential or ""),
+                provider=email_provider,
+            )
         if not email:
             print(f"❌ 创建邮箱失败（{provider_name}），终止注册")
             return None, None, False
@@ -76,7 +85,22 @@ def register_one_account(
         # 4. 打开注册页面
         url = "https://chat.openai.com/chat"
         print(f"🌐 正在打开 {url}...")
-        driver.get(url)
+        try:
+            driver.get(url)
+        except Exception as e:
+            current_url = ""
+            handle_count = 0
+            try:
+                current_url = str(driver.current_url or "")
+            except Exception:
+                pass
+            try:
+                handle_count = len(driver.window_handles)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"打开 ChatGPT 页面失败: {e} | current_url={current_url or 'N/A'} | windows={handle_count}"
+            ) from e
         time.sleep(3)
         _report("open_page")
 
@@ -198,7 +222,10 @@ def register_one_account(
     finally:
         if driver:
             print("🔒 正在关闭浏览器...")
-            driver.quit()
+            try:
+                driver.quit()
+            except Exception as e:
+                print(f"⚠️ 关闭浏览器时忽略异常: {e}")
 
     return email, password, success
 

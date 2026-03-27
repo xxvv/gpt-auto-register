@@ -4,8 +4,10 @@
 
 import io
 import os
+import re
 import socket
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -334,6 +336,35 @@ chrome.webRequest.onAuthRequired.addListener(
     return ext_path
 
 
+def _detect_chrome_major_version() -> int | None:
+    """检测本机 Chrome 主版本，避免与 UC driver 主版本不匹配。"""
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for binary in candidates:
+        if not os.path.exists(binary):
+            continue
+        try:
+            result = subprocess.run(
+                [binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            output = (result.stdout or result.stderr or "").strip()
+            match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
+            if match:
+                major = int(match.group(1))
+                print(f"  🧩 检测到本机 Chrome 主版本: {major}")
+                return major
+        except Exception as e:
+            print(f"  ⚠️ 检测 Chrome 版本失败 ({binary}): {e}")
+    print("  ℹ️ 未检测到本机 Chrome 版本，交由 undetected-chromedriver 自动匹配")
+    return None
+
+
 def apply_proxy_to_options(options: uc.ChromeOptions, proxy: dict | None) -> None:
     """
     将代理配置写入 ChromeOptions。
@@ -418,10 +449,18 @@ def create_driver(headless=False, proxy=None):
     # 应用代理设置
     apply_proxy_to_options(options, proxy)
 
+    chrome_major_version = _detect_chrome_major_version()
+
+    chrome_kwargs = {
+        "options": options,
+        "use_subprocess": True,
+        "headless": real_headless,
+    }
+    if chrome_major_version is not None:
+        chrome_kwargs["version_main"] = chrome_major_version
+
     # 使用自定义的 SafeChrome (注意: 传入 real_headless=False)
-    driver = SafeChrome(
-        options=options, use_subprocess=True, headless=real_headless, version_main=145
-    )
+    driver = SafeChrome(**chrome_kwargs)
 
     # === 深度伪装 (针对 Headless 模式) ===
     if headless:

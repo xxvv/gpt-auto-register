@@ -32,7 +32,7 @@ except ImportError:
 
     HAS_CURL_CFFI = False
 
-from .config import PROJECT_ROOT, cfg
+from .config import EMAIL_WAIT_TIMEOUT, PROJECT_ROOT, cfg
 from .utils import build_requests_proxies
 
 _print_lock = threading.Lock()
@@ -135,6 +135,19 @@ def _decode_jwt_payload(token: str):
         return json.loads(base64.urlsafe_b64decode(payload))
     except Exception:
         return {}
+
+
+def _needs_email_otp(page_type: str, continue_url: str) -> bool:
+    return (
+        page_type == "email_otp_verification"
+        or "email-verification" in (continue_url or "")
+        or "email-otp" in (continue_url or "")
+    )
+
+
+def _has_usable_password(password: str | None) -> bool:
+    normalized = str(password or "").strip()
+    return bool(normalized) and normalized.upper() != "N/A"
 
 
 def _resolve_path(path_value: str) -> str:
@@ -583,7 +596,7 @@ class CodexOAuthClient:
             return code
         return None
 
-    def perform_login(self, email: str, password: str, email_provider: str, mail_token: str | None = None):
+    def perform_login(self, email: str, password: str | None, email_provider: str, mail_token: str | None = None):
         issuer = cfg.oauth.issuer.rstrip("/")
         self.session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
         self.session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
@@ -660,50 +673,61 @@ class CodexOAuthClient:
         continue_data = resp_continue.json()
         continue_url = continue_data.get("continue_url", "")
         page_type = (continue_data.get("page") or {}).get("type", "")
+        self._print(f"[OAuth] 邮箱提交后 page_type={page_type or 'unknown'} continue_url={continue_url or 'N/A'}")
 
-        sentinel_pwd = build_sentinel_token(
-            self.session,
-            self.device_id,
-            flow="password_verify",
-            user_agent=self.ua,
-            sec_ch_ua=self.sec_ch_ua,
-            impersonate=self.impersonate,
-        )
-        if not sentinel_pwd:
-            raise RuntimeError("无法获取 password_verify sentinel token")
+        has_password = _has_usable_password(password)
+        need_email_otp = _needs_email_otp(page_type, continue_url)
 
-        verify_headers = self._oauth_json_headers(f"{issuer}/log-in/password")
-        verify_headers["openai-sentinel-token"] = sentinel_pwd
-        resp_verify = self.session.post(
-            f"{issuer}/api/accounts/password/verify",
-            json={"password": password},
-            headers=verify_headers,
-            timeout=30,
-            allow_redirects=False,
-            **_request_kwargs(self.impersonate),
-        )
-        if resp_verify.status_code != 200:
-            raise RuntimeError(f"密码校验失败: HTTP {resp_verify.status_code}")
+        if not need_email_otp:
+            if not has_password:
+                raise RuntimeError(
+                    f"账号未保存可用密码，且邮箱提交后未进入邮箱 OTP 分支（page_type={page_type or 'unknown'}）"
+                )
 
-        verify_data = resp_verify.json()
-        continue_url = verify_data.get("continue_url", "") or continue_url
-        page_type = (verify_data.get("page") or {}).get("type", "") or page_type
+            sentinel_pwd = build_sentinel_token(
+                self.session,
+                self.device_id,
+                flow="password_verify",
+                user_agent=self.ua,
+                sec_ch_ua=self.sec_ch_ua,
+                impersonate=self.impersonate,
+            )
+            if not sentinel_pwd:
+                raise RuntimeError("无法获取 password_verify sentinel token")
 
-        need_email_otp = (
-            page_type == "email_otp_verification"
-            or "email-verification" in (continue_url or "")
-            or "email-otp" in (continue_url or "")
-        )
+            verify_headers = self._oauth_json_headers(f"{issuer}/log-in/password")
+            verify_headers["openai-sentinel-token"] = sentinel_pwd
+            resp_verify = self.session.post(
+                f"{issuer}/api/accounts/password/verify",
+                json={"password": password},
+                headers=verify_headers,
+                timeout=30,
+                allow_redirects=False,
+                **_request_kwargs(self.impersonate),
+            )
+            if resp_verify.status_code != 200:
+                raise RuntimeError(f"密码校验失败: HTTP {resp_verify.status_code}")
+
+            verify_data = resp_verify.json()
+            continue_url = verify_data.get("continue_url", "") or continue_url
+            page_type = (verify_data.get("page") or {}).get("type", "") or page_type
+            self._print(f"[OAuth] 密码校验后 page_type={page_type or 'unknown'} continue_url={continue_url or 'N/A'}")
+            need_email_otp = _needs_email_otp(page_type, continue_url)
+        else:
+            self._print("[OAuth] 检测到无密码邮箱 OTP 分支，跳过密码校验")
+
         if need_email_otp:
             if not mail_token:
                 raise RuntimeError("OAuth 阶段需要邮箱 OTP，但缺少邮箱令牌")
             from . import email_providers
 
             otp_headers = self._oauth_json_headers(f"{issuer}/email-verification")
-            otp_deadline = time.time() + 120
+            otp_timeout = max(int(EMAIL_WAIT_TIMEOUT), 120)
+            otp_deadline = time.time() + otp_timeout
             tried_codes = set()
             otp_ok = False
 
+            self._print(f"[OAuth] 等待邮箱 OTP，provider={email_provider}，最长 {otp_timeout}s")
             while time.time() < otp_deadline and not otp_ok:
                 codes = email_providers.list_verification_codes(email_provider, mail_token)
                 candidate_codes = [code for code in codes if code and code not in tried_codes]
@@ -711,6 +735,7 @@ class CodexOAuthClient:
                     time.sleep(2)
                     continue
 
+                self._print(f"[OAuth] 收到 {len(candidate_codes)} 个待尝试 OTP")
                 for otp_code in candidate_codes:
                     tried_codes.add(otp_code)
                     resp_otp = self.session.post(
@@ -722,15 +747,17 @@ class CodexOAuthClient:
                         **_request_kwargs(self.impersonate),
                     )
                     if resp_otp.status_code != 200:
+                        self._print(f"[OAuth] OTP {otp_code} 校验失败: HTTP {resp_otp.status_code}")
                         continue
                     otp_data = resp_otp.json()
                     continue_url = otp_data.get("continue_url", "") or continue_url
                     page_type = (otp_data.get("page") or {}).get("type", "") or page_type
                     otp_ok = True
+                    self._print(f"[OAuth] OTP {otp_code} 校验成功")
                     break
 
             if not otp_ok:
-                raise RuntimeError("OAuth 阶段未获取到有效 OTP")
+                raise RuntimeError(f"OAuth 阶段未获取到有效 OTP（provider={email_provider}）")
 
         code = None
         consent_url = continue_url
@@ -738,8 +765,9 @@ class CodexOAuthClient:
             consent_url = f"{issuer}{consent_url}"
         if consent_url:
             code = _extract_code_from_url(consent_url)
+        follow_referer = f"{issuer}/log-in/password" if has_password else f"{issuer}/email-verification"
         if not code and consent_url:
-            code, _ = self._follow_for_code(consent_url, referer=f"{issuer}/log-in/password")
+            code, _ = self._follow_for_code(consent_url, referer=follow_referer)
         if not code:
             fallback = consent_url or f"{issuer}/sign-in-with-chatgpt/codex/consent"
             code = self._submit_workspace_and_org(fallback)

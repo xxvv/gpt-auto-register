@@ -240,15 +240,9 @@ def _fetch_matching_messages(alias_email: str, created_after: datetime, seen_uid
             pass
 
 
-def create_temp_email(proxy: dict = None):
-    del proxy
-    if not cfg.custom2925.enabled:
-        print("⚠️ custom2925 未启用，但仍按配置生成 alias 邮箱")
-
-    index = _next_alias_index()
-    alias_email = _build_alias(index)
+def _create_alias_session(alias_email: str, lookback_seconds: int | None = None) -> str:
     session_id = str(uuid.uuid4())
-    lookback = max(int(cfg.custom2925.lookback_seconds), 0)
+    lookback = max(int(cfg.custom2925.lookback_seconds if lookback_seconds is None else lookback_seconds), 0)
     created_at = datetime.now(timezone.utc) - timedelta(seconds=min(lookback, 30))
 
     with _sessions_lock:
@@ -257,9 +251,29 @@ def create_temp_email(proxy: dict = None):
             "created_at": created_at,
             "seen_uids": set(),
         }
+    return session_id
+
+
+def create_temp_email(proxy: dict = None):
+    del proxy
+    if not cfg.custom2925.enabled:
+        print("⚠️ custom2925 未启用，但仍按配置生成 alias 邮箱")
+
+    index = _next_alias_index()
+    alias_email = _build_alias(index)
+    session_id = _create_alias_session(alias_email)
 
     print(f"✅ 2925 alias 邮箱已生成: {alias_email}")
     return alias_email, session_id, cfg.custom2925.base_email
+
+
+def login_existing_email(address: str, password: str | None = None):
+    del password
+    if "@" not in (address or ""):
+        raise RuntimeError("custom2925 账号地址无效")
+    session_id = _create_alias_session(address)
+    print(f"✅ 已为 2925 别名邮箱创建收信会话: {address}")
+    return session_id
 
 
 def _extract_codes_from_messages(session: dict, messages: list[tuple[str, Message, str]], mark_seen: bool) -> list[str]:
@@ -327,9 +341,11 @@ def list_verification_codes(session_id: str) -> list[str]:
 
     alias_email = session["alias_email"]
     created_at = session["created_at"]
+    with _sessions_lock:
+        seen_uids = set(session["seen_uids"])
 
     try:
-        messages = _fetch_matching_messages(alias_email, created_at, set())
+        messages = _fetch_matching_messages(alias_email, created_at, seen_uids)
     except Exception as e:
         print(f"  列出 2925 验证码失败: {e}")
         return []

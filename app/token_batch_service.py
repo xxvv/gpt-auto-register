@@ -8,7 +8,6 @@ import os
 from types import SimpleNamespace
 
 from .config import cfg
-from .mailtm_service import login_existing_email
 from .oauth_service import perform_codex_oauth_login, save_codex_tokens
 from .stored_accounts import (
     OAUTH_SUCCESS_STATUS,
@@ -27,13 +26,27 @@ def _build_output_oauth_cfg(output_dir: str):
     )
 
 
+def _login_existing_mailbox(provider: str, email: str, mailbox_credential: str):
+    from . import email_providers
+
+    provider_info = email_providers.get_provider_info(provider)
+    if not provider_info:
+        raise RuntimeError(f"未知邮箱 provider: {provider}")
+
+    login_func = getattr(provider_info["module"], "login_existing_email", None)
+    if not callable(login_func):
+        raise RuntimeError(f"provider={provider} 暂不支持重新登录收件箱")
+
+    return login_func(email, mailbox_credential)
+
+
 def process_accounts_from_file(
     accounts_file: str,
     output_dir: str,
     proxy: dict | None = None,
     stop_requested=None,
     progress_callback=None,
-    mail_login_func=login_existing_email,
+    mail_login_func=_login_existing_mailbox,
     oauth_login_func=perform_codex_oauth_login,
     save_tokens_func=save_codex_tokens,
 ):
@@ -79,25 +92,19 @@ def process_accounts_from_file(
             report_progress(current_email=email, status="skipped_existing_success")
             continue
 
-        if provider != "mailtm":
-            fail += 1
-            print(f"⚠️ 跳过 {email}: 当前仅支持 mailtm")
-            report_progress(current_email=email, status="unsupported_provider")
-            continue
-
         mailbox_credential = record["mailbox_credential"]
         if not mailbox_credential:
             fail += 1
-            print(f"⚠️ 跳过 {email}: 缺少邮箱密码")
+            print(f"⚠️ 跳过 {email}: 缺少邮箱收件凭证")
             report_progress(current_email=email, status="missing_mailbox_credential")
             continue
 
         try:
-            mail_token = mail_login_func(email, mailbox_credential)
+            mail_token = mail_login_func(provider, email, mailbox_credential)
             tokens = oauth_login_func(
                 email=email,
                 password=record["password"],
-                email_provider="mailtm",
+                email_provider=provider,
                 mail_token=mail_token,
                 proxy=proxy,
             )

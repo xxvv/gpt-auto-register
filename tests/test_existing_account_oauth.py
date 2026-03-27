@@ -112,7 +112,7 @@ class TokenBatchServiceTests(unittest.TestCase):
 
             progress_events = []
 
-            def fake_mail_login(email, mailbox_password):
+            def fake_mail_login(provider, email, mailbox_password):
                 return "mail-token"
 
             def fake_oauth(email, password, email_provider, mail_token, proxy):
@@ -154,8 +154,8 @@ class TokenBatchServiceTests(unittest.TestCase):
 
             seen = {"mail_login": [], "oauth": [], "save": []}
 
-            def fake_mail_login(email, mailbox_password):
-                seen["mail_login"].append((email, mailbox_password))
+            def fake_mail_login(provider, email, mailbox_password):
+                seen["mail_login"].append((provider, email, mailbox_password))
                 return "mail-token"
 
             def fake_oauth(email, password, email_provider, mail_token, proxy):
@@ -180,7 +180,7 @@ class TokenBatchServiceTests(unittest.TestCase):
             self.assertEqual(result["success"], 1)
             self.assertEqual(result["fail"], 0)
             self.assertEqual(result["skipped"], 1)
-            self.assertEqual(seen["mail_login"], [("user2@example.com", "mailbox-pass-2")])
+            self.assertEqual(seen["mail_login"], [("mailtm", "user2@example.com", "mailbox-pass-2")])
             self.assertEqual(seen["oauth"][0][0], "user2@example.com")
             self.assertEqual(seen["save"], ["user2@example.com"])
 
@@ -193,28 +193,30 @@ class TokenBatchServiceTests(unittest.TestCase):
                     "user1@example.com|chatgpt-pass|20260309_010101|已注册|mailbox-pass|mailtm\n"
                 )
                 handle.write(
-                    "user2@example.com|chatgpt-pass-2|20260309_020202|已注册|other-mailbox|temporam\n"
+                    "user2@example.com|chatgpt-pass-2|20260309_020202|已注册|main-box@2925.com|custom2925\n"
                 )
 
-            seen = {}
+            seen = {"mail_login": [], "oauth": [], "save": []}
 
-            def fake_mail_login(email, mailbox_password):
-                seen["mail_login"] = (email, mailbox_password)
-                return "mail-token"
+            def fake_mail_login(provider, email, mailbox_password):
+                seen["mail_login"].append((provider, email, mailbox_password))
+                return f"mail-token-{provider}"
 
             def fake_oauth(email, password, email_provider, mail_token, proxy):
-                seen["oauth"] = (email, password, email_provider, mail_token, proxy)
+                seen["oauth"].append((email, password, email_provider, mail_token, proxy))
                 return {"access_token": "a", "refresh_token": "r"}
 
             def fake_save(email, tokens, oauth_cfg, proxy):
-                seen["save"] = {
-                    "email": email,
-                    "tokens": tokens,
-                    "ak_file": oauth_cfg.ak_file,
-                    "rk_file": oauth_cfg.rk_file,
-                    "token_json_dir": oauth_cfg.token_json_dir,
-                    "proxy": proxy,
-                }
+                seen["save"].append(
+                    {
+                        "email": email,
+                        "tokens": tokens,
+                        "ak_file": oauth_cfg.ak_file,
+                        "rk_file": oauth_cfg.rk_file,
+                        "token_json_dir": oauth_cfg.token_json_dir,
+                        "proxy": proxy,
+                    }
+                )
                 return os.path.join(oauth_cfg.token_json_dir, f"{email}.json")
 
             result = process_accounts_from_file(
@@ -227,17 +229,37 @@ class TokenBatchServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(result["total"], 2)
-            self.assertEqual(result["processed"], 1)
-            self.assertEqual(result["success"], 1)
-            self.assertEqual(result["fail"], 1)
-            self.assertEqual(seen["mail_login"], ("user1@example.com", "mailbox-pass"))
-            self.assertEqual(seen["oauth"], ("user1@example.com", "chatgpt-pass", "mailtm", "mail-token", None))
-            self.assertEqual(seen["save"]["ak_file"], cfg.oauth.ak_file)
-            self.assertEqual(seen["save"]["rk_file"], cfg.oauth.rk_file)
-            self.assertEqual(seen["save"]["token_json_dir"], output_dir)
+            self.assertEqual(result["processed"], 2)
+            self.assertEqual(result["success"], 2)
+            self.assertEqual(result["fail"], 0)
+            self.assertEqual(
+                seen["mail_login"],
+                [
+                    ("mailtm", "user1@example.com", "mailbox-pass"),
+                    ("custom2925", "user2@example.com", "main-box@2925.com"),
+                ],
+            )
+            self.assertEqual(
+                seen["oauth"],
+                [
+                    ("user1@example.com", "chatgpt-pass", "mailtm", "mail-token-mailtm", None),
+                    (
+                        "user2@example.com",
+                        "chatgpt-pass-2",
+                        "custom2925",
+                        "mail-token-custom2925",
+                        None,
+                    ),
+                ],
+            )
+            self.assertEqual(seen["save"][0]["ak_file"], cfg.oauth.ak_file)
+            self.assertEqual(seen["save"][0]["rk_file"], cfg.oauth.rk_file)
+            self.assertEqual(seen["save"][0]["token_json_dir"], output_dir)
 
             updated_record = load_account_from_file(accounts_path, "user1@example.com")
             self.assertEqual(updated_record["status"], OAUTH_SUCCESS_STATUS)
+            updated_record_2 = load_account_from_file(accounts_path, "user2@example.com")
+            self.assertEqual(updated_record_2["status"], OAUTH_SUCCESS_STATUS)
 
 
 if __name__ == "__main__":

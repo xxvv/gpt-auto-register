@@ -16,12 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import cfg  # noqa: E402
-from app.mailtm_service import login_existing_email  # noqa: E402
 from app.oauth_service import perform_codex_oauth_login, save_codex_tokens  # noqa: E402
 from app.stored_accounts import OAUTH_SUCCESS_STATUS  # noqa: E402
 from app.stored_accounts import is_oauth_success_status  # noqa: E402
 from app.stored_accounts import load_account_from_file  # noqa: E402
 from app.stored_accounts import update_account_status_in_file  # noqa: E402
+from app.token_batch_service import _login_existing_mailbox  # noqa: E402
 
 
 def build_parser():
@@ -44,21 +44,19 @@ def main():
         return
 
     provider = record["provider"].strip().lower()
-    if provider != "mailtm":
-        raise SystemExit(f"当前仅支持 mailtm 账号补取 token，目标 provider={provider}")
 
-    mailbox_password = record["mailbox_credential"]
-    if not mailbox_password:
-        raise SystemExit("账号记录中缺少 mail.tm 邮箱密码，无法重新登录收件箱")
+    mailbox_credential = record["mailbox_credential"]
+    if not mailbox_credential:
+        raise SystemExit("账号记录中缺少邮箱收件凭证，无法重新登录收件箱")
 
-    print(f"📬 正在重新登录 mail.tm 收件箱: {record['email']}")
-    mail_token = login_existing_email(record["email"], mailbox_password)
+    print(f"📬 正在重新登录 {provider} 收件箱: {record['email']}")
+    mail_token = _login_existing_mailbox(provider, record["email"], mailbox_credential)
 
     print("🔑 正在执行 Codex OAuth 登录...")
     tokens = perform_codex_oauth_login(
         email=record["email"],
         password=record["password"],
-        email_provider="mailtm",
+        email_provider=provider,
         mail_token=mail_token,
         proxy=None,
     )
