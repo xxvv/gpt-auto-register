@@ -1,3 +1,9 @@
+# ============================================================
+# ChatGPT Auto Register - 配置文件
+# 复制本文件为 config.yaml 后按需修改
+#   cp config.example.yaml config.yaml
+# ============================================================
+
 # 注册配置
 registration:
   total_accounts: 1      # 批量注册的账号数量
@@ -9,7 +15,7 @@ email:
   wait_timeout: 120     # 等待验证邮件的最大超时时间(秒)
   poll_interval: 3      # 轮询检查邮件的间隔(秒)
 
-# 2925 自有邮箱（共享 IMAP 收件箱 + alias）
+# 2925 自有邮箱（共享 IMAP 收件箱 + alias）- 可选
 custom2925:
   enabled: false
   base_email: "your-main-mail@2925.com"
@@ -35,37 +41,45 @@ browser:
 # 账号密码规则
 password:
   length: 16
-  # 密码字符集 (包含大小写字母和数字)
-  charset: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+  charset: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%"
 
 # 错误重试策略
 retry:
-  http_max_retries: 5       # HTTP 请求最大重试次数
-  http_timeout: 30          # HTTP 请求超时时间
-  error_page_max_retries: 5 # 遇到错误页面的最大刷新重试次数
-  button_click_max_retries: 3 # 按钮点击最大重试次数
+  http_max_retries: 5
+  http_timeout: 30
+  error_page_max_retries: 5
+  button_click_max_retries: 3
 
-# 批量注册间隔
+# 批量注册间隔（秒）- 建议不低于 25 秒以避免风控
 batch:
-  interval_min: 5  # 最小间隔(秒)
-  interval_max: 15 # 最大间隔(秒)
+  interval_min: 25
+  interval_max: 40
 
 # 文件路径配置
 files:
-  accounts_file: "data/accounts/registered_accounts.txt"  # 注册成功账号的保存路径
+  accounts_file: "data/accounts/registered_accounts.txt"
 
 # Codex OAuth 配置
 oauth:
-  enabled: true  # 注册成功后是否继续获取 Codex OAuth token
-  required: false # 若获取失败，是否将本次任务视为失败
+  enabled: true          # 注册后是否自动获取 Codex OAuth Token
+  required: false         # Token 获取失败是否视为注册失败
   issuer: "https://auth.openai.com"
   client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
   redirect_uri: "http://localhost:1455/auth/callback"
-  ak_file: "token_exports/ak.txt"   # 实际输出为 token_exports/<时间戳>/ak.txt
-  rk_file: "token_exports/rk.txt"   # 实际输出为 token_exports/<时间戳>/rk.txt
+  ak_file: "token_exports/ak.txt"
+  rk_file: "token_exports/rk.txt"
   token_json_dir: "data/tokens"
 
-# CPA 上传配置
+# CLIProxyAPI Token 池接入（可选）
+# 注册成功后自动推送 Codex Token 到 CLIProxyAPI
+# 也可通过环境变量设置: CLIPROXY_API_URL, CLIPROXY_API_KEY, CLIPROXY_AUTH_DIR
+cliproxy:
+  enabled: false         # 是否启用自动推送
+  api_url: "http://localhost:8317"
+  api_key: ""            # CLIProxyAPI 管理密钥（建议通过环境变量 CLIPROXY_API_KEY 设置）
+  auth_dir: "~/.cli-proxy-api"  # Token 文件目录（备选写入方式）
+
+# CPA 上传配置（可选）
 cpa:
-  upload_api_url: ""    # 例如 https://your-cpa.example.com/upload
-  upload_api_token: ""  # 建议优先通过环境变量 CPA_UPLOAD_API_TOKEN 提供
+  upload_api_url: ""     # 例如 https://your-cpa.example.com/upload
+  upload_api_token: ""   # 建议优先通过环境变量 CPA_UPLOAD_API_TOKEN 提供

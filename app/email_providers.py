@@ -6,15 +6,19 @@
   - mailtm     : mail.tm REST API，动态域名
   - temporam   : temporam.com，Cookie 缓存 + REST API
   - custom2925 : 2925 自有邮箱别名 + IMAP 收件箱
+  - gptmail    : mail.chatgpt.org.uk，Cookie + JWT + REST API
+  - tempmail_lol: api.tempmail.lol，纯 REST API
 
 已移除（OpenAI 返回 "The email you provided is not supported"）:
-  - mailgw / guerrillamail / tempmail_lol
+  - mailgw / guerrillamail / tempmail_lol (旧版)
   对应 .py 文件保留，可用于其他非 OpenAI 服务的注册
 """
 
 from . import custom2925_service
 from . import mailtm_service
 from . import temporam_service
+from . import gptmail_service
+from . import tempmail_lol_service
 
 PROVIDERS = {
     "mailtm": {
@@ -35,10 +39,23 @@ PROVIDERS = {
         "inbox_url": "https://mail.2925.com",
         "has_password": False,
     },
+    "gptmail": {
+        "name": "GPTMail",
+        "module": gptmail_service,
+        "inbox_url": "https://mail.chatgpt.org.uk",
+        "has_password": False,  # 基于 Cookie + JWT 会话
+    },
+    "tempmail_lol": {
+        "name": "TempMail.lol",
+        "module": tempmail_lol_service,
+        "inbox_url": "https://tempmail.lol",
+        "has_password": False,  # 基于 token
+    },
 }
 
-# 默认两个公开服务都启用，自有邮箱按需勾选
-DEFAULT_PROVIDERS = ["mailtm", "temporam"]
+# 默认公开服务：mailtm + gptmail + tempmail_lol
+# temporam 因 SSL 不稳定默认不启用
+DEFAULT_PROVIDERS = ["mailtm", "gptmail", "tempmail_lol"]
 
 
 def get_provider_info(provider_id: str) -> dict:

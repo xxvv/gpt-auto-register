@@ -1,65 +1,35 @@
-# Python cache / build
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
-.env
-.env.*
 .venv/
-env/
 venv/
 ENV/
-env.bak/
-venv.bak/
+env/
 
-# Local config / secrets
-config.yaml
-config.yml
-config.local.yaml
-config.local.yml
-
-# Runtime data
-data/accounts/*.txt
-data/tokens/
-data/state/
-token_exports/
-*.log
-browser.log
-geckodriver.log
-api_response.txt
-
-# Tooling caches / local automation artifacts
-.claude/
-.playwright-cli/
-.ruff_cache/
-.mypy_cache/
-.pytest_cache/
-.uv/
-.coverage
-htmlcov/
-
-# Editor / OS
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# User data (sensitive)
+data/tokens/*.json
+data/accounts/*.txt
+data/state/*.json
+token_exports/
+
+# User config (contains personal settings)
+config.yaml
+
+# Logs
+*.log
+
+# OS
 .DS_Store
+Thumbs.db
+
+# uv
+.uv/

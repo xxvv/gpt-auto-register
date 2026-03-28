@@ -1255,7 +1255,54 @@ def fill_profile_info(driver):
         return False
 
 
-def verify_logged_in(driver, timeout=45):
+def _dismiss_onboarding(driver):
+    """尝试关闭 onboarding 弹窗（条款确认、功能介绍等）。"""
+    try:
+        # 查找并点击 "Continue" / "Next" / "Done" / "Start" / "OK" 类按钮
+        dismiss_selectors = [
+            'button[data-testid="onboarding-continue-button"]',
+            'button[data-testid="close-onboarding-button"]',
+            'button[class*="onboarding"]',
+        ]
+        for sel in dismiss_selectors:
+            try:
+                btns = driver.find_elements(By.CSS_SELECTOR, sel)
+                for btn in btns:
+                    if btn.is_displayed():
+                        driver.execute_script("arguments[0].click();", btn)
+                        print("  📌 点击了 onboarding 按钮")
+                        time.sleep(2)
+                        return True
+            except Exception:
+                continue
+
+        # 更通用的方式：找包含 Continue/Next/Done/Start/OK 的按钮
+        try:
+            generic_btns = driver.find_elements(
+                By.XPATH,
+                '//button[contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "continue") '
+                'or contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "next") '
+                'or contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "done") '
+                'or contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "start") '
+                'or contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "ok") '
+                'or contains(text(), "继续") '
+                'or contains(text(), "完成") '
+                'or contains(text(), "开始")]'
+            )
+            for btn in generic_btns:
+                if btn.is_displayed():
+                    driver.execute_script("arguments[0].click();", btn)
+                    print("  📌 点击了 onboarding/引导按钮")
+                    time.sleep(2)
+                    return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return False
+
+
+def verify_logged_in(driver, timeout=90):
     """
     验证当前浏览器会话是否已成功登录 ChatGPT
 
@@ -1305,6 +1352,9 @@ def verify_logged_in(driver, timeout=45):
             if any(marker in page_source for marker in blocked_markers):
                 time.sleep(2)
                 continue
+
+            # 尝试关闭 onboarding 弹窗
+            _dismiss_onboarding(driver)
 
             # 如果 URL 已不在 auth 路径，且没有明显登录/注册提示，作为兜底判定
             if "auth" not in current_url:

@@ -25,11 +25,9 @@ from urllib.parse import parse_qs, urlencode, urlparse, unquote
 
 try:
     from curl_cffi import requests as curl_requests
-
     HAS_CURL_CFFI = True
 except ImportError:
     import requests as curl_requests
-
     HAS_CURL_CFFI = False
 
 from .config import EMAIL_WAIT_TIMEOUT, PROJECT_ROOT, cfg
@@ -858,6 +856,62 @@ def upload_token_json(filepath: str, cpa_cfg=None, proxy: dict | None = None, se
     return resp
 
 
+# ── CLIProxyAPI Token 池接入 ────────────────────────────────────────
+
+CLIPROXY_API_URL = os.environ.get("CLIPROXY_API_URL", "http://localhost:8317")
+CLIPROXY_API_KEY = os.environ.get("CLIPROXY_API_KEY", "")
+CLIPROXY_UPLOAD_URL = f"{CLIPROXY_API_URL}/v0/management/auth-files"
+CLIPROXY_AUTH_DIR = os.environ.get("CLIPROXY_AUTH_DIR", os.path.expanduser("~/.cli-proxy-api"))
+
+
+def _cliproxy_file_name(email: str) -> str:
+    safe = email.replace("@", "_").replace(".", "_")
+    return f"token_{safe}_{int(time.time())}.json"
+
+
+def _upload_to_cliproxy(token_data: dict):
+    """
+    将 Codex Token 上传到 CLIProxyAPI token 池。
+    优先 HTTP POST（需要 CLIPROXY_API_KEY），失败则直接写 auth dir 文件。
+    """
+    email = token_data.get("email", "")
+    file_name = _cliproxy_file_name(email)
+
+    # 方式 1: HTTP POST（需要 API Key）
+    if CLIPROXY_API_KEY:
+        try:
+            resp = curl_requests.post(
+                CLIPROXY_UPLOAD_URL,
+                params={"name": file_name, "provider": "codex"},
+                json=token_data,
+                headers={
+                    "Authorization": f"Bearer {CLIPROXY_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                print(f"  ✅ CLIProxyAPI: Token 已加入池 ({email})")
+                return True
+            print(f"  ⚠️ CLIProxyAPI HTTP: {resp.status_code} {resp.text[:80]}")
+        except Exception as e:
+            print(f"  ⚠️ CLIProxyAPI 连接失败: {e}")
+
+    # 方式 2: 直接写 auth dir 文件（watcher 自动检测）
+    try:
+        os.makedirs(CLIPROXY_AUTH_DIR, exist_ok=True)
+        file_path = os.path.join(CLIPROXY_AUTH_DIR, file_name)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(token_data, f, ensure_ascii=False, indent=2)
+        print(f"  ✅ CLIProxyAPI: Token 文件已写入 {file_path}（watcher 自动加载）")
+        return True
+    except Exception as e:
+        print(f"  ❌ CLIProxyAPI 文件写入失败: {e}")
+        return False
+
+
+# ────────────────────────────────────────────────────────────────────
+
 def save_codex_tokens(email: str, tokens: dict, oauth_cfg=None, cpa_cfg=None, proxy: dict | None = None, session_factory: Callable | None = None):
     oauth_cfg = oauth_cfg or cfg.oauth
     cpa_cfg = cpa_cfg or cfg.cpa
@@ -919,6 +973,13 @@ def save_codex_tokens(email: str, tokens: dict, oauth_cfg=None, cpa_cfg=None, pr
             )
         except Exception as exc:
             print(f"⚠️ CPA 上传失败，但本地 token 已保存: {exc}")
+
+    # ── 自动推送到 CLIProxyAPI token 池 ──────────────────────
+    try:
+        _upload_to_cliproxy(token_data)
+    except Exception as exc:
+        print(f"⚠️ CLIProxyAPI 上传失败: {exc}")
+    # ──────────────────────────────────────────────────────────
 
     return token_path
 
