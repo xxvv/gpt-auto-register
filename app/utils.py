@@ -7,7 +7,9 @@ import random
 import string
 import os
 import re
+import time
 from datetime import datetime
+from typing import Callable
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -87,6 +89,34 @@ def create_http_session():
 # 创建全局 HTTP Session
 http_session = create_http_session()
 
+IP_DISCOVERY_ENDPOINTS = (
+    {
+        "url": "https://api.ipify.org?format=json",
+        "kind": "json",
+        "fields": ("ip",),
+    },
+    {
+        "url": "https://api64.ipify.org?format=json",
+        "kind": "json",
+        "fields": ("ip",),
+    },
+    {
+        "url": "https://ifconfig.me/all.json",
+        "kind": "json",
+        "fields": ("ip_addr", "ip"),
+    },
+    {
+        "url": "https://icanhazip.com",
+        "kind": "text",
+        "fields": (),
+    },
+)
+
+GEO_LOOKUP_ENDPOINTS = (
+    {"url": "https://ipwho.is/{ip}", "provider": "ipwho.is"},
+    {"url": "https://ipapi.co/{ip}/json/", "provider": "ipapi.co"},
+)
+
 
 def build_requests_proxies(proxy: dict) -> dict:
     """
@@ -110,6 +140,286 @@ def build_requests_proxies(proxy: dict) -> dict:
         proxy_url = f"{scheme}://{host}:{port}"
 
     return {"http": proxy_url, "https": proxy_url}
+
+
+def describe_proxy(proxy: dict | None) -> str:
+    """返回适合日志展示的代理描述。"""
+    if not proxy or not proxy.get("enabled"):
+        return "未启用代理"
+
+    ptype = str(proxy.get("type", "http") or "http").lower()
+    host = str(proxy.get("host", "") or "").strip() or "?"
+    try:
+        port = int(proxy.get("port", 0) or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    auth_suffix = ""
+    if proxy.get("use_auth") and proxy.get("username"):
+        auth_suffix = " (auth)"
+
+    port_suffix = f":{port}" if port > 0 else ""
+    return f"{ptype}://{host}{port_suffix}{auth_suffix}"
+
+
+def _build_probe_session(session_factory: Callable[[], requests.Session] | None = None):
+    session = session_factory() if session_factory else requests.Session()
+    if hasattr(session, "trust_env"):
+        session.trust_env = False
+    headers = getattr(session, "headers", None)
+    if headers is not None:
+        headers.setdefault("User-Agent", USER_AGENT)
+        headers.setdefault("Accept", "application/json,text/plain;q=0.9,*/*;q=0.8")
+    return session
+
+
+def _extract_ip_from_response(response, endpoint: dict) -> str:
+    if endpoint["kind"] == "json":
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        for field in endpoint.get("fields", ()):
+            value = str(payload.get(field, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    text = str(getattr(response, "text", "") or "").strip()
+    if not text:
+        return ""
+    return text.splitlines()[0].strip()
+
+
+def _normalize_geo_payload(payload: dict, provider: str) -> dict:
+    if provider == "ipwho.is":
+        if payload.get("success") is False:
+            return {
+                "ok": False,
+                "reason": str(payload.get("message") or "geo_lookup_failed"),
+            }
+        return {
+            "ok": True,
+            "country": str(payload.get("country", "") or ""),
+            "country_code": str(payload.get("country_code", "") or "").upper(),
+            "region": str(payload.get("region", "") or ""),
+            "city": str(payload.get("city", "") or ""),
+            "asn": str(payload.get("connection", {}).get("asn", "") or ""),
+            "org": str(payload.get("connection", {}).get("org", "") or ""),
+        }
+
+    if payload.get("error"):
+        reason = payload.get("reason") or payload.get("message") or "geo_lookup_failed"
+        return {"ok": False, "reason": str(reason)}
+
+    return {
+        "ok": True,
+        "country": str(payload.get("country_name", "") or payload.get("country", "") or ""),
+        "country_code": str(payload.get("country_code", "") or "").upper(),
+        "region": str(payload.get("region", "") or ""),
+        "city": str(payload.get("city", "") or ""),
+        "asn": str(payload.get("asn", "") or ""),
+        "org": str(payload.get("org", "") or ""),
+    }
+
+
+def lookup_ip_geolocation(
+    ip: str,
+    timeout: int = 8,
+    session_factory: Callable[[], requests.Session] | None = None,
+):
+    """
+    查询出口 IP 的地理位置。
+    查询失败时不抛异常，返回 {"ok": False, "reason": "..."}。
+    """
+    ip = str(ip or "").strip()
+    if not ip:
+        return {"ok": False, "reason": "missing_ip"}
+
+    session = _build_probe_session(session_factory=session_factory)
+    last_error = "geo_lookup_failed"
+
+    for endpoint in GEO_LOOKUP_ENDPOINTS:
+        url = endpoint["url"].format(ip=ip)
+        started = time.perf_counter()
+        try:
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code != 200:
+                last_error = f"{endpoint['provider']} HTTP {resp.status_code}"
+                continue
+            payload = resp.json()
+            normalized = _normalize_geo_payload(payload, endpoint["provider"])
+            if not normalized.get("ok"):
+                last_error = str(normalized.get("reason") or "geo_lookup_failed")
+                continue
+            normalized.update(
+                {
+                    "ok": True,
+                    "ip": ip,
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "source": endpoint["provider"],
+                }
+            )
+            return normalized
+        except Exception as exc:
+            last_error = f"{endpoint['provider']} 请求失败: {exc}"
+
+    return {"ok": False, "reason": last_error, "ip": ip}
+
+
+def probe_proxy_connectivity(
+    proxy: dict | None,
+    timeout: int = 10,
+    session_factory: Callable[[], requests.Session] | None = None,
+    geo_lookup: Callable[[str, int], dict] | None = None,
+    endpoints: tuple[dict, ...] | None = None,
+):
+    """
+    用 requests 通过代理探测出口 IP、延迟和国家信息。
+    """
+    if not proxy or not proxy.get("enabled"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "proxy_disabled",
+            "proxy": describe_proxy(proxy),
+        }
+
+    host = str(proxy.get("host", "") or "").strip()
+    try:
+        port = int(proxy.get("port", 0) or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    proxy_label = describe_proxy(proxy)
+    if not host or port <= 0:
+        return {
+            "ok": False,
+            "proxy": proxy_label,
+            "reason": "代理已启用，但 host/port 配置无效",
+        }
+
+    session = _build_probe_session(session_factory=session_factory)
+    proxies = build_requests_proxies(proxy)
+    if hasattr(session, "proxies"):
+        session.proxies = proxies
+
+    last_error = "未获取到出口 IP"
+    errors = []
+
+    probe_endpoints = endpoints or IP_DISCOVERY_ENDPOINTS
+
+    for endpoint in probe_endpoints:
+        started = time.perf_counter()
+        try:
+            resp = session.get(
+                endpoint["url"],
+                timeout=timeout,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            if resp.status_code != 200:
+                last_error = f"{endpoint['url']} 返回 HTTP {resp.status_code}"
+                errors.append(last_error)
+                continue
+
+            ip = _extract_ip_from_response(resp, endpoint)
+            if not ip:
+                last_error = f"{endpoint['url']} 响应中未解析到出口 IP"
+                errors.append(last_error)
+                continue
+
+            result = {
+                "ok": True,
+                "proxy": proxy_label,
+                "ip": ip,
+                "latency_ms": elapsed_ms,
+                "ip_source": endpoint["url"],
+            }
+
+            geo_result = (
+                geo_lookup(ip, min(timeout, 8))
+                if geo_lookup
+                else lookup_ip_geolocation(ip, timeout=min(timeout, 8))
+            )
+            if geo_result.get("ok"):
+                result.update(
+                    {
+                        "country": geo_result.get("country", ""),
+                        "country_code": geo_result.get("country_code", ""),
+                        "region": geo_result.get("region", ""),
+                        "city": geo_result.get("city", ""),
+                        "geo_source": geo_result.get("source", ""),
+                        "geo_latency_ms": geo_result.get("latency_ms"),
+                    }
+                )
+            else:
+                result["geo_reason"] = geo_result.get("reason", "geo_lookup_failed")
+
+            return result
+        except requests.exceptions.ProxyError as exc:
+            last_error = f"代理握手失败: {exc}"
+        except requests.exceptions.ConnectTimeout:
+            last_error = f"连接代理超时（>{timeout}s）"
+        except requests.exceptions.ReadTimeout:
+            last_error = f"代理响应超时（>{timeout}s）"
+        except requests.exceptions.RequestException as exc:
+            last_error = f"代理请求失败: {exc}"
+        except Exception as exc:
+            last_error = f"代理探测异常: {exc}"
+
+        errors.append(last_error)
+
+    return {
+        "ok": False,
+        "proxy": proxy_label,
+        "reason": last_error,
+        "errors": errors,
+    }
+
+
+def format_probe_location(details: dict) -> str:
+    country = str(details.get("country", "") or "").strip()
+    country_code = str(details.get("country_code", "") or "").strip().upper()
+    city = str(details.get("city", "") or "").strip()
+
+    parts = []
+    if country:
+        if country_code and country_code not in country:
+            parts.append(f"{country} ({country_code})")
+        else:
+            parts.append(country)
+    elif country_code:
+        parts.append(country_code)
+
+    if city:
+        parts.append(city)
+
+    return " / ".join(parts) or "未知地区"
+
+
+def ensure_proxy_ready(proxy: dict | None, purpose: str = "代理链路", timeout: int = 10):
+    """
+    代理启用时执行预检；失败则抛出 RuntimeError。
+    """
+    result = probe_proxy_connectivity(proxy, timeout=timeout)
+    if result.get("skipped"):
+        return result
+
+    print(f"🩺 代理预检（{purpose}）...")
+    print(f"  🌐 代理配置: {result.get('proxy', 'unknown')}")
+
+    if not result.get("ok"):
+        print(f"  ❌ 代理预检失败: {result.get('reason', 'unknown_error')}")
+        raise RuntimeError(f"{purpose} 失败：{result.get('reason', 'unknown_error')}")
+
+    print(
+        f"  ✅ 请求链路可用: {result.get('ip', 'unknown')} | "
+        f"{format_probe_location(result)} | {result.get('latency_ms', '?')} ms"
+    )
+    if result.get("geo_reason"):
+        print(f"  ℹ️ 出口地区识别失败: {result['geo_reason']}")
+    return result
 
 
 def configure_http_proxy(proxy: dict):

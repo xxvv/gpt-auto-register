@@ -12,7 +12,9 @@ import tempfile
 import threading
 import time
 import zipfile
+from datetime import date
 import undetected_chromedriver as uc
+from selenium.common.exceptions import NoSuchWindowException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -25,7 +27,47 @@ from .config import (
     ERROR_PAGE_MAX_RETRIES,
     BUTTON_CLICK_MAX_RETRIES,
 )
-from .utils import generate_user_info
+from .utils import (
+    ensure_proxy_ready,
+    format_probe_location,
+    generate_user_info,
+    lookup_ip_geolocation,
+)
+
+CHATGPT_HOME_URL = "https://chatgpt.com/"
+CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login"
+
+_PASSWORD_INPUT_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[autocomplete="new-password"]'),
+    (By.CSS_SELECTOR, 'input[name="password"]'),
+    (By.CSS_SELECTOR, 'input[type="password"]'),
+]
+_VERIFICATION_INPUT_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="code"]'),
+    (By.CSS_SELECTOR, 'input[name*="code"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="one-time-code"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="代码"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="验证码"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="code" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="代码"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="验证码"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="code" i]'),
+]
+_VERIFICATION_URL_TOKENS = [
+    "email-verification",
+    "email-otp",
+    "enter-code",
+    "/code",
+]
+_VERIFICATION_TEXT_MARKERS = [
+    "检查您的收件箱",
+    "验证您的邮箱",
+    "验证邮箱",
+    "check your inbox",
+    "verify your email",
+    "we sent a code",
+    "enter the code we sent",
+]
 
 
 def _page_text(driver) -> str:
@@ -35,79 +77,97 @@ def _page_text(driver) -> str:
         return ""
 
 
-def _is_email_verification_page(driver) -> bool:
+def _visible_body_text(driver) -> str:
+    try:
+        body = driver.find_element(By.TAG_NAME, "body")
+        return (body.text or "").lower()
+    except Exception:
+        return _page_text(driver)
+
+
+def _find_visible_elements(driver, selectors):
+    visible_elements = []
+    for by, selector in selectors:
+        try:
+            elements = driver.find_elements(by, selector)
+        except Exception:
+            continue
+        for element in elements:
+            try:
+                if element.is_displayed():
+                    visible_elements.append(element)
+            except Exception:
+                continue
+        if visible_elements:
+            return visible_elements
+    return visible_elements
+
+
+def _is_email_verification_page(driver, require_visible_input: bool = False) -> bool:
+    verification_inputs = _find_visible_elements(driver, _VERIFICATION_INPUT_SELECTORS)
+    if verification_inputs:
+        return True
+
+    otp_boxes = _find_visible_elements(
+        driver,
+        [
+            (
+                By.CSS_SELECTOR,
+                'input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]',
+            )
+        ],
+    )
+    if len(otp_boxes) >= 4:
+        return True
+
     try:
         current_url = (driver.current_url or "").lower()
     except Exception:
         current_url = ""
 
-    if any(token in current_url for token in ["email-verification", "verification", "/code", "enter-code"]):
-        return True
+    has_verification_url = any(
+        token in current_url for token in _VERIFICATION_URL_TOKENS
+    )
+    body_text = _visible_body_text(driver)
+    has_verification_text = any(
+        marker in body_text for marker in _VERIFICATION_TEXT_MARKERS
+    )
 
-    page_text = _page_text(driver)
-    text_markers = [
-        "检查您的收件箱",
-        "验证邮箱",
-        "验证码",
-        "verify your email",
-        "check your inbox",
-        "enter code",
-        "verification code",
-    ]
-    if any(marker in page_text for marker in text_markers):
-        return True
+    if require_visible_input:
+        return has_verification_url and has_verification_text
 
-    verification_selectors = [
-        'input[name="code"]',
-        'input[name*="code"]',
-        'input[autocomplete="one-time-code"]',
-        'input[placeholder*="代码"]',
-        'input[placeholder*="验证码"]',
-        'input[placeholder*="code" i]',
-        'input[aria-label*="代码"]',
-        'input[aria-label*="验证码"]',
-        'input[aria-label*="code" i]',
-    ]
-    for selector in verification_selectors:
-        try:
-            elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            if any(el.is_displayed() for el in elements):
-                return True
-        except Exception:
-            continue
-
-    try:
-        otp_boxes = driver.find_elements(
-            By.CSS_SELECTOR,
-            'input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]',
-        )
-        visible_count = sum(1 for el in otp_boxes if el.is_displayed())
-        if visible_count >= 4:
-            return True
-    except Exception:
-        pass
-
-    return False
+    return has_verification_text or (has_verification_url and has_verification_text)
 
 
-def _wait_for_post_email_step(driver, timeout: int = 10) -> str:
+def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) -> str:
     end_time = time.time() + timeout
     print(f"🔀 等待密码或验证码页面...（最长 {timeout}s）")
+    verification_hits = 0
     while time.time() < end_time:
-        try:
-            password_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[autocomplete="new-password"], input[type="password"]')
-            if any(el.is_displayed() for el in password_inputs):
-                print("✅ 检测到密码页，继续输入密码")
-                return "password"
-        except Exception:
-            pass
+        password_inputs = _find_visible_elements(driver, _PASSWORD_INPUT_SELECTORS)
+        if password_inputs:
+            print("✅ 检测到密码页，继续输入密码")
+            return "password"
 
-        if _is_email_verification_page(driver):
-            print("✅ 检测到验证码页，跳过密码设置")
-            return "verification"
+        if _is_email_verification_page(driver, require_visible_input=True):
+            verification_hits += 1
+            if verification_hits >= 3:
+                print("✅ 连续检测到邮箱验证码页")
+                return "verification"
+        else:
+            verification_hits = 0
 
-        time.sleep(0.5)
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="post_email_step_wait",
+            interval=0.5,
+        )
 
+    if verification_hits:
+        print("⚠️ 邮箱提交后只检测到验证码页，未出现密码输入框")
+        return "verification"
     print("❌ 邮箱提交后未识别到密码页或验证码页")
     return "unknown"
 
@@ -132,6 +192,91 @@ class SafeChrome(uc.Chrome):
             pass
         except Exception:
             pass
+
+
+def _is_window_target_lost(exc: Exception) -> bool:
+    """识别当前 tab/webview 已失效的可恢复异常。"""
+    if isinstance(exc, NoSuchWindowException):
+        return True
+    message = str(exc).lower()
+    return "target window already closed" in message or "web view not found" in message
+
+
+def _recover_window_target(driver) -> bool:
+    """
+    尝试恢复 Selenium 当前 window target。
+    常见场景是 tab 被关闭/崩溃后，session 还在但当前 target 丢了。
+    """
+    try:
+        handles = list(driver.window_handles)
+    except Exception as exc:
+        print(f"  ⚠️ 读取浏览器窗口列表失败，无法恢复 target: {exc}")
+        return False
+
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            return True
+        except Exception:
+            continue
+
+    try:
+        driver.switch_to.new_window("tab")
+        return True
+    except Exception as exc:
+        print(f"  ⚠️ 创建恢复标签页失败: {exc}")
+        return False
+
+
+def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
+    """打开 ChatGPT 页面，若当前 tab target 丢失则尝试恢复后重试。"""
+    last_exc: Exception | None = None
+    total_attempts = max(1, int(attempts))
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            driver.get(url)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= total_attempts or not _is_window_target_lost(exc):
+                raise
+            print(
+                f"  ⚠️ 浏览器当前标签页 target 已失效，正在尝试恢复（第 {attempt}/{total_attempts} 次）..."
+            )
+            if not _recover_window_target(driver):
+                raise
+            time.sleep(1)
+
+    if last_exc is not None:
+        raise last_exc
+
+
+def _execute_cdp_cmd_with_target_recovery(
+    driver, command: str, params: dict, attempts: int = 2
+):
+    """执行 CDP 命令，若当前 tab target 丢失则恢复后重试。"""
+    last_exc: Exception | None = None
+    total_attempts = max(1, int(attempts))
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return driver.execute_cdp_cmd(command, params)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= total_attempts or not _is_window_target_lost(exc):
+                raise
+            print(
+                f"  ⚠️ CDP 执行时浏览器 target 已失效，正在尝试恢复（第 {attempt}/{total_attempts} 次）..."
+            )
+            if not _recover_window_target(driver):
+                raise
+            time.sleep(1)
+
+    if last_exc is not None:
+        raise last_exc
+
+    return None
 
 
 # ──────────────────────────────────────────────────────────
@@ -425,6 +570,9 @@ def create_driver(headless=False, proxy=None):
         uc.Chrome: 浏览器驱动实例
     """
     print(f"🌐 正在初始化浏览器 (Headless: {headless})...")
+    if proxy and proxy.get("enabled"):
+        ensure_proxy_ready(proxy, purpose="浏览器代理预检", timeout=10)
+
     options = uc.ChromeOptions()
 
     # === 伪无头模式 (Fake Headless) ===
@@ -467,7 +615,8 @@ def create_driver(headless=False, proxy=None):
         print("🎭 应用深度指纹伪装...")
 
         # 1. 伪造 WebGL 供应商 (让它看起来像有真实显卡)
-        driver.execute_cdp_cmd(
+        _execute_cdp_cmd_with_target_recovery(
+            driver,
             "Page.addScriptToEvaluateOnNewDocument",
             {
                 "source": """
@@ -490,7 +639,8 @@ def create_driver(headless=False, proxy=None):
         )
 
         # 2. 伪造插件列表 (Headless 默认是空的)
-        driver.execute_cdp_cmd(
+        _execute_cdp_cmd_with_target_recovery(
+            driver,
             "Page.addScriptToEvaluateOnNewDocument",
             {
                 "source": """
@@ -505,7 +655,8 @@ def create_driver(headless=False, proxy=None):
         )
 
         # 3. 绕过常见的检测属性
-        driver.execute_cdp_cmd(
+        _execute_cdp_cmd_with_target_recovery(
+            driver,
             "Page.addScriptToEvaluateOnNewDocument",
             {
                 "source": """
@@ -532,8 +683,10 @@ def create_driver(headless=False, proxy=None):
 
 
 def log_browser_egress_ip(driver, timeout=12):
-    """打印浏览器当前出口 IP，用于确认代理是否生效。"""
+    """打印浏览器当前出口 IP、地区和延迟，用于确认代理是否生效。"""
     print("🌍 正在检测浏览器出口 IP...")
+
+    fetch_started = time.perf_counter()
     # 先尝试 fetch；某些环境会因为 about:blank/CORS 或代理握手导致 Failed to fetch
     try:
         driver.set_script_timeout(timeout)
@@ -548,8 +701,33 @@ def log_browser_egress_ip(driver, timeout=12):
         )
         value = str(result or "").strip()
         if value and not value.startswith("ERR:"):
-            print(f"  ✅ 浏览器出口 IP: {value}")
-            return
+            details = {
+                "ok": True,
+                "ip": value,
+                "latency_ms": int((time.perf_counter() - fetch_started) * 1000),
+                "ip_source": "browser.fetch(api.ipify.org)",
+            }
+            geo = lookup_ip_geolocation(value, timeout=min(timeout, 8))
+            if geo.get("ok"):
+                details.update(
+                    {
+                        "country": geo.get("country", ""),
+                        "country_code": geo.get("country_code", ""),
+                        "region": geo.get("region", ""),
+                        "city": geo.get("city", ""),
+                        "geo_source": geo.get("source", ""),
+                    }
+                )
+            else:
+                details["geo_reason"] = geo.get("reason", "geo_lookup_failed")
+
+            print(
+                f"  ✅ 浏览器出口 IP: {details['ip']} | "
+                f"{format_probe_location(details)} | {details['latency_ms']} ms"
+            )
+            if details.get("geo_reason"):
+                print(f"  ℹ️ 出口地区识别失败: {details['geo_reason']}")
+            return details
         print(f"  ℹ️ fetch 检测未成功，准备回退页面检测: {value or 'empty_response'}")
     except Exception as e:
         print(f"  ℹ️ fetch 检测异常，准备回退页面检测: {e}")
@@ -567,6 +745,7 @@ def log_browser_egress_ip(driver, timeout=12):
 
     for url in endpoints:
         try:
+            started = time.perf_counter()
             driver.get(url)
             body_text = driver.execute_script(
                 "return (document.body && document.body.innerText) ? document.body.innerText : '';"
@@ -577,12 +756,39 @@ def log_browser_egress_ip(driver, timeout=12):
                 else ""
             )
             if ip and ("." in ip or ":" in ip):
-                print(f"  ✅ 浏览器出口 IP: {ip} ({url})")
-                return
+                details = {
+                    "ok": True,
+                    "ip": ip,
+                    "latency_ms": int((time.perf_counter() - started) * 1000),
+                    "ip_source": url,
+                }
+                geo = lookup_ip_geolocation(ip, timeout=min(timeout, 8))
+                if geo.get("ok"):
+                    details.update(
+                        {
+                            "country": geo.get("country", ""),
+                            "country_code": geo.get("country_code", ""),
+                            "region": geo.get("region", ""),
+                            "city": geo.get("city", ""),
+                            "geo_source": geo.get("source", ""),
+                        }
+                    )
+                else:
+                    details["geo_reason"] = geo.get("reason", "geo_lookup_failed")
+
+                print(
+                    f"  ✅ 浏览器出口 IP: {details['ip']} | "
+                    f"{format_probe_location(details)} | {details['latency_ms']} ms"
+                )
+                if details.get("geo_reason"):
+                    print(f"  ℹ️ 出口地区识别失败: {details['geo_reason']}")
+                return details
         except Exception as e:
             print(f"  ⚠️ 回退检测失败 ({url}): {e}")
 
-    print("  ❌ 出口 IP 检测失败：代理可能不可用，或当前网络阻断了 IP 检测服务")
+    reason = "代理可能不可用，或当前网络阻断了 IP 检测服务"
+    print(f"  ❌ 出口 IP 检测失败：{reason}")
+    return {"ok": False, "reason": reason}
 
 
 def _sleep_with_heartbeat(
@@ -709,6 +915,221 @@ def type_slowly(element, text, delay=0.05):
         time.sleep(delay)
 
 
+def _fill_input_with_verification(
+    element, text: str, field_name: str, attempts: int = 3, mask: bool = False
+) -> bool:
+    expected = str(text or "")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            element.click()
+        except Exception:
+            pass
+        try:
+            element.clear()
+        except Exception:
+            pass
+
+        time.sleep(0.3)
+        type_slowly(element, expected)
+        time.sleep(0.3)
+
+        actual_value = str(element.get_attribute("value") or "")
+        if actual_value == expected:
+            if mask:
+                print(f"✅ 已输入{field_name}（长度 {len(expected)}）")
+            else:
+                print(f"✅ 已输入{field_name}: {expected}")
+            return True
+
+        print(
+            f"⚠️ {field_name} 输入不完整（第 {attempt}/{attempts} 次），"
+            f"实际长度 {len(actual_value)}/{len(expected)}"
+        )
+
+    return False
+
+
+def _wait_for_email_verification_page(driver, timeout: int = 30, monitor_callback=None) -> bool:
+    end_time = time.time() + timeout
+    verification_hits = 0
+    print(f"📬 等待进入邮箱验证码页...（最长 {timeout}s）")
+
+    while time.time() < end_time:
+        while check_and_handle_error(driver, monitor_callback=monitor_callback):
+            _sleep_with_heartbeat(
+                driver,
+                2,
+                monitor_callback=monitor_callback,
+                step_name="verification_page_error_recheck_wait",
+            )
+
+        if _is_email_verification_page(driver):
+            verification_hits += 1
+            if verification_hits >= 2:
+                print("✅ 已进入邮箱验证码页")
+                return True
+        else:
+            verification_hits = 0
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="verification_page_wait",
+            interval=0.5,
+        )
+
+    print("❌ 密码提交后未进入邮箱验证码页")
+    return False
+
+
+_PROFILE_AGE_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="age"]'),
+    (By.CSS_SELECTOR, 'input[name*="age" i]'),
+    (By.CSS_SELECTOR, 'input[id*="age" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="age" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="age" i]'),
+    (By.CSS_SELECTOR, 'input[data-testid*="age" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="年龄"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="年龄"]'),
+    (By.XPATH, '//label[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "age")]/following::input[1]'),
+    (By.XPATH, '//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "how old")]/following::input[1]'),
+]
+
+_PROFILE_YEAR_SELECTORS = [
+    (By.CSS_SELECTOR, '[data-type="year"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="bday-year"]'),
+    (By.CSS_SELECTOR, 'input[name="year"]'),
+    (By.CSS_SELECTOR, 'input[name*="year" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="year" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="yyyy" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="year" i]'),
+    (By.XPATH, '//label[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "year")]/following::input[1]'),
+]
+
+_PROFILE_MONTH_SELECTORS = [
+    (By.CSS_SELECTOR, '[data-type="month"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="bday-month"]'),
+    (By.CSS_SELECTOR, 'input[name="month"]'),
+    (By.CSS_SELECTOR, 'input[name*="month" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="month" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="mm" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="month" i]'),
+    (By.XPATH, '//label[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "month")]/following::input[1]'),
+]
+
+_PROFILE_DAY_SELECTORS = [
+    (By.CSS_SELECTOR, '[data-type="day"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="bday-day"]'),
+    (By.CSS_SELECTOR, 'input[name="day"]'),
+    (By.CSS_SELECTOR, 'input[name*="day" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="day" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="dd" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="day" i]'),
+    (By.XPATH, '//label[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "day")]/following::input[1]'),
+]
+
+
+def _first_visible_element(driver, selectors):
+    for by, selector in selectors:
+        try:
+            elements = driver.find_elements(by, selector)
+        except Exception:
+            continue
+
+        for element in elements:
+            try:
+                if element.is_displayed() and element.is_enabled():
+                    return element
+            except Exception:
+                continue
+
+    return None
+
+
+def _detect_profile_birth_fields_once(driver):
+    age_input = _first_visible_element(driver, _PROFILE_AGE_SELECTORS)
+    if age_input:
+        return {"mode": "age", "age_input": age_input}
+
+    year_input = _first_visible_element(driver, _PROFILE_YEAR_SELECTORS)
+    month_input = _first_visible_element(driver, _PROFILE_MONTH_SELECTORS)
+    day_input = _first_visible_element(driver, _PROFILE_DAY_SELECTORS)
+
+    if year_input and month_input and day_input:
+        return {
+            "mode": "birthday",
+            "year_input": year_input,
+            "month_input": month_input,
+            "day_input": day_input,
+        }
+
+    return None
+
+
+def _wait_for_profile_birth_fields(driver, timeout=30):
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        fields = _detect_profile_birth_fields_once(driver)
+        if fields:
+            return fields
+        time.sleep(0.5)
+
+    raise RuntimeError("未找到年龄输入框或生日输入框")
+
+
+def _calculate_age_from_birthday(year: str, month: str, day: str) -> str:
+    birthday = date(int(year), int(month), int(day))
+    today = date.today()
+    age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
+    return str(max(age, 0))
+
+
+def _fill_input_value(driver, element, value: str, delay=0.1):
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center'});", element
+    )
+    time.sleep(0.3)
+
+    try:
+        ActionChains(driver).move_to_element(element).click().perform()
+    except Exception:
+        driver.execute_script("arguments[0].click();", element)
+
+    time.sleep(0.2)
+
+    try:
+        element.clear()
+    except Exception:
+        pass
+
+    for shortcut in (getattr(Keys, "COMMAND", None), Keys.CONTROL):
+        if not shortcut:
+            continue
+        try:
+            element.send_keys(Keys.chord(shortcut, "a"))
+            time.sleep(0.05)
+            element.send_keys(Keys.BACKSPACE)
+        except Exception:
+            continue
+
+    try:
+        driver.execute_script(
+            """
+            arguments[0].value = '';
+            arguments[0].dispatchEvent(new Event('input', {bubbles: true}));
+            arguments[0].dispatchEvent(new Event('change', {bubbles: true}));
+            """,
+            element,
+        )
+    except Exception:
+        pass
+
+    type_slowly(element, value, delay=delay)
+
+
 def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
     """
     填写注册表单
@@ -723,6 +1144,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         tuple: (是否成功, 是否已输入密码)
     """
     wait = WebDriverWait(driver, MAX_WAIT_TIME)
+    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 60))
 
     try:
         # 1. 等待邮箱输入框出现
@@ -801,16 +1223,10 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         actions = ActionChains(driver)
         actions.move_to_element(email_input)
         actions.click()
-        actions.pause(0.3)
-        actions.send_keys(email)
         actions.perform()
-
-        time.sleep(1)
-        actual_value = email_input.get_attribute("value")
-        if actual_value == email:
-            print(f"✅ 已输入邮箱: {email}")
-        else:
-            print(f"⚠️ 输入可能不完整，实际值: {actual_value}")
+        if not _fill_input_with_verification(email_input, email, "邮箱"):
+            print("❌ 邮箱输入校验失败")
+            return False, False
 
         time.sleep(1)
 
@@ -823,11 +1239,22 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         actions.click()
         actions.perform()
         print("✅ 已点击继续")
-        time.sleep(2)
+        _sleep_with_heartbeat(
+            driver,
+            1.5,
+            monitor_callback=monitor_callback,
+            step_name="signup_email_submit_wait",
+        )
 
-        next_step = _wait_for_post_email_step(driver, timeout=10)
+        next_step = _wait_for_post_email_step(
+            driver,
+            timeout=step_wait_timeout,
+            monitor_callback=monitor_callback,
+        )
         if next_step == "verification":
-            return True, False
+            print("❌ 邮箱提交后直接进入验证码页，未出现密码输入框")
+            print("  为确保后续 OAuth 一致性，本次注册终止并重试")
+            return False, False
         if next_step != "password":
             return False, False
 
@@ -837,11 +1264,21 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
                 (By.CSS_SELECTOR, 'input[autocomplete="new-password"], input[type="password"]')
             )
         )
-        password_input.clear()
-        time.sleep(0.5)
-        type_slowly(password_input, password)
-        print("✅ 已输入密码")
-        time.sleep(2)
+        actions = ActionChains(driver)
+        actions.move_to_element(password_input)
+        actions.click()
+        actions.perform()
+        if not _fill_input_with_verification(
+            password_input, password, "密码", mask=True
+        ):
+            print("❌ 密码输入校验失败")
+            return False, False
+        _sleep_with_heartbeat(
+            driver,
+            1.5,
+            monitor_callback=monitor_callback,
+            step_name="signup_password_filled_wait",
+        )
 
         print("🔘 点击继续按钮...")
         if not click_button_with_retry(
@@ -860,6 +1297,13 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
                 step_name="error_recheck_wait",
             )
 
+        if not _wait_for_email_verification_page(
+            driver,
+            timeout=step_wait_timeout,
+            monitor_callback=monitor_callback,
+        ):
+            return False, False
+
         return True, True
 
     except Exception as e:
@@ -875,7 +1319,7 @@ def login(driver, email, password):
     wait = WebDriverWait(driver, 30)
 
     try:
-        driver.get("https://chat.openai.com/auth/login")
+        open_chatgpt_url(driver, CHATGPT_LOGIN_URL)
         time.sleep(5)
 
         # 0. 点击初始页面的 Log in / 登录 按钮
@@ -1182,6 +1626,9 @@ def fill_profile_info(driver):
     birthday_year = user_info["year"]
     birthday_month = user_info["month"]
     birthday_day = user_info["day"]
+    age = _calculate_age_from_birthday(
+        birthday_year, birthday_month, birthday_day
+    )
 
     try:
         # 1. 输入姓名
@@ -1197,47 +1644,31 @@ def fill_profile_info(driver):
         print(f"✅ 已输入姓名: {user_name}")
         time.sleep(1)
 
-        # 2. 输入生日
-        print("🎂 正在输入生日...")
+        # 2. 输入年龄或生日
+        print("🎂 正在识别年龄/生日输入方式...")
         time.sleep(1)
 
-        # 年份
-        year_input = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, '[data-type="year"]'))
-        )
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'});", year_input
-        )
-        time.sleep(0.5)
+        profile_fields = _wait_for_profile_birth_fields(driver, timeout=30)
 
-        actions = ActionChains(driver)
-        actions.click(year_input).perform()
-        time.sleep(0.3)
-        year_input.send_keys(Keys.CONTROL + "a")
-        time.sleep(0.1)
-        type_slowly(year_input, birthday_year, delay=0.1)
-        time.sleep(0.5)
+        if profile_fields["mode"] == "age":
+            print("🎯 检测到年龄输入框，改为直接输入年龄...")
+            _fill_input_value(driver, profile_fields["age_input"], age, delay=0.1)
+            print(f"✅ 已输入年龄: {age}")
+        else:
+            print("🎯 检测到生日输入框，按年月日填写...")
+            _fill_input_value(
+                driver, profile_fields["year_input"], birthday_year, delay=0.1
+            )
+            time.sleep(0.3)
+            _fill_input_value(
+                driver, profile_fields["month_input"], birthday_month, delay=0.1
+            )
+            time.sleep(0.3)
+            _fill_input_value(
+                driver, profile_fields["day_input"], birthday_day, delay=0.1
+            )
+            print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
 
-        # 月份
-        month_input = driver.find_element(By.CSS_SELECTOR, '[data-type="month"]')
-        actions = ActionChains(driver)
-        actions.click(month_input).perform()
-        time.sleep(0.3)
-        month_input.send_keys(Keys.CONTROL + "a")
-        time.sleep(0.1)
-        type_slowly(month_input, birthday_month, delay=0.1)
-        time.sleep(0.5)
-
-        # 日期
-        day_input = driver.find_element(By.CSS_SELECTOR, '[data-type="day"]')
-        actions = ActionChains(driver)
-        actions.click(day_input).perform()
-        time.sleep(0.3)
-        day_input.send_keys(Keys.CONTROL + "a")
-        time.sleep(0.1)
-        type_slowly(day_input, birthday_day, delay=0.1)
-
-        print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
         time.sleep(1)
 
         # 3. 点击最后的继续按钮

@@ -22,6 +22,16 @@ class ConfigOAuthTests(unittest.TestCase):
             cpa:
               upload_api_url: "https://cpa.example.com/upload"
               upload_api_token: "secret-token"
+
+            cliproxy:
+              enabled: true
+              api_url: "http://proxy.example.com:8317/"
+              api_key: "cliproxy-secret"
+              auth_dir: "~/custom-cli-proxy"
+
+            gaggle:
+              cookie_header: "session=abc; GAGGLE_REFERER_KEY=xyz"
+              csrf_token: "csrf-token-123"
             """
         )
 
@@ -47,6 +57,15 @@ class ConfigOAuthTests(unittest.TestCase):
             "https://cpa.example.com/upload",
         )
         self.assertEqual(loader.config.cpa.upload_api_token, "secret-token")
+        self.assertTrue(loader.config.cliproxy.enabled)
+        self.assertEqual(loader.config.cliproxy.api_url, "http://proxy.example.com:8317/")
+        self.assertEqual(loader.config.cliproxy.api_key, "cliproxy-secret")
+        self.assertEqual(loader.config.cliproxy.auth_dir, "~/custom-cli-proxy")
+        self.assertEqual(
+            loader.config.gaggle.cookie_header,
+            "session=abc; GAGGLE_REFERER_KEY=xyz",
+        )
+        self.assertEqual(loader.config.gaggle.csrf_token, "csrf-token-123")
 
 
 if __name__ == "__main__":

@@ -110,6 +110,15 @@ class CpaConfig:
 
 
 @dataclass
+class CliproxyConfig:
+    """CLIProxyAPI Token 池配置"""
+    enabled: bool = False
+    api_url: str = "http://localhost:8317"
+    api_key: str = ""
+    auth_dir: str = "~/.cli-proxy-api"
+
+
+@dataclass
 class Custom2925Config:
     """2925 自有邮箱配置"""
     enabled: bool = False
@@ -129,6 +138,25 @@ class Custom2925Config:
 
 
 @dataclass
+class GaggleConfig:
+    """Gaggle 邮箱配置"""
+    cookie_header: str = ""
+    csrf_token: str = ""
+
+
+@dataclass
+class OutlookEmailConfig:
+    """OutlookEmail 外部邮箱池配置"""
+    base_url: str = "http://localhost:5000"
+    api_key: str = ""
+    group_id: str = ""
+    account_email: str = ""
+    use_aliases: bool = True
+    allow_reuse: bool = False
+    registered_file: str = "data/state/outlookemail_registered.json"
+
+
+@dataclass
 class AppConfig:
     """应用程序完整配置"""
     registration: RegistrationConfig = field(default_factory=RegistrationConfig)
@@ -140,7 +168,10 @@ class AppConfig:
     files: FilesConfig = field(default_factory=FilesConfig)
     oauth: OAuthConfig = field(default_factory=OAuthConfig)
     cpa: CpaConfig = field(default_factory=CpaConfig)
+    cliproxy: CliproxyConfig = field(default_factory=CliproxyConfig)
     custom2925: Custom2925Config = field(default_factory=Custom2925Config)
+    gaggle: GaggleConfig = field(default_factory=GaggleConfig)
+    outlookemail: OutlookEmailConfig = field(default_factory=OutlookEmailConfig)
 
 
 # ==============================================================
@@ -296,6 +327,24 @@ class ConfigLoader:
             upload_api_token=os.environ.get('CPA_UPLOAD_API_TOKEN', cpa.get('upload_api_token', '')),
         )
 
+        # CLIProxyAPI Token 池配置
+        cliproxy = self.raw_config.get('cliproxy', {})
+        cliproxy_env_enabled = any(
+            key in os.environ
+            for key in ('CLIPROXY_API_URL', 'CLIPROXY_API_KEY', 'CLIPROXY_AUTH_DIR')
+        )
+        self.config.cliproxy = CliproxyConfig(
+            enabled=self._as_bool(
+                os.environ.get(
+                    'CLIPROXY_ENABLED',
+                    cliproxy.get('enabled', False) or cliproxy_env_enabled,
+                )
+            ),
+            api_url=os.environ.get('CLIPROXY_API_URL', cliproxy.get('api_url', 'http://localhost:8317')),
+            api_key=os.environ.get('CLIPROXY_API_KEY', cliproxy.get('api_key', '')),
+            auth_dir=os.environ.get('CLIPROXY_AUTH_DIR', cliproxy.get('auth_dir', '~/.cli-proxy-api')),
+        )
+
         # 2925 自有邮箱配置
         custom2925 = self.raw_config.get('custom2925', {})
         self.config.custom2925 = Custom2925Config(
@@ -313,6 +362,25 @@ class ConfigLoader:
             mailbox=os.environ.get('CUSTOM2925_MAILBOX', custom2925.get('mailbox', 'INBOX')),
             lookback_seconds=int(os.environ.get('CUSTOM2925_LOOKBACK_SECONDS', custom2925.get('lookback_seconds', 300))),
             counter_file=os.environ.get('CUSTOM2925_COUNTER_FILE', custom2925.get('counter_file', 'data/state/custom2925_counter.json')),
+        )
+
+        # Gaggle 邮箱配置
+        gaggle = self.raw_config.get('gaggle', {})
+        self.config.gaggle = GaggleConfig(
+            cookie_header=os.environ.get('GAGGLE_COOKIE_HEADER', gaggle.get('cookie_header', '')),
+            csrf_token=os.environ.get('GAGGLE_CSRF_TOKEN', gaggle.get('csrf_token', '')),
+        )
+
+        # OutlookEmail 外部邮箱池配置
+        outlookemail = self.raw_config.get('outlookemail', {})
+        self.config.outlookemail = OutlookEmailConfig(
+            base_url=os.environ.get('OUTLOOKEMAIL_BASE_URL', outlookemail.get('base_url', 'http://localhost:5000')),
+            api_key=os.environ.get('OUTLOOKEMAIL_API_KEY', outlookemail.get('api_key', '')),
+            group_id=str(os.environ.get('OUTLOOKEMAIL_GROUP_ID', outlookemail.get('group_id', '')) or ''),
+            account_email=os.environ.get('OUTLOOKEMAIL_ACCOUNT_EMAIL', outlookemail.get('account_email', '')),
+            use_aliases=self._as_bool(os.environ.get('OUTLOOKEMAIL_USE_ALIASES', outlookemail.get('use_aliases', True))),
+            allow_reuse=self._as_bool(os.environ.get('OUTLOOKEMAIL_ALLOW_REUSE', outlookemail.get('allow_reuse', False))),
+            registered_file=os.environ.get('OUTLOOKEMAIL_REGISTERED_FILE', outlookemail.get('registered_file', 'data/state/outlookemail_registered.json')),
         )
 
     @staticmethod
@@ -409,6 +477,12 @@ OAUTH_TOKEN_JSON_DIR = cfg.oauth.token_json_dir
 # CPA 配置
 CPA_UPLOAD_API_URL = cfg.cpa.upload_api_url
 CPA_UPLOAD_API_TOKEN = cfg.cpa.upload_api_token
+
+# CLIProxyAPI 配置
+CLIPROXY_ENABLED = cfg.cliproxy.enabled
+CLIPROXY_API_URL = cfg.cliproxy.api_url
+CLIPROXY_API_KEY = cfg.cliproxy.api_key
+CLIPROXY_AUTH_DIR = cfg.cliproxy.auth_dir
 
 
 # ==============================================================

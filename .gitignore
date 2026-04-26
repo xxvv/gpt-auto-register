@@ -16,6 +16,7 @@ env/
 *.swo
 
 # User data (sensitive)
+data/
 data/tokens/*.json
 data/accounts/*.txt
 data/state/*.json
@@ -33,3 +34,7 @@ Thumbs.db
 
 # uv
 .uv/
+
+# Node
+node_modules/
+.wrangler/

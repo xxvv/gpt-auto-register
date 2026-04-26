@@ -118,6 +118,64 @@ class OAuthBranchingTests(unittest.TestCase):
         self.assertIn("https://auth.openai.com/oauth/token", posted_urls)
         self.assertNotIn("https://auth.openai.com/api/accounts/password/verify", posted_urls)
 
+    @patch("app.oauth_service._generate_pkce", return_value=("verifier", "challenge"))
+    @patch("app.oauth_service._request_kwargs", return_value={})
+    @patch("app.oauth_service.build_sentinel_token", side_effect=["authorize-token"])
+    def test_perform_login_skips_password_when_email_submit_opens_otp_page(
+        self,
+        mock_build_sentinel,
+        mock_request_kwargs,
+        mock_pkce,
+    ):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    payload={
+                        "continue_url": "/u/email-otp/challenge",
+                        "page": {"type": "email_otp"},
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    payload={
+                        "continue_url": "https://auth.openai.com/authorize/resume",
+                        "page": {"type": "consent"},
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    payload={"access_token": "access-token", "refresh_token": "refresh-token"},
+                ),
+            ]
+        )
+
+        with patch("app.oauth_service._new_session", return_value=session):
+            client = CodexOAuthClient(proxy=None)
+
+        follow_referers = []
+        def fake_follow_for_code(start_url, referer=None, max_hops=16):
+            follow_referers.append(referer)
+            return "test-auth-code", start_url
+
+        fake_email_providers = types.SimpleNamespace(list_verification_codes=lambda provider, token: ["654321"])
+        with patch.object(client, "_bootstrap_oauth_session", return_value=("https://auth.openai.com/log-in", True)):
+            with patch.object(client, "_follow_for_code", side_effect=fake_follow_for_code):
+                with patch.dict("sys.modules", {"app.email_providers": fake_email_providers}):
+                    result = client.perform_login(
+                        email="user@example.com",
+                        password="saved-chatgpt-password",
+                        email_provider="mailtm",
+                        mail_token="mail-session",
+                    )
+
+        self.assertEqual(result["access_token"], "access-token")
+        posted_urls = [call["url"] for call in session.post_calls]
+        self.assertIn("https://auth.openai.com/api/accounts/email-otp/validate", posted_urls)
+        self.assertIn("https://auth.openai.com/oauth/token", posted_urls)
+        self.assertNotIn("https://auth.openai.com/api/accounts/password/verify", posted_urls)
+        self.assertEqual(follow_referers, ["https://auth.openai.com/email-verification"])
+
 
 if __name__ == "__main__":
     unittest.main()

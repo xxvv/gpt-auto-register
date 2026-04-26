@@ -1,8 +1,10 @@
+import errno
 import threading
 import time
 import builtins
 import os
 import random
+from contextlib import contextmanager
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -12,11 +14,20 @@ from flask import Flask, jsonify, request, send_from_directory
 from . import main
 from . import browser
 from . import custom2925_service
+from . import gaggle_service
+from . import gptmail_service
 from . import mailtm_service
-from . import temporam_service
+from . import nnai_service
 from . import email_providers
+from . import oauth_service
+from . import outlookemail_service
+from . import tempmail_lol_service
+from . import temporam_service
 from . import token_batch_service
+from . import us_proxy_pool
+from . import utils
 from .config import PROJECT_ROOT, cfg
+from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
 
@@ -119,27 +130,128 @@ class AppState:
             }
 
 state = AppState()
+_log_context = threading.local()
+
+
+def _current_log_proxy():
+    proxy = getattr(_log_context, "proxy", None)
+    return dict(proxy) if isinstance(proxy, dict) else proxy
+
+
+@contextmanager
+def _log_proxy_context(proxy):
+    previous_proxy = getattr(_log_context, "proxy", None)
+    _log_context.proxy = dict(proxy) if proxy else None
+    try:
+        yield
+    finally:
+        if previous_proxy is None:
+            try:
+                delattr(_log_context, "proxy")
+            except AttributeError:
+                pass
+        else:
+            _log_context.proxy = previous_proxy
+
+
+def _inject_proxy_label(message, proxy):
+    if not message or not proxy or not proxy.get("enabled"):
+        return message
+
+    proxy_label = describe_proxy(proxy)
+    if not proxy_label or proxy_label == "未启用代理" or proxy_label in message:
+        return message
+
+    prefix = f"[代理 {proxy_label}] "
+    for idx, char in enumerate(message):
+        if char not in "\r\n":
+            return f"{message[:idx]}{prefix}{message[idx:]}"
+    return f"{prefix}{message}"
 
 # Hack: 劫持 print 函数以捕获日志
 original_print = builtins.print
 def hooked_print(*args, **kwargs):
     sep = kwargs.get('sep', ' ')
     msg = sep.join(map(str, args))
+    msg = _inject_proxy_label(msg, _current_log_proxy())
     state.add_log(msg)
-    original_print(*args, **kwargs)
+    original_print(msg, **kwargs)
 
 # 应用劫持到所有服务模块
-main.print = hooked_print
-browser.print = hooked_print
-custom2925_service.print = hooked_print
-mailtm_service.print = hooked_print
-temporam_service.print = hooked_print
-email_providers.print = hooked_print
-token_batch_service.print = hooked_print
+for module in (
+    main,
+    browser,
+    custom2925_service,
+    email_providers,
+    gaggle_service,
+    gptmail_service,
+    mailtm_service,
+    nnai_service,
+    oauth_service,
+    outlookemail_service,
+    tempmail_lol_service,
+    temporam_service,
+    token_batch_service,
+    us_proxy_pool,
+    utils,
+):
+    module.print = hooked_print
 
 # ==========================================
 # 🧵 后台工作线程
 # ==========================================
+def _build_registration_proxy_rotation(proxy):
+    if not proxy or not proxy.get("enabled"):
+        return None
+
+    payload = us_proxy_pool.load_us_proxy_pool()
+    rotation = us_proxy_pool.ProxyRotation(
+        payload.get("proxies", []),
+        start_proxy=proxy,
+    )
+    if rotation.enabled:
+        main.print(
+            f"🔁 已启用代理自动轮换，共 {rotation.available_count} 条可用代理，"
+            f"起点: {describe_proxy(rotation.starting_proxy)}"
+        )
+        return rotation
+
+    if rotation.available_count > 0:
+        main.print("ℹ️ 当前代理不在最近一次本地代理池缓存中，批量注册将保持单代理模式")
+    else:
+        main.print("ℹ️ 当前没有可用的本地代理缓存，批量注册将保持单代理模式")
+    return None
+
+
+def _next_distinct_registration_proxy(proxy_rotation, current_proxy):
+    """从轮换池取一个不同于当前代理的下一个代理。"""
+    if not proxy_rotation or not proxy_rotation.enabled:
+        return None
+
+    attempts = max(1, proxy_rotation.available_count)
+    current_label = describe_proxy(current_proxy)
+    for _ in range(attempts):
+        candidate = proxy_rotation.next_proxy()
+        if not candidate:
+            return None
+        if describe_proxy(candidate) != current_label:
+            return candidate
+    return None
+
+
+def _pick_registration_start_proxy(proxy):
+    if proxy and proxy.get("enabled"):
+        return dict(proxy), False
+
+    payload = us_proxy_pool.load_us_proxy_pool()
+    for item in payload.get("proxies", []):
+        runtime_proxy = us_proxy_pool.pool_item_to_runtime_proxy(item)
+        if runtime_proxy:
+            return runtime_proxy, True
+
+    return dict(proxy) if proxy else None, False
+
+
 def worker_thread(count, selected_providers, parallel, headless, proxy):
     state.is_running = True
     state.stop_requested = False
@@ -149,136 +261,211 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
     state.reset_progress(task_type="registration", total=count)
     state.update_frame(None)
 
-    main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
-    main.print(f"📬 邮箱服务: {', '.join(selected_providers)}")
-    main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
-    if proxy and proxy.get("enabled"):
-        main.print(f"🌐 代理: {proxy.get('type','http')}://{proxy.get('host','')}:{proxy.get('port','')}")
+    task_proxy, auto_selected_proxy = _pick_registration_start_proxy(proxy)
+    if auto_selected_proxy and task_proxy and task_proxy.get("enabled"):
+        main.print(
+            f"🧭 未手动选择代理，任务启动时已自动切换到代理池首条: {describe_proxy(task_proxy)}"
+        )
 
-    counter_lock = threading.Lock()
-    started = [0]
+    with state.lock:
+        state.proxy = dict(task_proxy) if task_proxy else {
+            "enabled": False,
+            "type": "http",
+            "host": "",
+            "port": 8080,
+            "use_auth": False,
+            "username": "",
+            "password": "",
+        }
 
-    def monitor(driver, _step):
-        if state.stop_requested:
-            main.print("🛑 检测到停止请求，正在中断任务...")
-            raise InterruptedError("用户请求停止")
-        try:
-            state.update_frame(driver.get_screenshot_as_png())
-        except Exception:
-            pass
+    with _log_proxy_context(task_proxy):
+        main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
+        main.print(f"📬 邮箱服务: {', '.join(selected_providers)}")
+        main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
+        proxy_rotation = None
+        if task_proxy and task_proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
+            try:
+                ensure_proxy_ready(task_proxy, purpose="批量注册任务启动前代理预检", timeout=10)
+            except Exception as exc:
+                state.is_running = False
+                state.current_action = "代理预检失败"
+                main.print(f"🛑 任务启动终止: {exc}")
+                return
+            proxy_rotation = _build_registration_proxy_rotation(task_proxy)
 
-    def do_one(_):
-        if state.stop_requested:
-            return
-        with counter_lock:
-            started[0] += 1
-            idx = started[0]
-        state.current_action = f"正在注册 ({idx}/{count})..."
-        provider = random.choice(selected_providers)
-        try:
-            _, _, success = main.register_one_account(
-                monitor_callback=monitor,
-                email_provider=provider,
-                headless=headless,
-                proxy=proxy,
-            )
+        counter_lock = threading.Lock()
+        started = [0]
+
+        def monitor(driver, _step):
+            if state.stop_requested:
+                main.print("🛑 检测到停止请求，正在中断任务...")
+                raise InterruptedError("用户请求停止")
+            try:
+                state.update_frame(driver.get_screenshot_as_png())
+            except Exception:
+                pass
+
+        def do_one(_):
+            if state.stop_requested:
+                return
             with counter_lock:
-                if success:
-                    state.success_count += 1
-                else:
-                    state.fail_count += 1
-                state.update_progress(
-                    completed=state.success_count + state.fail_count,
-                    processed=state.success_count,
-                )
-        except InterruptedError:
-            main.print("🛑 任务已中断")
-        except Exception as e:
-            with counter_lock:
-                state.fail_count += 1
-                state.update_progress(
-                    completed=state.success_count + state.fail_count,
-                    processed=state.success_count,
-                )
-            main.print(f"❌ 异常: {str(e)}")
+                started[0] += 1
+                idx = started[0]
+            account_proxy = dict(task_proxy) if task_proxy else None
+            if proxy_rotation:
+                rotated_proxy = proxy_rotation.next_proxy()
+                if rotated_proxy:
+                    account_proxy = rotated_proxy
+                    with state.lock:
+                        state.proxy = dict(rotated_proxy)
 
-    try:
-        with ThreadPoolExecutor(max_workers=parallel) as executor:
-            futures = [executor.submit(do_one, i) for i in range(count)]
-            for future in as_completed(futures):
-                if state.stop_requested:
-                    break
+            with _log_proxy_context(account_proxy):
+                state.current_action = f"正在注册 ({idx}/{count})..."
+                if account_proxy and account_proxy.get("enabled"):
+                    proxy_label = describe_proxy(account_proxy)
+                    state.current_action = f"{state.current_action} [{proxy_label}]"
+                    main.print(f"🧭 第 {idx}/{count} 个账号使用代理: {proxy_label}")
+                provider = random.choice(selected_providers)
                 try:
-                    future.result()
-                except Exception:
-                    pass
-    except Exception as e:
-        main.print(f"💥 严重错误: {e}")
-    finally:
-        state.is_running = False
-        state.current_action = "任务已完成"
-        main.print("🏁 任务结束")
+                    attempt_proxy = account_proxy
+                    while True:
+                        try:
+                            with _log_proxy_context(attempt_proxy):
+                                _, _, success = main.register_one_account(
+                                    monitor_callback=monitor,
+                                    email_provider=provider,
+                                    headless=headless,
+                                    proxy=attempt_proxy,
+                                    raise_proxy_errors=True,
+                                )
+                            break
+                        except main.ProxyEgressCheckError as proxy_exc:
+                            next_proxy = _next_distinct_registration_proxy(
+                                proxy_rotation,
+                                attempt_proxy,
+                            )
+                            if not next_proxy:
+                                raise proxy_exc
+
+                            old_label = describe_proxy(attempt_proxy)
+                            new_label = describe_proxy(next_proxy)
+                            main.print(
+                                f"🔁 代理出口检测失败，自动切换代理: {old_label} -> {new_label}"
+                            )
+                            attempt_proxy = next_proxy
+                            with state.lock:
+                                state.proxy = dict(next_proxy)
+                            state.current_action = (
+                                f"正在注册 ({idx}/{count})... [{new_label}]"
+                            )
+                    with counter_lock:
+                        if success:
+                            state.success_count += 1
+                        else:
+                            state.fail_count += 1
+                        state.update_progress(
+                            completed=state.success_count + state.fail_count,
+                            processed=state.success_count,
+                        )
+                except InterruptedError:
+                    main.print("🛑 任务已中断")
+                except Exception as e:
+                    with counter_lock:
+                        state.fail_count += 1
+                        state.update_progress(
+                            completed=state.success_count + state.fail_count,
+                            processed=state.success_count,
+                        )
+                    main.print(f"❌ 异常: {str(e)}")
+
+        try:
+            with ThreadPoolExecutor(max_workers=parallel) as executor:
+                futures = [executor.submit(do_one, i) for i in range(count)]
+                for future in as_completed(futures):
+                    if state.stop_requested:
+                        break
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+        except Exception as e:
+            main.print(f"💥 严重错误: {e}")
+        finally:
+            state.is_running = False
+            state.current_action = "任务已完成"
+            main.print("🏁 任务结束")
 
 
 def token_worker_thread(accounts_file, output_dir, proxy):
-    state.is_running = True
-    state.stop_requested = False
-    state.success_count = 0
-    state.fail_count = 0
-    state.reset_progress(task_type="token_import", total=0)
-    state.current_action = "正在导入账号并获取 Token..."
-    state.update_frame(None)
+    with _log_proxy_context(proxy):
+        state.is_running = True
+        state.stop_requested = False
+        state.success_count = 0
+        state.fail_count = 0
+        state.reset_progress(task_type="token_import", total=0)
+        state.current_action = "正在导入账号并获取 Token..."
+        state.update_frame(None)
 
-    main.print("📥 开始批量获取 Token")
-    main.print(f"📄 TXT 路径: {accounts_file}")
-    main.print(f"📁 输出目录: {output_dir}")
+        main.print("📥 开始批量获取 Token")
+        main.print(f"📄 TXT 路径: {accounts_file}")
+        main.print(f"📁 输出目录: {output_dir}")
+        if proxy and proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(proxy)}")
+            try:
+                ensure_proxy_ready(proxy, purpose="Token 任务启动前代理预检", timeout=10)
+            except Exception as exc:
+                state.is_running = False
+                state.current_action = "代理预检失败"
+                main.print(f"🛑 Token 任务启动终止: {exc}")
+                return
 
-    def on_progress(progress):
-        state.success_count = progress["success"]
-        state.fail_count = progress["fail"]
-        state.update_progress(
-            task_type=progress["task_type"],
-            total=progress["total"],
-            completed=progress["completed"],
-            processed=progress["processed"],
-            skipped=progress["skipped"],
-        )
-        if progress["total"] > 0:
-            state.current_action = (
-                f"Token 获取中: {progress['completed']}/{progress['total']} "
-                f"(成功 {progress['success']} / 失败 {progress['fail']} / 跳过 {progress['skipped']})"
+        def on_progress(progress):
+            state.success_count = progress["success"]
+            state.fail_count = progress["fail"]
+            state.update_progress(
+                task_type=progress["task_type"],
+                total=progress["total"],
+                completed=progress["completed"],
+                processed=progress["processed"],
+                skipped=progress["skipped"],
             )
-        if progress.get("current_email"):
-            state.current_action += f" - {progress['current_email']}"
+            if progress["total"] > 0:
+                state.current_action = (
+                    f"Token 获取中: {progress['completed']}/{progress['total']} "
+                    f"(成功 {progress['success']} / 失败 {progress['fail']} / 跳过 {progress['skipped']})"
+                )
+            if progress.get("current_email"):
+                state.current_action += f" - {progress['current_email']}"
 
-    try:
-        result = token_batch_service.process_accounts_from_file(
-            accounts_file=accounts_file,
-            output_dir=output_dir,
-            proxy=proxy,
-            stop_requested=lambda: state.stop_requested,
-            progress_callback=on_progress,
-        )
-        state.success_count = result["success"]
-        state.fail_count = result["fail"]
-        state.update_progress(
-            task_type="token_import",
-            total=result["total"],
-            completed=result["completed"],
-            processed=result["processed"],
-            skipped=result["skipped"],
-        )
-        state.current_action = (
-            f"Token 获取完成: {result['completed']}/{result['total']} "
-            f"(成功 {result['success']} / 失败 {result['fail']} / 跳过 {result['skipped']})"
-        )
-        main.print(f"🏁 Token 获取完成，输出目录: {result['output_dir']}")
-    except Exception as e:
-        state.fail_count += 1
-        state.current_action = "Token 获取失败"
-        main.print(f"❌ Token 获取任务失败: {e}")
-    finally:
-        state.is_running = False
+        try:
+            result = token_batch_service.process_accounts_from_file(
+                accounts_file=accounts_file,
+                output_dir=output_dir,
+                proxy=proxy,
+                stop_requested=lambda: state.stop_requested,
+                progress_callback=on_progress,
+            )
+            state.success_count = result["success"]
+            state.fail_count = result["fail"]
+            state.update_progress(
+                task_type="token_import",
+                total=result["total"],
+                completed=result["completed"],
+                processed=result["processed"],
+                skipped=result["skipped"],
+            )
+            state.current_action = (
+                f"Token 获取完成: {result['completed']}/{result['total']} "
+                f"(成功 {result['success']} / 失败 {result['fail']} / 跳过 {result['skipped']})"
+            )
+            main.print(f"🏁 Token 获取完成，输出目录: {result['output_dir']}")
+        except Exception as e:
+            state.fail_count += 1
+            state.current_action = "Token 获取失败"
+            main.print(f"❌ Token 获取任务失败: {e}")
+        finally:
+            state.is_running = False
 
 # ==========================================
 # 🌊 MJPEG 流生成器
@@ -325,6 +512,7 @@ def get_status():
         "success": state.success_count,
         "fail": state.fail_count,
         "progress": state.get_progress(),
+        "current_proxy": dict(state.proxy),
         "total_inventory": total_inventory,
         "logs": state.get_logs(int(request.args.get('log_index', 0)))
     })
@@ -406,6 +594,68 @@ def set_settings():
     return jsonify({"status": "ok", "parallel": state.parallel_count,
                     "headless": state.headless, "proxy": state.proxy})
 
+
+@app.route('/api/us-proxies', methods=['GET'])
+def get_us_proxies():
+    payload = us_proxy_pool.load_us_proxy_pool()
+    payload["current_proxy"] = dict(state.proxy)
+    return jsonify(payload)
+
+
+@app.route('/api/us-proxies/refresh', methods=['POST'])
+def refresh_us_proxies():
+    if state.is_running:
+        return jsonify({"error": "任务运行中，暂不支持刷新代理池"}), 400
+
+    try:
+        us_proxy_pool.refresh_us_proxy_pool()
+        payload = us_proxy_pool.load_us_proxy_pool()
+        payload["current_proxy"] = dict(state.proxy)
+        main.print(
+            f"🧭 本地代理池已刷新: 原始 {payload['raw_row_count']} 条，可用 {payload['working_count']} 条"
+        )
+        return jsonify(payload)
+    except Exception as exc:
+        main.print(f"❌ 刷新本地代理池失败: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route('/api/us-proxies/apply', methods=['POST'])
+def apply_us_proxy():
+    data = request.json or {}
+    host = str(data.get("host", "")).strip()
+    proxy_type = str(data.get("type", "http") or "http").strip().lower()
+    try:
+        port = int(data.get("port", 0))
+    except (TypeError, ValueError):
+        port = 0
+
+    if not host or port <= 0:
+        return jsonify({"error": "代理 host/port 无效"}), 400
+
+    payload = us_proxy_pool.load_us_proxy_pool()
+    matched = None
+    for item in payload.get("proxies", []):
+        item_type = str(item.get("type", "http") or "http").lower()
+        if (
+            item.get("host") == host
+            and int(item.get("port", 0)) == port
+            and item_type == proxy_type
+        ):
+            matched = item
+            break
+
+    if not matched:
+        return jsonify({"error": "该代理不在最近一次可用列表中"}), 400
+
+    runtime_proxy = us_proxy_pool.pool_item_to_runtime_proxy(matched)
+    if not runtime_proxy:
+        return jsonify({"error": "代理数据无效"}), 400
+
+    state.proxy = runtime_proxy
+    main.print(f"✅ 已应用当前代理: {describe_proxy(state.proxy)}")
+    return jsonify({"status": "ok", "proxy": state.proxy, "applied": matched})
+
 @app.route('/api/stop', methods=['POST'])
 def stop_task():
     if not state.is_running:
@@ -471,8 +721,24 @@ def get_accounts():
 
 def serve_app():
     from waitress import serve
-    print("🌐 Web Server started at http://localhost:8888")
-    serve(app, host='0.0.0.0', port=8888, threads=6)
+    host = os.environ.get("WEB_HOST", "0.0.0.0")
+    port_text = os.environ.get("WEB_PORT", os.environ.get("PORT", "8888"))
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise SystemExit(f"❌ WEB_PORT/PORT 必须是整数，当前值: {port_text!r}") from exc
+
+    display_host = "localhost" if host in ("0.0.0.0", "::", "") else host
+    print(f"🌐 Web Server started at http://{display_host}:{port}")
+    try:
+        serve(app, host=host, port=port, threads=6)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            raise SystemExit(
+                f"❌ 端口 {port} 已被占用。当前已有服务在运行，"
+                f"可先停止旧进程，或改用: WEB_PORT={port + 1} uv run python server.py"
+            ) from exc
+        raise
 
 
 def _resolve_repo_path(path_value: str) -> Path:

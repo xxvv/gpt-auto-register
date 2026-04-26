@@ -11,17 +11,27 @@ from .utils import generate_random_password, save_to_txt, update_account_status
 from . import email_providers
 from .oauth_service import perform_codex_oauth_login, save_codex_tokens
 from .browser import (
+    CHATGPT_HOME_URL,
     create_driver,
     log_browser_egress_ip,
     fill_signup_form,
     enter_verification_code,
     fill_profile_info,
+    open_chatgpt_url,
     verify_logged_in,
 )
 
 
+class ProxyEgressCheckError(RuntimeError):
+    """浏览器代理出口检测失败，可由上层触发代理切换。"""
+
+
 def register_one_account(
-    monitor_callback=None, email_provider="mailtm", headless=False, proxy=None
+    monitor_callback=None,
+    email_provider="mailtm",
+    headless=False,
+    proxy=None,
+    raise_proxy_errors=False,
 ):
     """
     注册单个账号
@@ -51,6 +61,23 @@ def register_one_account(
         if monitor_callback and driver:
             monitor_callback(driver, step_name)
 
+    def _mark_provider_registered(status):
+        mark_func = getattr(provider_info["module"], "mark_registered_email", None)
+        if callable(mark_func) and email:
+            try:
+                mark_func(email, password or "", status)
+            except Exception as e:
+                print(f"⚠️ 标记邮箱已注册失败: {e}")
+
+    def _release_provider_reservation():
+        module = provider_info.get("module") if isinstance(provider_info, dict) else None
+        release_func = getattr(module, "release_reserved_email", None)
+        if callable(release_func) and email and not success:
+            try:
+                release_func(email)
+            except Exception as e:
+                print(f"⚠️ 释放邮箱占用失败: {e}")
+
     try:
         # 1. 创建临时邮箱
         print(f"📧 正在使用 {provider_name} 创建临时邮箱...")
@@ -79,14 +106,18 @@ def register_one_account(
 
         # 若启用代理，先打印浏览器出口 IP 便于确认是否生效
         if proxy and proxy.get("enabled"):
-            log_browser_egress_ip(driver)
+            browser_proxy_diag = log_browser_egress_ip(driver)
+            if not browser_proxy_diag.get("ok"):
+                raise ProxyEgressCheckError(
+                    f"浏览器代理出口检测失败: {browser_proxy_diag.get('reason', 'unknown_error')}"
+                )
             _report("proxy_ip_check")
 
         # 4. 打开注册页面
-        url = "https://chat.openai.com/chat"
+        url = CHATGPT_HOME_URL
         print(f"🌐 正在打开 {url}...")
         try:
-            driver.get(url)
+            open_chatgpt_url(driver, url)
         except Exception as e:
             current_url = ""
             handle_count = 0
@@ -112,8 +143,8 @@ def register_one_account(
             print("❌ 填写注册表单失败")
             return email, password, False
         if not password_entered:
-            print("ℹ️ 本次流程直接进入邮箱验证码页，未设置密码")
-            password = None
+            print("❌ 注册流程未完成密码设置，已阻止继续获取验证码和 OAuth")
+            return email, password, False
         _report("fill_form")
 
         # 6. 等待验证邮件
@@ -176,6 +207,7 @@ def register_one_account(
                         mailtm_password=str(temp_credential or ""),
                         provider=email_provider,
                     )
+                    _mark_provider_registered("已注册/OAuth失败")
                     return email, password, False
 
         account_status = "已注册"
@@ -192,6 +224,7 @@ def register_one_account(
             mailtm_password=str(temp_credential or ""),
             provider=email_provider,
         )
+        _mark_provider_registered(account_status)
 
         print("\n" + "=" * 50)
         print("🎉 注册成功！")
@@ -212,6 +245,15 @@ def register_one_account(
             update_account_status(email, "用户中断", provider=email_provider)
         return email, password, False
 
+    except ProxyEgressCheckError as e:
+        print(f"❌ 发生错误: {e}")
+        if email and password:
+            update_account_status(
+                email, f"错误: {str(e)[:50]}", provider=email_provider
+            )
+        if raise_proxy_errors:
+            raise
+
     except Exception as e:
         print(f"❌ 发生错误: {e}")
         if email and password:
@@ -226,6 +268,7 @@ def register_one_account(
                 driver.quit()
             except Exception as e:
                 print(f"⚠️ 关闭浏览器时忽略异常: {e}")
+        _release_provider_reservation()
 
     return email, password, success
 

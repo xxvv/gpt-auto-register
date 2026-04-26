@@ -31,7 +31,7 @@ except ImportError:
     HAS_CURL_CFFI = False
 
 from .config import EMAIL_WAIT_TIMEOUT, PROJECT_ROOT, cfg
-from .utils import build_requests_proxies
+from .utils import build_requests_proxies, ensure_proxy_ready
 
 _print_lock = threading.Lock()
 _TOKEN_EXPORT_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -136,10 +136,30 @@ def _decode_jwt_payload(token: str):
 
 
 def _needs_email_otp(page_type: str, continue_url: str) -> bool:
+    normalized_page_type = str(page_type or "").strip().lower().replace("-", "_")
+    normalized_continue_url = str(continue_url or "").strip().lower().replace("_", "-")
+    email_otp_page_types = {
+        "email_otp",
+        "email_otp_verification",
+        "email_verification",
+        "email_verify",
+        "email_code",
+        "otp_email",
+        "mfa_email",
+        "mfa_email_challenge",
+    }
+    email_otp_url_markers = (
+        "email-verification",
+        "email-verify",
+        "verify-email",
+        "email-otp",
+        "otp-email",
+        "email-code",
+        "mfa-email",
+    )
     return (
-        page_type == "email_otp_verification"
-        or "email-verification" in (continue_url or "")
-        or "email-otp" in (continue_url or "")
+        normalized_page_type in email_otp_page_types
+        or any(marker in normalized_continue_url for marker in email_otp_url_markers)
     )
 
 
@@ -675,6 +695,7 @@ class CodexOAuthClient:
 
         has_password = _has_usable_password(password)
         need_email_otp = _needs_email_otp(page_type, continue_url)
+        used_email_otp = False
 
         if not need_email_otp:
             if not has_password:
@@ -715,6 +736,7 @@ class CodexOAuthClient:
             self._print("[OAuth] 检测到无密码邮箱 OTP 分支，跳过密码校验")
 
         if need_email_otp:
+            used_email_otp = True
             if not mail_token:
                 raise RuntimeError("OAuth 阶段需要邮箱 OTP，但缺少邮箱令牌")
             from . import email_providers
@@ -763,7 +785,7 @@ class CodexOAuthClient:
             consent_url = f"{issuer}{consent_url}"
         if consent_url:
             code = _extract_code_from_url(consent_url)
-        follow_referer = f"{issuer}/log-in/password" if has_password else f"{issuer}/email-verification"
+        follow_referer = f"{issuer}/email-verification" if used_email_otp else f"{issuer}/log-in/password"
         if not code and consent_url:
             code, _ = self._follow_for_code(consent_url, referer=follow_referer)
         if not code:
@@ -858,34 +880,37 @@ def upload_token_json(filepath: str, cpa_cfg=None, proxy: dict | None = None, se
 
 # ── CLIProxyAPI Token 池接入 ────────────────────────────────────────
 
-CLIPROXY_API_URL = os.environ.get("CLIPROXY_API_URL", "http://localhost:8317")
-CLIPROXY_API_KEY = os.environ.get("CLIPROXY_API_KEY", "")
-CLIPROXY_UPLOAD_URL = f"{CLIPROXY_API_URL}/v0/management/auth-files"
-CLIPROXY_AUTH_DIR = os.environ.get("CLIPROXY_AUTH_DIR", os.path.expanduser("~/.cli-proxy-api"))
-
 
 def _cliproxy_file_name(email: str) -> str:
     safe = email.replace("@", "_").replace(".", "_")
     return f"token_{safe}_{int(time.time())}.json"
 
 
-def _upload_to_cliproxy(token_data: dict):
+def _upload_to_cliproxy(token_data: dict, cliproxy_cfg=None):
     """
     将 Codex Token 上传到 CLIProxyAPI token 池。
     优先 HTTP POST（需要 CLIPROXY_API_KEY），失败则直接写 auth dir 文件。
     """
+    cliproxy_cfg = cliproxy_cfg or cfg.cliproxy
+    cliproxy_api_url = (getattr(cliproxy_cfg, "api_url", "") or "http://localhost:8317").rstrip("/")
+    cliproxy_api_key = getattr(cliproxy_cfg, "api_key", "") or ""
+    cliproxy_upload_url = f"{cliproxy_api_url}/v0/management/auth-files"
+    cliproxy_auth_dir = os.path.expanduser(
+        getattr(cliproxy_cfg, "auth_dir", "") or "~/.cli-proxy-api"
+    )
+
     email = token_data.get("email", "")
     file_name = _cliproxy_file_name(email)
 
     # 方式 1: HTTP POST（需要 API Key）
-    if CLIPROXY_API_KEY:
+    if cliproxy_api_key:
         try:
             resp = curl_requests.post(
-                CLIPROXY_UPLOAD_URL,
+                cliproxy_upload_url,
                 params={"name": file_name, "provider": "codex"},
                 json=token_data,
                 headers={
-                    "Authorization": f"Bearer {CLIPROXY_API_KEY}",
+                    "Authorization": f"Bearer {cliproxy_api_key}",
                     "Content-Type": "application/json",
                 },
                 timeout=15,
@@ -899,8 +924,8 @@ def _upload_to_cliproxy(token_data: dict):
 
     # 方式 2: 直接写 auth dir 文件（watcher 自动检测）
     try:
-        os.makedirs(CLIPROXY_AUTH_DIR, exist_ok=True)
-        file_path = os.path.join(CLIPROXY_AUTH_DIR, file_name)
+        os.makedirs(cliproxy_auth_dir, exist_ok=True)
+        file_path = os.path.join(cliproxy_auth_dir, file_name)
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(token_data, f, ensure_ascii=False, indent=2)
         print(f"  ✅ CLIProxyAPI: Token 文件已写入 {file_path}（watcher 自动加载）")
@@ -912,9 +937,18 @@ def _upload_to_cliproxy(token_data: dict):
 
 # ────────────────────────────────────────────────────────────────────
 
-def save_codex_tokens(email: str, tokens: dict, oauth_cfg=None, cpa_cfg=None, proxy: dict | None = None, session_factory: Callable | None = None):
+def save_codex_tokens(
+    email: str,
+    tokens: dict,
+    oauth_cfg=None,
+    cpa_cfg=None,
+    cliproxy_cfg=None,
+    proxy: dict | None = None,
+    session_factory: Callable | None = None,
+):
     oauth_cfg = oauth_cfg or cfg.oauth
     cpa_cfg = cpa_cfg or cfg.cpa
+    cliproxy_cfg = cliproxy_cfg or cfg.cliproxy
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
     id_token = tokens.get("id_token", "")
@@ -975,16 +1009,19 @@ def save_codex_tokens(email: str, tokens: dict, oauth_cfg=None, cpa_cfg=None, pr
             print(f"⚠️ CPA 上传失败，但本地 token 已保存: {exc}")
 
     # ── 自动推送到 CLIProxyAPI token 池 ──────────────────────
-    try:
-        _upload_to_cliproxy(token_data)
-    except Exception as exc:
-        print(f"⚠️ CLIProxyAPI 上传失败: {exc}")
+    if getattr(cliproxy_cfg, "enabled", False):
+        try:
+            _upload_to_cliproxy(token_data, cliproxy_cfg=cliproxy_cfg)
+        except Exception as exc:
+            print(f"⚠️ CLIProxyAPI 上传失败: {exc}")
     # ──────────────────────────────────────────────────────────
 
     return token_path
 
 
 def perform_codex_oauth_login(email: str, password: str, email_provider: str, mail_token: str | None = None, proxy: dict | None = None):
+    if proxy and proxy.get("enabled"):
+        ensure_proxy_ready(proxy, purpose="OAuth 代理预检", timeout=10)
     client = CodexOAuthClient(proxy=proxy)
     return client.perform_login(
         email=email,

@@ -3,6 +3,7 @@ import os
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from app.oauth_service import save_codex_tokens
 
@@ -53,6 +54,12 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 upload_api_url="",
                 upload_api_token="",
             )
+            cliproxy_cfg = types.SimpleNamespace(
+                enabled=False,
+                api_url="http://localhost:8317",
+                api_key="",
+                auth_dir=os.path.join(tmpdir, "cli-proxy"),
+            )
 
             token_path = save_codex_tokens(
                 email="user@example.com",
@@ -62,6 +69,7 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 },
                 oauth_cfg=oauth_cfg,
                 cpa_cfg=cpa_cfg,
+                cliproxy_cfg=cliproxy_cfg,
             )
 
             ak_files = []
@@ -92,6 +100,12 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 upload_api_url="https://cpa.example.com/upload",
                 upload_api_token="upload-secret",
             )
+            cliproxy_cfg = types.SimpleNamespace(
+                enabled=False,
+                api_url="http://localhost:8317",
+                api_key="",
+                auth_dir=os.path.join(tmpdir, "cli-proxy"),
+            )
             proxy = {
                 "enabled": True,
                 "type": "http",
@@ -112,6 +126,7 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 },
                 oauth_cfg=oauth_cfg,
                 cpa_cfg=cpa_cfg,
+                cliproxy_cfg=cliproxy_cfg,
                 proxy=proxy,
                 session_factory=lambda: fake_session,
             )
@@ -156,6 +171,12 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 upload_api_url="http://localhost:8317/v0/management/auth-files",
                 upload_api_token="",
             )
+            cliproxy_cfg = types.SimpleNamespace(
+                enabled=False,
+                api_url="http://localhost:8317",
+                api_key="",
+                auth_dir=os.path.join(tmpdir, "cli-proxy"),
+            )
             fake_session = FakeSession()
 
             token_path = save_codex_tokens(
@@ -166,11 +187,95 @@ class OAuthTokenPersistenceTests(unittest.TestCase):
                 },
                 oauth_cfg=oauth_cfg,
                 cpa_cfg=cpa_cfg,
+                cliproxy_cfg=cliproxy_cfg,
                 session_factory=lambda: fake_session,
             )
 
             self.assertTrue(os.path.exists(token_path))
             self.assertEqual(fake_session.post_calls, [])
+
+    def test_save_codex_tokens_uploads_to_cliproxy_http_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oauth_cfg = types.SimpleNamespace(
+                ak_file=os.path.join(tmpdir, "token_exports", "ak.txt"),
+                rk_file=os.path.join(tmpdir, "token_exports", "rk.txt"),
+                token_json_dir=os.path.join(tmpdir, "tokens"),
+            )
+            cpa_cfg = types.SimpleNamespace(
+                upload_api_url="",
+                upload_api_token="",
+            )
+            cliproxy_cfg = types.SimpleNamespace(
+                enabled=True,
+                api_url="http://proxy.example.com:8317/",
+                api_key="cliproxy-secret",
+                auth_dir=os.path.join(tmpdir, "cli-proxy"),
+            )
+
+            with mock.patch(
+                "app.oauth_service._cliproxy_file_name",
+                return_value="token_user_example_com.json",
+            ), mock.patch(
+                "app.oauth_service.curl_requests.post",
+                return_value=FakeResponse(),
+            ) as cliproxy_post:
+                save_codex_tokens(
+                    email="user@example.com",
+                    tokens={
+                        "access_token": "header.payload.signature",
+                        "refresh_token": "refresh-123",
+                    },
+                    oauth_cfg=oauth_cfg,
+                    cpa_cfg=cpa_cfg,
+                    cliproxy_cfg=cliproxy_cfg,
+                )
+
+            cliproxy_post.assert_called_once()
+            self.assertEqual(
+                cliproxy_post.call_args.args[0],
+                "http://proxy.example.com:8317/v0/management/auth-files",
+            )
+            self.assertEqual(
+                cliproxy_post.call_args.kwargs["headers"]["Authorization"],
+                "Bearer cliproxy-secret",
+            )
+            self.assertEqual(
+                cliproxy_post.call_args.kwargs["params"],
+                {"name": "token_user_example_com.json", "provider": "codex"},
+            )
+
+    def test_save_codex_tokens_skips_cliproxy_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oauth_cfg = types.SimpleNamespace(
+                ak_file=os.path.join(tmpdir, "token_exports", "ak.txt"),
+                rk_file=os.path.join(tmpdir, "token_exports", "rk.txt"),
+                token_json_dir=os.path.join(tmpdir, "tokens"),
+            )
+            cpa_cfg = types.SimpleNamespace(
+                upload_api_url="",
+                upload_api_token="",
+            )
+            cliproxy_cfg = types.SimpleNamespace(
+                enabled=False,
+                api_url="http://proxy.example.com:8317/",
+                api_key="cliproxy-secret",
+                auth_dir=os.path.join(tmpdir, "cli-proxy"),
+            )
+
+            with mock.patch("app.oauth_service._upload_to_cliproxy") as upload_mock:
+                token_path = save_codex_tokens(
+                    email="user@example.com",
+                    tokens={
+                        "access_token": "header.payload.signature",
+                        "refresh_token": "refresh-123",
+                    },
+                    oauth_cfg=oauth_cfg,
+                    cpa_cfg=cpa_cfg,
+                    cliproxy_cfg=cliproxy_cfg,
+                )
+
+            self.assertTrue(os.path.exists(token_path))
+            upload_mock.assert_not_called()
 
 
 if __name__ == "__main__":

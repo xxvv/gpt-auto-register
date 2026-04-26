@@ -320,6 +320,12 @@ body {
     cursor: pointer;
 }
 
+.action-btn:disabled,
+.btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 .monitor-body {
     flex: 1;
     background: #000;
@@ -419,4 +425,25 @@ tr:hover td {
 .status-pill.neutral {
     background: #f3f4f6;
     color: #4b5563;
+}
+
+.proxy-pool-note {
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #f8fafc;
+    color: var(--text-sub);
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+.proxy-pool-note a {
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.subtle-text {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #94a3b8;
 }

@@ -1,0 +1,15 @@
+{
+  "name": "cloudflare-email-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --remote",
+    "deploy": "wrangler deploy",
+    "schema:remote": "wrangler d1 execute xxvv --remote --file=./schema.sql",
+    "schema:local": "wrangler d1 execute xxvv --local --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

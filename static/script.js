@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadProviders();
     loadSettings();
     loadTokenImportSettings();
+    loadUsProxyPool();
 });
 
 // 切换视图
@@ -33,6 +34,9 @@ function switchTab(tabName) {
     if (tabName === 'tokens') {
         loadTokenImportSettings();
     }
+    if (tabName === 'proxies') {
+        loadUsProxyPool();
+    }
 }
 
 // 轮询状态
@@ -53,6 +57,7 @@ async function pollStatus() {
 
 function updateUI(data) {
     const progress = data.progress || {};
+    const currentProxy = data.current_proxy || {};
 
     document.getElementById('valAction').textContent = data.current_action;
     document.getElementById('valSuccess').textContent = data.success;
@@ -67,6 +72,10 @@ function updateUI(data) {
     document.getElementById('tokenFail').textContent = data.fail ?? 0;
     document.getElementById('tokenSkipped').textContent = progress.skipped ?? 0;
     document.getElementById('tokenRemaining').textContent = progress.remaining ?? 0;
+    const proxyCurrentSetting = document.getElementById('proxyCurrentSetting');
+    if (proxyCurrentSetting) {
+        proxyCurrentSetting.textContent = renderCurrentProxy(currentProxy);
+    }
 
     isRunning = data.is_running;
     const btnStart = document.getElementById('btnStart');
@@ -252,6 +261,165 @@ async function loadTokenImportSettings() {
         document.getElementById('tokenOutputDir').value = data.output_dir || '';
     } catch (e) {
         console.error("加载 Token 设置失败:", e);
+    }
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function formatLocalDateTime(value) {
+    if (!value) return '未刷新';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
+function renderCurrentProxy(proxy) {
+    if (!proxy || !proxy.enabled || !proxy.host) {
+        return '未启用';
+    }
+    return `${proxy.type || 'http'}://${proxy.host}:${proxy.port}`;
+}
+
+function buildProxyProbeLabel(proxy) {
+    const parts = [];
+    if (proxy.detected_ip) parts.push(proxy.detected_ip);
+
+    const location = [proxy.detected_country_code || proxy.detected_country, proxy.detected_city]
+        .filter(Boolean)
+        .join(' / ');
+    if (location) parts.push(location);
+
+    if (proxy.latency_ms !== null && proxy.latency_ms !== undefined) {
+        parts.push(`${proxy.latency_ms} ms`);
+    }
+
+    return parts.join(' | ') || '未返回出口详情';
+}
+
+async function loadUsProxyPool() {
+    try {
+        const res = await fetch('/api/us-proxies');
+        const data = await res.json();
+        renderUsProxyPool(data);
+    } catch (e) {
+        console.error('加载本地代理池失败:', e);
+    }
+}
+
+async function refreshUsProxyPool() {
+    const btn = document.getElementById('btnRefreshUsProxies');
+    const status = document.getElementById('proxyPoolStatus');
+
+    btn.disabled = true;
+    status.textContent = '刷新中';
+    status.className = 'status-pill neutral';
+
+    try {
+        const res = await fetch('/api/us-proxies/refresh', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || '刷新失败');
+            return;
+        }
+        renderUsProxyPool(data);
+    } catch (e) {
+        alert(`刷新失败: ${e}`);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderUsProxyPool(data) {
+    const proxies = Array.isArray(data.proxies) ? data.proxies : [];
+    const currentProxy = data.current_proxy || {};
+
+    document.getElementById('proxyRawCount').textContent = data.raw_row_count ?? 0;
+    document.getElementById('proxyWorkingCount').textContent = proxies.length;
+    document.getElementById('proxyFetchedAt').textContent = formatLocalDateTime(data.fetched_at);
+    document.getElementById('proxyCurrentSetting').textContent = renderCurrentProxy(currentProxy);
+
+    const status = document.getElementById('proxyPoolStatus');
+    if (proxies.length > 0) {
+        status.textContent = `可用 ${proxies.length}`;
+        status.className = 'status-pill success';
+    } else if (data.fetched_at) {
+        status.textContent = '无可用代理';
+        status.className = 'status-pill error';
+    } else {
+        status.textContent = '未刷新';
+        status.className = 'status-pill neutral';
+    }
+
+    const tbody = document.getElementById('proxyTableBody');
+    tbody.innerHTML = '';
+
+    if (proxies.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#666">当前没有可用代理，请手动刷新</td></tr>';
+        return;
+    }
+
+    proxies.forEach(proxy => {
+        const tr = document.createElement('tr');
+        const proxyType = String(proxy.type || 'http').toLowerCase();
+        const proxyLabel = `${escapeHtml(proxyType)}://${escapeHtml(proxy.host)}:${escapeHtml(proxy.port)}`;
+        const authInfo = proxy.use_auth && proxy.username
+            ? `<div class="subtle-text">鉴权: ${escapeHtml(proxy.username)}</div>`
+            : '';
+        const sourceCheck = proxy.last_checked ? `<div class="subtle-text">源站: ${escapeHtml(proxy.last_checked)}</div>` : '';
+        const checkedAt = proxy.checked_at ? `<div class="subtle-text">本地: ${escapeHtml(formatLocalDateTime(proxy.checked_at))}</div>` : '';
+        const isCurrent = Boolean(
+            currentProxy.enabled &&
+            String(currentProxy.type || 'http').toLowerCase() === proxyType &&
+            currentProxy.host === proxy.host &&
+            Number(currentProxy.port) === Number(proxy.port)
+        );
+
+        tr.innerHTML = `
+            <td style="font-family:monospace">${proxyLabel}${authInfo}${sourceCheck}</td>
+            <td>${escapeHtml(proxy.anonymity || '-')}</td>
+            <td>${escapeHtml((proxy.https || '').toUpperCase() || '-')}</td>
+            <td>${escapeHtml(buildProxyProbeLabel(proxy))}</td>
+            <td>${checkedAt}</td>
+            <td></td>
+        `;
+
+        const actionCell = tr.lastElementChild;
+        const button = document.createElement('button');
+        button.className = 'action-btn';
+        button.textContent = isCurrent ? '当前代理' : '设为起始代理';
+        button.disabled = isCurrent;
+        button.addEventListener('click', () => applyUsProxy(proxy.host, proxy.port, proxyType));
+        actionCell.appendChild(button);
+        tbody.appendChild(tr);
+    });
+}
+
+async function applyUsProxy(host, port, type = 'http') {
+    if (!confirm(`将 ${type}://${host}:${port} 设为下次任务的起始代理？`)) return;
+
+    try {
+        const res = await fetch('/api/us-proxies/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host, port, type })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || '应用失败');
+            return;
+        }
+        renderUsProxyPool({
+            ...(await (await fetch('/api/us-proxies')).json())
+        });
+    } catch (e) {
+        alert(`应用失败: ${e}`);
     }
 }
 

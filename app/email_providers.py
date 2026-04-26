@@ -8,6 +8,9 @@
   - custom2925 : 2925 自有邮箱别名 + IMAP 收件箱
   - gptmail    : mail.chatgpt.org.uk，Cookie + JWT + REST API
   - tempmail_lol: api.tempmail.lol，纯 REST API
+  - gaggle     : gaggle.email，已登录 Cookie + create-group/activity API
+  - outlookemail: 相邻 outlookemail 项目，对外 API 邮箱池
+  - nnai       : nnai.website catch-all + Cloudflare Worker 验证码 API
 
 已移除（OpenAI 返回 "The email you provided is not supported"）:
   - mailgw / guerrillamail / tempmail_lol (旧版)
@@ -19,6 +22,9 @@ from . import mailtm_service
 from . import temporam_service
 from . import gptmail_service
 from . import tempmail_lol_service
+from . import gaggle_service
+from . import outlookemail_service
+from . import nnai_service
 
 PROVIDERS = {
     "mailtm": {
@@ -50,6 +56,24 @@ PROVIDERS = {
         "module": tempmail_lol_service,
         "inbox_url": "https://tempmail.lol",
         "has_password": False,  # 基于 token
+    },
+    "gaggle": {
+        "name": "Gaggle",
+        "module": gaggle_service,
+        "inbox_url": "https://gaggle.email",
+        "has_password": False,  # 基于共享登录态，不是独立邮箱密码
+    },
+    "outlookemail": {
+        "name": "OutlookEmail",
+        "module": outlookemail_service,
+        "inbox_url": "http://localhost:5000",
+        "has_password": False,  # 基于 OutlookEmail 对外 API Key
+    },
+    "nnai": {
+        "name": "NNAI.website",
+        "module": nnai_service,
+        "inbox_url": "https://cloudflare-email-inbox.111pengwei.workers.dev",
+        "has_password": False,  # catch-all 域名 + Worker API
     },
 }
 

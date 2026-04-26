@@ -30,6 +30,9 @@
             <div class="nav-item" data-tab="tokens" onclick="switchTab('tokens')">
                 <span>🪪</span> Token 获取
             </div>
+            <div class="nav-item" data-tab="proxies" onclick="switchTab('proxies')">
+                <span>🧭</span> 代理池
+            </div>
         </nav>
 
         <div class="control-box">
@@ -241,6 +244,70 @@
                             <div class="stat-label">剩余</div>
                             <div class="stat-value blue" id="tokenRemaining">0</div>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Local Proxy Pool Tab -->
+        <div id="view-proxies" class="view-section hidden">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span>🧭</span> 本地代理池
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <span class="status-pill neutral" id="proxyPoolStatus">未刷新</span>
+                        <button class="action-btn" onclick="loadUsProxyPool()">读取缓存</button>
+                        <button class="btn btn-primary" style="width:auto; padding:10px 18px;" id="btnRefreshUsProxies" onclick="refreshUsProxyPool()">
+                            <span>🔄</span> 刷新本地代理
+                        </button>
+                    </div>
+                </div>
+
+                <div style="padding: 24px; display: grid; gap: 18px;">
+                    <div class="proxy-pool-note">
+                        代理地址只从 <code>data/socks/Webshare 10 proxies.txt</code> 读取，并在刷新时做连通性体检。
+                        这里只缓存“当前可连通”的结果。批量注册开始时，如果你还没有手动设置起始代理，系统会自动切换到缓存列表里的首条可用代理，并按缓存顺序为每个账号轮换到下一条。你也可以手动指定某一条作为下次任务的起点。
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px;">
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">原始条数</div>
+                            <div class="stat-value" id="proxyRawCount">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">可用条数</div>
+                            <div class="stat-value green" id="proxyWorkingCount">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">最近刷新</div>
+                            <div class="stat-value" id="proxyFetchedAt" style="font-size:16px;">未刷新</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">当前代理</div>
+                            <div class="stat-value blue" id="proxyCurrentSetting" style="font-size:16px;">未启用</div>
+                        </div>
+                    </div>
+
+                    <div class="table-container" style="border:none; box-shadow:none; border-radius:0;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>代理地址</th>
+                                    <th>匿名级别</th>
+                                    <th>HTTPS</th>
+                                    <th>出口检测</th>
+                                    <th>最近检查</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="proxyTableBody">
+                                <tr>
+                                    <td colspan="6" style="text-align:center;color:#666">点击“刷新本地代理”开始检测</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
