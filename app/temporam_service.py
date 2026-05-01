@@ -50,7 +50,11 @@ def _fetch_cookies(proxy: dict = None) -> dict:
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--lang=zh-CN,zh;q=0.9")
-    from .browser import SafeChrome, apply_proxy_to_options, _detect_chrome_major_version
+    from .browser import (
+        _detect_chrome_major_version,
+        _start_safe_chrome_with_retry,
+        apply_proxy_to_options,
+    )
     apply_proxy_to_options(options, proxy)
     chrome_major_version = _detect_chrome_major_version()
     chrome_kwargs = {
@@ -60,7 +64,7 @@ def _fetch_cookies(proxy: dict = None) -> dict:
     }
     if chrome_major_version is not None:
         chrome_kwargs["version_main"] = chrome_major_version
-    driver = SafeChrome(**chrome_kwargs)
+    driver = _start_safe_chrome_with_retry(chrome_kwargs)
     try:
         driver.get(TEMPORAM_URL)
         time.sleep(5)

@@ -2,7 +2,11 @@ import unittest
 
 import requests
 
-from app.utils import format_probe_location, probe_proxy_connectivity
+from app.utils import (
+    format_probe_location,
+    probe_proxy_connectivity,
+    probe_proxy_target_urls,
+)
 
 
 class FakeResponse:
@@ -23,15 +27,18 @@ class FakeSession:
         self.headers = {}
         self.trust_env = True
 
-    def get(self, url, timeout=None, headers=None):
+    def get(self, url, timeout=None, headers=None, **kwargs):
         self.calls.append(
             {
                 "url": url,
                 "timeout": timeout,
                 "headers": headers,
+                **kwargs,
             }
         )
         response = self.responses[url]
+        if isinstance(response, list):
+            response = response.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
@@ -122,6 +129,76 @@ class ProxyUtilsTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("代理握手失败", result["reason"])
+
+    def test_probe_proxy_connectivity_retries_transient_timeout(self):
+        proxy = {
+            "enabled": True,
+            "type": "socks5",
+            "host": "127.0.0.1",
+            "port": 1080,
+            "use_auth": True,
+            "username": "user",
+            "password": "pass",
+        }
+        session = FakeSession(
+            {
+                "https://api.ipify.org?format=json": [
+                    requests.exceptions.ConnectTimeout("timed out"),
+                    FakeResponse(200, payload={"ip": "5.6.7.8"}),
+                ],
+            }
+        )
+
+        result = probe_proxy_connectivity(
+            proxy,
+            session_factory=lambda: session,
+            geo_lookup=lambda ip, timeout: {"ok": False, "reason": "skip"},
+            endpoints=(
+                {
+                    "url": "https://api.ipify.org?format=json",
+                    "kind": "json",
+                    "fields": ("ip",),
+                },
+            ),
+            attempts=2,
+            retry_delay=0,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ip"], "5.6.7.8")
+        self.assertEqual(result["attempt"], 2)
+        self.assertEqual(len(session.calls), 2)
+
+    def test_probe_proxy_target_urls_reports_target_block(self):
+        proxy = {
+            "enabled": True,
+            "type": "http",
+            "host": "127.0.0.1",
+            "port": 8080,
+            "use_auth": False,
+            "username": "",
+            "password": "",
+        }
+        session = FakeSession(
+            {
+                "https://chatgpt.com/": FakeResponse(403, text="blocked"),
+                "https://auth.openai.com/": requests.exceptions.ConnectionError(
+                    "reset"
+                ),
+            }
+        )
+
+        result = probe_proxy_target_urls(
+            proxy,
+            target_urls=("https://chatgpt.com/", "https://auth.openai.com/"),
+            session_factory=lambda: session,
+            timeout=5,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("HTTP 403", result["errors"][0])
+        self.assertTrue(result["targets"][0]["blocked"])
+        self.assertFalse(result["targets"][1]["ok"])
 
 
 if __name__ == "__main__":

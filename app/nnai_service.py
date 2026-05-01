@@ -2,7 +2,7 @@
 NNAI.website 邮箱服务模块 - 基于 catch-all 域名和 Cloudflare Email Inbox Worker。
 
 工作方式：
-  - 注册时随机生成 xxxxx@nnai.website 邮箱地址
+  - 注册时随机生成 xxxxx@已选域名 邮箱地址
   - 通过 Worker API 按邮箱地址查询最新验证码
 """
 
@@ -18,13 +18,19 @@ from typing import Any
 
 import requests as _requests
 
-from .config import EMAIL_POLL_INTERVAL, EMAIL_WAIT_TIMEOUT, HTTP_TIMEOUT
+from .config import EMAIL_POLL_INTERVAL, EMAIL_WAIT_TIMEOUT, HTTP_TIMEOUT, cfg
 from .utils import extract_verification_code, get_user_agent
 
 DOMAIN = "nnai.website"
+DEFAULT_DOMAINS = [DOMAIN]
 API_CODE_URL = "https://cloudflare-email-inbox.111pengwei.workers.dev/api/code"
 LOCAL_PART_LENGTH = 12
 _FRESH_LOOKBACK_MS = 30_000
+_DOMAIN_RE = re.compile(
+    r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+)")
 
 _sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
@@ -59,12 +65,63 @@ def _generate_local_part(length: int = LOCAL_PART_LENGTH) -> str:
     return "".join(random.choices(alphabet, k=length))
 
 
-def _generate_email() -> str:
-    return f"{_generate_local_part()}@{DOMAIN}"
+def _normalize_domain(domain: str) -> str:
+    normalized = str(domain or "").strip().lower()
+    if normalized.startswith("@"):
+        normalized = normalized[1:]
+    normalized = normalized.rstrip(".")
+    if not _DOMAIN_RE.fullmatch(normalized):
+        raise ValueError(f"邮箱域名格式无效: {domain!r}")
+    return normalized
+
+
+def normalize_domain_list(domains: Any) -> list[str]:
+    """规范化域名列表，去空、去重并保留顺序。"""
+    if isinstance(domains, str):
+        items = domains.replace("\n", ",").split(",")
+    else:
+        items = list(domains or [])
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_domain in items:
+        if not str(raw_domain or "").strip():
+            continue
+        domain = _normalize_domain(str(raw_domain))
+        if domain not in seen:
+            seen.add(domain)
+            result.append(domain)
+    return result
+
+
+def get_configured_domains() -> list[str]:
+    try:
+        domains = normalize_domain_list(getattr(cfg.email, "domains", DEFAULT_DOMAINS))
+    except ValueError as exc:
+        print(f"⚠️ NNAI 域名配置无效，已回退到 {DOMAIN}: {exc}")
+        domains = []
+    return domains or list(DEFAULT_DOMAINS)
+
+
+def _pick_domain(domain: str | None = None) -> str:
+    if str(domain or "").strip():
+        return _normalize_domain(str(domain))
+    return random.choice(get_configured_domains())
+
+
+def _generate_email(domain: str | None = None) -> str:
+    return f"{_generate_local_part()}@{_pick_domain(domain)}"
 
 
 def _is_valid_nnai_email(email: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9._%+-]+@nnai\.website", str(email or "").strip()))
+    match = _EMAIL_RE.fullmatch(str(email or "").strip())
+    if not match:
+        return False
+    try:
+        _normalize_domain(match.group(1))
+    except ValueError:
+        return False
+    return True
 
 
 def _extract_code_from_payload(payload: dict[str, Any]) -> str | None:
@@ -107,7 +164,7 @@ def _create_session(email: str, client: NNAIClient | None = None) -> str:
     return session_id
 
 
-def create_temp_email(proxy=None):
+def create_temp_email(proxy=None, domain: str | None = None):
     """
     创建 NNAI 临时邮箱。
 
@@ -116,7 +173,7 @@ def create_temp_email(proxy=None):
     """
     del proxy
     try:
-        email = _generate_email()
+        email = _generate_email(domain)
         session_id = _create_session(email)
         print(f"✅ NNAI 邮箱: {email}")
         return email, session_id, email
@@ -128,7 +185,7 @@ def create_temp_email(proxy=None):
 def login_existing_email(email: str, mailbox_credential: str | None = None):
     target_email = str(mailbox_credential or email or "").strip().lower()
     if not _is_valid_nnai_email(target_email):
-        raise RuntimeError("NNAI 收件邮箱必须以 @nnai.website 结尾")
+        raise RuntimeError("NNAI 收件邮箱格式无效")
     session_id = _create_session(target_email)
     print(f"✅ 已为 NNAI 邮箱创建收信会话: {target_email}")
     return session_id

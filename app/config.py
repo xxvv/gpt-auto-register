@@ -7,14 +7,15 @@
     
     # 访问配置项
     total = cfg.registration.total_accounts
-    email_domain = cfg.email.domain
+    email_domains = cfg.email.domains
     
     # 或者直接导入常量（兼容旧代码）
-    from config import TOTAL_ACCOUNTS, EMAIL_DOMAIN
+    from config import TOTAL_ACCOUNTS, EMAIL_DOMAINS
 """
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
@@ -23,6 +24,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ACCOUNTS_FILE = "data/accounts/registered_accounts.txt"
 DEFAULT_TOKEN_DIR = "data/tokens"
 DEFAULT_TOKEN_EXPORT_DIR = "token_exports"
+DEFAULT_EMAIL_DOMAINS = ["nnai.website"]
+
+
+def dated_accounts_file_path(path_value: str | Path | None = None) -> Path:
+    """Return today's accounts TXT path, adding YYYYMMDD to the default filename."""
+    path = Path(path_value or DEFAULT_ACCOUNTS_FILE)
+    dated_name = f"registered_accounts_{datetime.now().strftime('%Y%m%d')}.txt"
+
+    if path.name == Path(DEFAULT_ACCOUNTS_FILE).name:
+        path = path.with_name(dated_name)
+
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 # 尝试导入 yaml，如果未安装则提示
 try:
@@ -47,9 +62,10 @@ class RegistrationConfig:
 
 @dataclass
 class EmailConfig:
-    """邮箱服务配置 (mail.tm)"""
+    """邮箱服务配置 (NNAI Worker)"""
     wait_timeout: int = 120
     poll_interval: int = 3
+    domains: list[str] = field(default_factory=lambda: list(DEFAULT_EMAIL_DOMAINS))
 
 
 @dataclass
@@ -92,8 +108,6 @@ class FilesConfig:
 @dataclass
 class OAuthConfig:
     """Codex OAuth 配置"""
-    enabled: bool = False
-    required: bool = False
     issuer: str = "https://auth.openai.com"
     client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
     redirect_uri: str = "http://localhost:1455/auth/callback"
@@ -263,6 +277,15 @@ class ConfigLoader:
             self.config.email = EmailConfig(
                 wait_timeout=email.get('wait_timeout', 120),
                 poll_interval=email.get('poll_interval', 3),
+                domains=self._as_list(
+                    os.environ.get('NNAI_EMAIL_DOMAINS', email.get('domains', DEFAULT_EMAIL_DOMAINS))
+                ),
+            )
+        elif os.environ.get('NNAI_EMAIL_DOMAINS'):
+            self.config.email = EmailConfig(
+                wait_timeout=self.config.email.wait_timeout,
+                poll_interval=self.config.email.poll_interval,
+                domains=self._as_list(os.environ.get('NNAI_EMAIL_DOMAINS')),
             )
         
         # 浏览器配置
@@ -310,8 +333,6 @@ class ConfigLoader:
         # OAuth 配置
         oauth = self.raw_config.get('oauth', {})
         self.config.oauth = OAuthConfig(
-            enabled=self._as_bool(os.environ.get('OAUTH_ENABLED', oauth.get('enabled', False))),
-            required=self._as_bool(os.environ.get('OAUTH_REQUIRED', oauth.get('required', False))),
             issuer=os.environ.get('OAUTH_ISSUER', oauth.get('issuer', 'https://auth.openai.com')),
             client_id=os.environ.get('OAUTH_CLIENT_ID', oauth.get('client_id', 'app_EMoamEEZ73f0CkXaXp7hrann')),
             redirect_uri=os.environ.get('OAUTH_REDIRECT_URI', oauth.get('redirect_uri', 'http://localhost:1455/auth/callback')),
@@ -390,6 +411,16 @@ class ConfigLoader:
         if value is None:
             return False
         return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    @staticmethod
+    def _as_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = str(value).replace("\n", ",").split(",")
+        return [str(item).strip() for item in items if str(item).strip()]
         
     def reload(self) -> None:
         """重新加载配置文件"""
@@ -441,6 +472,7 @@ MAX_AGE = cfg.registration.max_age
 # 邮箱配置
 EMAIL_WAIT_TIMEOUT = cfg.email.wait_timeout
 EMAIL_POLL_INTERVAL = cfg.email.poll_interval
+EMAIL_DOMAINS = cfg.email.domains
 
 # 浏览器配置
 MAX_WAIT_TIME = cfg.browser.max_wait_time
@@ -465,8 +497,6 @@ BATCH_INTERVAL_MAX = cfg.batch.interval_max
 TXT_FILE = cfg.files.accounts_file
 
 # OAuth 配置
-OAUTH_ENABLED = cfg.oauth.enabled
-OAUTH_REQUIRED = cfg.oauth.required
 OAUTH_ISSUER = cfg.oauth.issuer
 OAUTH_CLIENT_ID = cfg.oauth.client_id
 OAUTH_REDIRECT_URI = cfg.oauth.redirect_uri

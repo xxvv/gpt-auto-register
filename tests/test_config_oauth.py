@@ -10,8 +10,6 @@ class ConfigOAuthTests(unittest.TestCase):
         yaml_content = textwrap.dedent(
             """
             oauth:
-              enabled: true
-              required: false
               issuer: "https://auth.example.com"
               client_id: "client_123"
               redirect_uri: "http://localhost:1455/auth/callback"
@@ -29,6 +27,11 @@ class ConfigOAuthTests(unittest.TestCase):
               api_key: "cliproxy-secret"
               auth_dir: "~/custom-cli-proxy"
 
+            email:
+              domains:
+                - "nnai.website"
+                - "mail.example.com"
+
             gaggle:
               cookie_header: "session=abc; GAGGLE_REFERER_KEY=xyz"
               csrf_token: "csrf-token-123"
@@ -41,8 +44,6 @@ class ConfigOAuthTests(unittest.TestCase):
 
         loader = ConfigLoader(config_path=config_path)
 
-        self.assertTrue(loader.config.oauth.enabled)
-        self.assertFalse(loader.config.oauth.required)
         self.assertEqual(loader.config.oauth.issuer, "https://auth.example.com")
         self.assertEqual(loader.config.oauth.client_id, "client_123")
         self.assertEqual(
@@ -61,6 +62,7 @@ class ConfigOAuthTests(unittest.TestCase):
         self.assertEqual(loader.config.cliproxy.api_url, "http://proxy.example.com:8317/")
         self.assertEqual(loader.config.cliproxy.api_key, "cliproxy-secret")
         self.assertEqual(loader.config.cliproxy.auth_dir, "~/custom-cli-proxy")
+        self.assertEqual(loader.config.email.domains, ["nnai.website", "mail.example.com"])
         self.assertEqual(
             loader.config.gaggle.cookie_header,
             "session=abc; GAGGLE_REFERER_KEY=xyz",

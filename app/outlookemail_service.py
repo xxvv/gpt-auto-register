@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 
 import requests as _requests
 
-from .config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL, cfg
+from .config import EMAIL_WAIT_TIMEOUT, EMAIL_POLL_INTERVAL, cfg, dated_accounts_file_path
 from .config import PROJECT_ROOT
 from .utils import extract_verification_code
 
@@ -36,10 +36,7 @@ def _registered_file_path() -> Path:
 
 
 def _accounts_file_path() -> Path:
-    configured_path = Path(cfg.files.accounts_file)
-    if configured_path.is_absolute():
-        return configured_path
-    return PROJECT_ROOT / configured_path
+    return dated_accounts_file_path(cfg.files.accounts_file)
 
 
 def _load_registered_addresses_from_marker() -> set[str]:

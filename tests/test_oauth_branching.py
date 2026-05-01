@@ -2,6 +2,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+import app as app_package
 from app.oauth_service import CodexOAuthClient
 
 
@@ -104,12 +105,13 @@ class OAuthBranchingTests(unittest.TestCase):
         fake_email_providers = types.SimpleNamespace(list_verification_codes=lambda provider, token: ["123456"])
         with patch.object(client, "_bootstrap_oauth_session", return_value=("https://auth.openai.com/log-in", True)):
             with patch.dict("sys.modules", {"app.email_providers": fake_email_providers}):
-                result = client.perform_login(
-                    email="user@example.com",
-                    password="N/A",
-                    email_provider="custom2925",
-                    mail_token="mail-session",
-                )
+                with patch.object(app_package, "email_providers", fake_email_providers, create=True):
+                    result = client.perform_login(
+                        email="user@example.com",
+                        password="N/A",
+                        email_provider="custom2925",
+                        mail_token="mail-session",
+                    )
 
         self.assertEqual(result["access_token"], "access-token")
         posted_urls = [call["url"] for call in session.post_calls]
@@ -162,12 +164,13 @@ class OAuthBranchingTests(unittest.TestCase):
         with patch.object(client, "_bootstrap_oauth_session", return_value=("https://auth.openai.com/log-in", True)):
             with patch.object(client, "_follow_for_code", side_effect=fake_follow_for_code):
                 with patch.dict("sys.modules", {"app.email_providers": fake_email_providers}):
-                    result = client.perform_login(
-                        email="user@example.com",
-                        password="saved-chatgpt-password",
-                        email_provider="mailtm",
-                        mail_token="mail-session",
-                    )
+                    with patch.object(app_package, "email_providers", fake_email_providers, create=True):
+                        result = client.perform_login(
+                            email="user@example.com",
+                            password="saved-chatgpt-password",
+                            email_provider="mailtm",
+                            mail_token="mail-session",
+                        )
 
         self.assertEqual(result["access_token"], "access-token")
         posted_urls = [call["url"] for call in session.post_calls]

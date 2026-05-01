@@ -135,36 +135,36 @@ function updateUI(data) {
 }
 
 // ==========================================
-// 📬 邮箱提供商管理
+// 📬 邮箱域名管理
 // ==========================================
 
 async function loadProviders() {
     try {
-        const res = await fetch('/api/providers');
-        const providers = await res.json();
-        renderProviders(providers);
+        const res = await fetch('/api/email-domains');
+        const domains = await res.json();
+        renderProviders(domains);
     } catch (e) {
-        console.error("加载提供商失败:", e);
+        console.error("加载邮箱域名失败:", e);
     }
 }
 
-function renderProviders(providers) {
+function renderProviders(domains) {
     const container = document.getElementById('providerList');
     container.innerHTML = '';
 
-    providers.forEach(p => {
+    domains.forEach(p => {
         const label = document.createElement('label');
         label.style.cssText = 'display:flex; align-items:center; gap:8px; padding:5px 0; cursor:pointer; font-size:13px; color:#ccc;';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.value = p.id;
+        checkbox.value = p.domain;
         checkbox.checked = p.selected;
         checkbox.style.cssText = 'width:14px; height:14px; cursor:pointer; accent-color:#7c6af7;';
         checkbox.addEventListener('change', onProviderToggle);
 
         label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(p.name));
+        label.appendChild(document.createTextNode(p.domain));
         container.appendChild(label);
     });
 }
@@ -180,13 +180,13 @@ async function onProviderToggle() {
     }
 
     try {
-        await fetch('/api/providers', {
+        await fetch('/api/email-domains', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ selected })
         });
     } catch (e) {
-        console.error("更新提供商失败:", e);
+        console.error("更新邮箱域名失败:", e);
     }
 }
 
@@ -496,14 +496,14 @@ function renderAccounts(accounts) {
         const providerLabel = acc.provider_name || acc.provider;
 
         if (acc.has_password && acc.temp_credential) {
-            // 有密码的服务（mail.tm, mail.gw）
+            // 有独立密码的邮箱服务
             inboxCell = `
                 <span style="font-size:11px;color:#aaa">[${providerLabel}]</span><br>
                 <span style="font-family:monospace;font-size:11px">${acc.email}</span><br>
                 <span style="font-family:monospace;font-size:11px;color:#888">密码: ${acc.temp_credential}</span><br>
                 <a href="${acc.inbox_url}" target="_blank" class="action-btn" style="font-size:11px;margin-top:2px;display:inline-block">打开收件箱</a>`;
         } else if (!acc.has_password && acc.temp_credential) {
-            // 基于 token 的服务（tempmail.lol, guerrillamail）
+            // 基于邮箱地址或 token 的服务
             const shortToken = acc.temp_credential.length > 20
                 ? acc.temp_credential.substring(0, 20) + '...'
                 : acc.temp_credential;

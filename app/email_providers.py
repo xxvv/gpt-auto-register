@@ -1,74 +1,18 @@
 """
 临时邮箱服务注册表
-统一管理所有可用的临时邮箱提供商
+统一管理当前可用的临时邮箱提供商
 
-已验证可用（OpenAI 不拦截）:
-  - mailtm     : mail.tm REST API，动态域名
-  - temporam   : temporam.com，Cookie 缓存 + REST API
-  - custom2925 : 2925 自有邮箱别名 + IMAP 收件箱
-  - gptmail    : mail.chatgpt.org.uk，Cookie + JWT + REST API
-  - tempmail_lol: api.tempmail.lol，纯 REST API
-  - gaggle     : gaggle.email，已登录 Cookie + create-group/activity API
-  - outlookemail: 相邻 outlookemail 项目，对外 API 邮箱池
-  - nnai       : nnai.website catch-all + Cloudflare Worker 验证码 API
+当前只保留:
+  - nnai: NNAI.website catch-all + Cloudflare Worker 验证码 API
 
-已移除（OpenAI 返回 "The email you provided is not supported"）:
-  - mailgw / guerrillamail / tempmail_lol (旧版)
-  对应 .py 文件保留，可用于其他非 OpenAI 服务的注册
+旧的邮箱渠道文件保留在仓库中，但不再注册到应用可选渠道。
 """
 
-from . import custom2925_service
-from . import mailtm_service
-from . import temporam_service
-from . import gptmail_service
-from . import tempmail_lol_service
-from . import gaggle_service
-from . import outlookemail_service
+import inspect
+
 from . import nnai_service
 
 PROVIDERS = {
-    "mailtm": {
-        "name": "mail.tm",
-        "module": mailtm_service,
-        "inbox_url": "https://mail.tm",
-        "has_password": True,   # 有密码，可重新登录收件箱
-    },
-    "temporam": {
-        "name": "Temporam",
-        "module": temporam_service,
-        "inbox_url": "https://temporam.com/zh",
-        "has_password": False,  # 基于浏览器会话，无独立密码
-    },
-    "custom2925": {
-        "name": "2925邮箱",
-        "module": custom2925_service,
-        "inbox_url": "https://mail.2925.com",
-        "has_password": False,
-    },
-    "gptmail": {
-        "name": "GPTMail",
-        "module": gptmail_service,
-        "inbox_url": "https://mail.chatgpt.org.uk",
-        "has_password": False,  # 基于 Cookie + JWT 会话
-    },
-    "tempmail_lol": {
-        "name": "TempMail.lol",
-        "module": tempmail_lol_service,
-        "inbox_url": "https://tempmail.lol",
-        "has_password": False,  # 基于 token
-    },
-    "gaggle": {
-        "name": "Gaggle",
-        "module": gaggle_service,
-        "inbox_url": "https://gaggle.email",
-        "has_password": False,  # 基于共享登录态，不是独立邮箱密码
-    },
-    "outlookemail": {
-        "name": "OutlookEmail",
-        "module": outlookemail_service,
-        "inbox_url": "http://localhost:5000",
-        "has_password": False,  # 基于 OutlookEmail 对外 API Key
-    },
     "nnai": {
         "name": "NNAI.website",
         "module": nnai_service,
@@ -77,9 +21,7 @@ PROVIDERS = {
     },
 }
 
-# 默认公开服务：mailtm + gptmail + tempmail_lol
-# temporam 因 SSL 不稳定默认不启用
-DEFAULT_PROVIDERS = ["mailtm", "gptmail", "tempmail_lol"]
+DEFAULT_PROVIDERS = ["nnai"]
 
 
 def get_provider_info(provider_id: str) -> dict:
@@ -87,7 +29,7 @@ def get_provider_info(provider_id: str) -> dict:
     return PROVIDERS.get(provider_id)
 
 
-def create_temp_email(provider_id: str, proxy: dict = None):
+def create_temp_email(provider_id: str, proxy: dict = None, **kwargs):
     """
     使用指定提供商创建临时邮箱
 
@@ -100,11 +42,15 @@ def create_temp_email(provider_id: str, proxy: dict = None):
         print(f"❌ 未知邮箱提供商: {provider_id}")
         return None, None, None
 
-    module = info["module"]
-    if hasattr(module.create_temp_email, "__code__") and \
-       "proxy" in module.create_temp_email.__code__.co_varnames:
-        return module.create_temp_email(proxy=proxy)
-    return module.create_temp_email()
+    create_func = info["module"].create_temp_email
+    signature = inspect.signature(create_func)
+    call_kwargs = {}
+    if "proxy" in signature.parameters:
+        call_kwargs["proxy"] = proxy
+    for key, value in kwargs.items():
+        if value is not None and key in signature.parameters:
+            call_kwargs[key] = value
+    return create_func(**call_kwargs)
 
 
 def wait_for_verification_email(provider_id: str, token: str, timeout: int = None):

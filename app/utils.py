@@ -17,6 +17,7 @@ from urllib3.util.retry import Retry
 from .config import (
     cfg,
     PROJECT_ROOT,
+    dated_accounts_file_path,
     PASSWORD_LENGTH,
     PASSWORD_CHARS,
     HTTP_MAX_RETRIES,
@@ -112,6 +113,11 @@ IP_DISCOVERY_ENDPOINTS = (
     },
 )
 
+OPENAI_PROXY_TARGET_URLS = (
+    "https://chatgpt.com/",
+    "https://auth.openai.com/",
+)
+
 GEO_LOOKUP_ENDPOINTS = (
     {"url": "https://ipwho.is/{ip}", "provider": "ipwho.is"},
     {"url": "https://ipapi.co/{ip}/json/", "provider": "ipapi.co"},
@@ -189,6 +195,18 @@ def _extract_ip_from_response(response, endpoint: dict) -> str:
     if not text:
         return ""
     return text.splitlines()[0].strip()
+
+
+def _proxy_request_error_reason(exc: Exception, timeout: int) -> str:
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return f"代理握手失败: {exc}"
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return f"连接代理超时（>{timeout}s）"
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return f"代理响应超时（>{timeout}s）"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return f"代理请求失败: {exc}"
+    return f"代理探测异常: {exc}"
 
 
 def _normalize_geo_payload(payload: dict, provider: str) -> dict:
@@ -273,6 +291,8 @@ def probe_proxy_connectivity(
     session_factory: Callable[[], requests.Session] | None = None,
     geo_lookup: Callable[[str, int], dict] | None = None,
     endpoints: tuple[dict, ...] | None = None,
+    attempts: int = 1,
+    retry_delay: float = 1.0,
 ):
     """
     用 requests 通过代理探测出口 IP、延迟和国家信息。
@@ -299,76 +319,78 @@ def probe_proxy_connectivity(
             "reason": "代理已启用，但 host/port 配置无效",
         }
 
-    session = _build_probe_session(session_factory=session_factory)
-    proxies = build_requests_proxies(proxy)
-    if hasattr(session, "proxies"):
-        session.proxies = proxies
-
     last_error = "未获取到出口 IP"
     errors = []
 
     probe_endpoints = endpoints or IP_DISCOVERY_ENDPOINTS
+    total_attempts = max(1, int(attempts or 1))
 
-    for endpoint in probe_endpoints:
-        started = time.perf_counter()
-        try:
-            resp = session.get(
-                endpoint["url"],
-                timeout=timeout,
-                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
-            )
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            if resp.status_code != 200:
-                last_error = f"{endpoint['url']} 返回 HTTP {resp.status_code}"
-                errors.append(last_error)
-                continue
+    for attempt in range(1, total_attempts + 1):
+        session = _build_probe_session(session_factory=session_factory)
+        proxies = build_requests_proxies(proxy)
+        if hasattr(session, "proxies"):
+            session.proxies = proxies
 
-            ip = _extract_ip_from_response(resp, endpoint)
-            if not ip:
-                last_error = f"{endpoint['url']} 响应中未解析到出口 IP"
-                errors.append(last_error)
-                continue
-
-            result = {
-                "ok": True,
-                "proxy": proxy_label,
-                "ip": ip,
-                "latency_ms": elapsed_ms,
-                "ip_source": endpoint["url"],
-            }
-
-            geo_result = (
-                geo_lookup(ip, min(timeout, 8))
-                if geo_lookup
-                else lookup_ip_geolocation(ip, timeout=min(timeout, 8))
-            )
-            if geo_result.get("ok"):
-                result.update(
-                    {
-                        "country": geo_result.get("country", ""),
-                        "country_code": geo_result.get("country_code", ""),
-                        "region": geo_result.get("region", ""),
-                        "city": geo_result.get("city", ""),
-                        "geo_source": geo_result.get("source", ""),
-                        "geo_latency_ms": geo_result.get("latency_ms"),
-                    }
+        for endpoint in probe_endpoints:
+            started = time.perf_counter()
+            try:
+                resp = session.get(
+                    endpoint["url"],
+                    timeout=timeout,
+                    headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
                 )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                if resp.status_code != 200:
+                    last_error = f"{endpoint['url']} 返回 HTTP {resp.status_code}"
+                    errors.append(last_error)
+                    continue
+
+                ip = _extract_ip_from_response(resp, endpoint)
+                if not ip:
+                    last_error = f"{endpoint['url']} 响应中未解析到出口 IP"
+                    errors.append(last_error)
+                    continue
+
+                result = {
+                    "ok": True,
+                    "proxy": proxy_label,
+                    "ip": ip,
+                    "latency_ms": elapsed_ms,
+                    "ip_source": endpoint["url"],
+                    "attempt": attempt,
+                    "attempts": total_attempts,
+                }
+
+                geo_result = (
+                    geo_lookup(ip, min(timeout, 8))
+                    if geo_lookup
+                    else lookup_ip_geolocation(ip, timeout=min(timeout, 8))
+                )
+                if geo_result.get("ok"):
+                    result.update(
+                        {
+                            "country": geo_result.get("country", ""),
+                            "country_code": geo_result.get("country_code", ""),
+                            "region": geo_result.get("region", ""),
+                            "city": geo_result.get("city", ""),
+                            "geo_source": geo_result.get("source", ""),
+                            "geo_latency_ms": geo_result.get("latency_ms"),
+                        }
+                    )
+                else:
+                    result["geo_reason"] = geo_result.get("reason", "geo_lookup_failed")
+
+                return result
+            except Exception as exc:
+                last_error = _proxy_request_error_reason(exc, timeout)
+
+            if total_attempts > 1:
+                errors.append(f"第 {attempt}/{total_attempts} 次: {last_error}")
             else:
-                result["geo_reason"] = geo_result.get("reason", "geo_lookup_failed")
+                errors.append(last_error)
 
-            return result
-        except requests.exceptions.ProxyError as exc:
-            last_error = f"代理握手失败: {exc}"
-        except requests.exceptions.ConnectTimeout:
-            last_error = f"连接代理超时（>{timeout}s）"
-        except requests.exceptions.ReadTimeout:
-            last_error = f"代理响应超时（>{timeout}s）"
-        except requests.exceptions.RequestException as exc:
-            last_error = f"代理请求失败: {exc}"
-        except Exception as exc:
-            last_error = f"代理探测异常: {exc}"
-
-        errors.append(last_error)
+        if attempt < total_attempts and retry_delay > 0:
+            time.sleep(retry_delay)
 
     return {
         "ok": False,
@@ -376,6 +398,100 @@ def probe_proxy_connectivity(
         "reason": last_error,
         "errors": errors,
     }
+
+
+def probe_proxy_target_urls(
+    proxy: dict | None,
+    target_urls: tuple[str, ...] | list[str] | None = None,
+    timeout: int = 5,
+    session_factory: Callable[[], requests.Session] | None = None,
+):
+    """检查代理到目标站的 HTTP 表现，识别能查 IP 但被目标站拒绝的代理。"""
+    if not proxy or not proxy.get("enabled"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "proxy_disabled",
+            "proxy": describe_proxy(proxy),
+        }
+
+    urls = tuple(target_urls or OPENAI_PROXY_TARGET_URLS)
+    if not urls:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "target_urls_empty",
+            "proxy": describe_proxy(proxy),
+        }
+
+    session = _build_probe_session(session_factory=session_factory)
+    proxies = build_requests_proxies(proxy)
+    if hasattr(session, "proxies"):
+        session.proxies = proxies
+
+    details = []
+    errors = []
+    blocked_statuses = {403, 407, 429}
+
+    for url in urls:
+        started = time.perf_counter()
+        try:
+            resp = session.get(
+                url,
+                timeout=timeout,
+                allow_redirects=False,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            blocked = status_code in blocked_statuses
+            target_ok = 200 <= status_code < 400
+            details.append(
+                {
+                    "url": url,
+                    "status_code": status_code,
+                    "latency_ms": elapsed_ms,
+                    "ok": target_ok,
+                    "blocked": blocked,
+                }
+            )
+            if target_ok:
+                return {
+                    "ok": True,
+                    "proxy": describe_proxy(proxy),
+                    "target": url,
+                    "status_code": status_code,
+                    "latency_ms": elapsed_ms,
+                    "targets": details,
+                }
+            if blocked:
+                errors.append(f"{url} 返回 HTTP {status_code}（疑似被目标站拒绝）")
+            else:
+                errors.append(f"{url} 返回 HTTP {status_code}")
+        except Exception as exc:
+            reason = _proxy_request_error_reason(exc, timeout)
+            errors.append(f"{url}: {reason}")
+            details.append({"url": url, "ok": False, "reason": reason})
+
+    return {
+        "ok": False,
+        "proxy": describe_proxy(proxy),
+        "reason": errors[-1] if errors else "目标站检测失败",
+        "errors": errors,
+        "targets": details,
+    }
+
+
+def _format_target_probe_details(result: dict) -> str:
+    targets = result.get("targets") or []
+    parts = []
+    for item in targets[:3]:
+        url = item.get("url", "unknown")
+        if item.get("status_code"):
+            parts.append(f"{url} HTTP {item['status_code']}")
+        elif item.get("reason"):
+            parts.append(f"{url} {item['reason']}")
+    return "；".join(parts) or result.get("reason", "unknown_error")
 
 
 def format_probe_location(details: dict) -> str:
@@ -398,11 +514,25 @@ def format_probe_location(details: dict) -> str:
     return " / ".join(parts) or "未知地区"
 
 
-def ensure_proxy_ready(proxy: dict | None, purpose: str = "代理链路", timeout: int = 10):
+def ensure_proxy_ready(
+    proxy: dict | None,
+    purpose: str = "代理链路",
+    timeout: int = 10,
+    attempts: int = 2,
+    retry_delay: float = 1.0,
+    target_urls: tuple[str, ...] | list[str] | None = None,
+    require_target_ok: bool = False,
+    target_timeout: int = 5,
+):
     """
     代理启用时执行预检；失败则抛出 RuntimeError。
     """
-    result = probe_proxy_connectivity(proxy, timeout=timeout)
+    result = probe_proxy_connectivity(
+        proxy,
+        timeout=timeout,
+        attempts=attempts,
+        retry_delay=retry_delay,
+    )
     if result.get("skipped"):
         return result
 
@@ -413,17 +543,43 @@ def ensure_proxy_ready(proxy: dict | None, purpose: str = "代理链路", timeou
         print(f"  ❌ 代理预检失败: {result.get('reason', 'unknown_error')}")
         raise RuntimeError(f"{purpose} 失败：{result.get('reason', 'unknown_error')}")
 
+    retry_note = ""
+    if result.get("attempt", 1) > 1:
+        retry_note = f" | 重试后成功: 第 {result.get('attempt')}/{result.get('attempts')} 次"
     print(
         f"  ✅ 请求链路可用: {result.get('ip', 'unknown')} | "
         f"{format_probe_location(result)} | {result.get('latency_ms', '?')} ms"
+        f"{retry_note}"
     )
     if result.get("geo_reason"):
         print(f"  ℹ️ 出口地区识别失败: {result['geo_reason']}")
+
+    if target_urls:
+        target_result = probe_proxy_target_urls(
+            proxy,
+            target_urls=target_urls,
+            timeout=target_timeout,
+        )
+        result["target_probe"] = target_result
+        if target_result.get("ok"):
+            print(
+                f"  ✅ 目标站可达: {target_result.get('target')} "
+                f"HTTP {target_result.get('status_code')} | "
+                f"{target_result.get('latency_ms', '?')} ms"
+            )
+        else:
+            detail = _format_target_probe_details(target_result)
+            print(f"  ⚠️ 目标站检测异常: {detail}")
+            if require_target_ok:
+                raise RuntimeError(
+                    f"{purpose} 失败：目标站检测异常："
+                    f"{target_result.get('reason', 'unknown_error')}"
+                )
     return result
 
 
 def configure_http_proxy(proxy: dict):
-    """更新全局 http_session 的代理设置（影响 mailtm 等所有 requests 调用）。"""
+    """更新全局 http_session 的代理设置。"""
     proxies = build_requests_proxies(proxy)
     if proxies:
         http_session.proxies.update(proxies)
@@ -472,17 +628,26 @@ def generate_random_password(length=None):
     return password
 
 
+def _sanitize_account_field(value) -> str:
+    """账号 TXT 是 pipe 分隔，写入前去掉换行和分隔符。"""
+    return (
+        str(value or "")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("|", "/")
+        .strip()
+    )
+
+
 def save_to_txt(email: str, password: str = None, status="已注册",
-               mailtm_password: str = None, provider: str = "mailtm"):
+               mailbox_credential: str = None, provider: str = "nnai"):
     """
     保存账号信息到 TXT 文件
     格式: 邮箱|ChatGPT密码|时间|状态|临时邮箱凭证|提供商
     如果账号已存在，则更新其信息
     """
     try:
-        file_path = cfg.files.accounts_file
-        if not os.path.isabs(file_path):
-            file_path = os.path.join(PROJECT_ROOT, file_path)
+        file_path = str(dated_accounts_file_path(cfg.files.accounts_file))
         os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
         current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -494,16 +659,30 @@ def save_to_txt(email: str, password: str = None, status="已注册",
 
         # 检查是否已存在，存在则更新
         found = False
-        credential = mailtm_password or ''
-        new_line_content = f"{email}|{password or 'N/A'}|{current_date}|{status}|{credential}|{provider}\n"
+        safe_email = _sanitize_account_field(email)
+        safe_password = _sanitize_account_field(password or "N/A")
+        safe_status = _sanitize_account_field(status)
+        credential = _sanitize_account_field(mailbox_credential or '')
+        safe_provider = _sanitize_account_field(provider or "nnai")
+        new_line_content = (
+            f"{safe_email}|{safe_password}|{current_date}|"
+            f"{safe_status}|{credential}|{safe_provider}\n"
+        )
 
         for i, line in enumerate(lines):
-            if line.startswith(f"{email}|"):
+            if line.startswith(f"{safe_email}|"):
                 parts = line.strip().split("|")
-                final_password = password if password else (parts[1] if len(parts) > 1 else 'N/A')
+                final_password = (
+                    safe_password if password else (parts[1] if len(parts) > 1 else 'N/A')
+                )
                 final_cred = credential if credential else (parts[4] if len(parts) > 4 else '')
-                final_provider = provider if provider else (parts[5] if len(parts) > 5 else 'mailtm')
-                lines[i] = f"{email}|{final_password}|{current_date}|{status}|{final_cred}|{final_provider}\n"
+                final_provider = (
+                    safe_provider if provider else (parts[5] if len(parts) > 5 else 'nnai')
+                )
+                lines[i] = (
+                    f"{safe_email}|{final_password}|{current_date}|"
+                    f"{safe_status}|{final_cred}|{final_provider}\n"
+                )
                 found = True
                 break
 
@@ -520,7 +699,7 @@ def save_to_txt(email: str, password: str = None, status="已注册",
         print(f"❌ 保存/更新账号信息失败: {e}")
 
 
-def update_account_status(email: str, new_status: str, password: str = None, provider: str = "mailtm"):
+def update_account_status(email: str, new_status: str, password: str = None, provider: str = "nnai"):
     """更新账号状态"""
     save_to_txt(email, password, new_status, provider=provider)
 

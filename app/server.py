@@ -13,20 +13,13 @@ from flask import Flask, jsonify, request, send_from_directory
 # 导入业务逻辑
 from . import main
 from . import browser
-from . import custom2925_service
-from . import gaggle_service
-from . import gptmail_service
-from . import mailtm_service
 from . import nnai_service
 from . import email_providers
 from . import oauth_service
-from . import outlookemail_service
-from . import tempmail_lol_service
-from . import temporam_service
 from . import token_batch_service
 from . import us_proxy_pool
 from . import utils
-from .config import PROJECT_ROOT, cfg
+from .config import PROJECT_ROOT, cfg, dated_accounts_file_path
 from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -53,8 +46,9 @@ class AppState:
         self.logs = []
         self.lock = threading.Lock()
 
-        # 选中的邮箱提供商列表（默认启用公开 provider）
+        # 邮箱渠道固定为 NNAI，域名可多选
         self.selected_providers = list(email_providers.DEFAULT_PROVIDERS)
+        self.selected_email_domains = nnai_service.get_configured_domains()
 
         # 并行注册数（1 = 串行）
         self.parallel_count = 1
@@ -181,16 +175,9 @@ def hooked_print(*args, **kwargs):
 for module in (
     main,
     browser,
-    custom2925_service,
     email_providers,
-    gaggle_service,
-    gptmail_service,
-    mailtm_service,
     nnai_service,
     oauth_service,
-    outlookemail_service,
-    tempmail_lol_service,
-    temporam_service,
     token_batch_service,
     us_proxy_pool,
     utils,
@@ -252,7 +239,17 @@ def _pick_registration_start_proxy(proxy):
     return dict(proxy) if proxy else None, False
 
 
-def worker_thread(count, selected_providers, parallel, headless, proxy):
+def _current_email_domains():
+    configured_domains = nnai_service.get_configured_domains()
+    selected = [
+        domain
+        for domain in (state.selected_email_domains or configured_domains)
+        if domain in configured_domains
+    ]
+    return selected or configured_domains
+
+
+def worker_thread(count, selected_providers, parallel, headless, proxy, selected_domains=None):
     state.is_running = True
     state.stop_requested = False
     state.success_count = 0
@@ -278,9 +275,23 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
             "password": "",
         }
 
+    del selected_providers
+    try:
+        email_domains = nnai_service.normalize_domain_list(
+            selected_domains or _current_email_domains()
+        )
+        configured_domains = set(nnai_service.get_configured_domains())
+        email_domains = [domain for domain in email_domains if domain in configured_domains]
+    except ValueError as exc:
+        main.print(f"⚠️ 邮箱域名选择无效，已回退到默认域名: {exc}")
+        email_domains = nnai_service.get_configured_domains()
+    if not email_domains:
+        email_domains = nnai_service.get_configured_domains()
+
     with _log_proxy_context(task_proxy):
         main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
-        main.print(f"📬 邮箱服务: {', '.join(selected_providers)}")
+        main.print("📬 邮箱渠道: NNAI.website")
+        main.print(f"🌐 邮箱域名: {', '.join(email_domains)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
         proxy_rotation = None
         if task_proxy and task_proxy.get("enabled"):
@@ -295,6 +306,7 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
             proxy_rotation = _build_registration_proxy_rotation(task_proxy)
 
         counter_lock = threading.Lock()
+        register_slot = threading.Semaphore(max(1, int(parallel)))
         started = [0]
 
         def monitor(driver, _step):
@@ -309,6 +321,19 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
         def do_one(_):
             if state.stop_requested:
                 return
+            slot_released = False
+
+            def release_slot():
+                nonlocal slot_released
+                if not slot_released:
+                    slot_released = True
+                    register_slot.release()
+
+            register_slot.acquire()
+            if state.stop_requested:
+                release_slot()
+                return
+
             with counter_lock:
                 started[0] += 1
                 idx = started[0]
@@ -326,18 +351,26 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
                     proxy_label = describe_proxy(account_proxy)
                     state.current_action = f"{state.current_action} [{proxy_label}]"
                     main.print(f"🧭 第 {idx}/{count} 个账号使用代理: {proxy_label}")
-                provider = random.choice(selected_providers)
+                provider = "nnai"
+                email_domain = random.choice(email_domains)
                 try:
                     attempt_proxy = account_proxy
+
+                    def on_success_ready(_email, _password, _account_record_info):
+                        main.print("⚡ accessToken 已保存，立即开始排队下个注册任务")
+                        release_slot()
+
                     while True:
                         try:
                             with _log_proxy_context(attempt_proxy):
                                 _, _, success = main.register_one_account(
                                     monitor_callback=monitor,
                                     email_provider=provider,
+                                    email_domain=email_domain,
                                     headless=headless,
                                     proxy=attempt_proxy,
                                     raise_proxy_errors=True,
+                                    success_callback=on_success_ready,
                                 )
                             break
                         except main.ProxyEgressCheckError as proxy_exc:
@@ -378,9 +411,12 @@ def worker_thread(count, selected_providers, parallel, headless, proxy):
                             processed=state.success_count,
                         )
                     main.print(f"❌ 异常: {str(e)}")
+                finally:
+                    release_slot()
 
         try:
-            with ThreadPoolExecutor(max_workers=parallel) as executor:
+            max_workers = max(1, min(count, int(parallel) * 4))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(do_one, i) for i in range(count)]
                 for future in as_completed(futures):
                     if state.stop_requested:
@@ -525,14 +561,12 @@ def start_task():
     data = request.json
     count = data.get('count', 1)
 
-    # 使用当前选中的提供商列表
-    providers = list(state.selected_providers)
-    if not providers:
-        providers = ["mailtm"]
+    providers = ["nnai"]
+    domains = _current_email_domains()
 
     threading.Thread(
         target=worker_thread,
-        args=(count, providers, state.parallel_count, state.headless, dict(state.proxy)),
+        args=(count, providers, state.parallel_count, state.headless, dict(state.proxy), domains),
         daemon=True
     ).start()
     return jsonify({"status": "started"})
@@ -666,7 +700,7 @@ def stop_task():
 
 @app.route('/api/providers', methods=['GET'])
 def get_providers():
-    """获取所有提供商列表及当前选中状态"""
+    """获取邮箱提供商列表。当前只保留 NNAI。"""
     result = []
     for pid, info in email_providers.PROVIDERS.items():
         result.append({
@@ -680,8 +714,8 @@ def get_providers():
 
 @app.route('/api/providers', methods=['POST'])
 def set_providers():
-    """更新选中的提供商列表"""
-    data = request.json
+    """兼容旧 API：邮箱渠道固定为 NNAI。"""
+    data = request.json or {}
     selected = data.get('selected', [])
 
     # 过滤出合法的提供商 ID
@@ -690,6 +724,38 @@ def set_providers():
         return jsonify({"error": "至少需要选择一个提供商"}), 400
 
     state.selected_providers = valid
+    return jsonify({"status": "ok", "selected": valid})
+
+
+@app.route('/api/email-domains', methods=['GET'])
+def get_email_domains():
+    """获取 NNAI 可用域名列表及当前选中状态。"""
+    configured_domains = nnai_service.get_configured_domains()
+    selected = set(_current_email_domains())
+    return jsonify([
+        {
+            "domain": domain,
+            "selected": domain in selected,
+        }
+        for domain in configured_domains
+    ])
+
+
+@app.route('/api/email-domains', methods=['POST'])
+def set_email_domains():
+    """更新选中的 NNAI 邮箱域名列表。"""
+    data = request.json or {}
+    try:
+        selected = nnai_service.normalize_domain_list(data.get('selected', []))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    configured_domains = set(nnai_service.get_configured_domains())
+    valid = [domain for domain in selected if domain in configured_domains]
+    if not valid:
+        return jsonify({"error": "至少需要选择一个已配置邮箱域名"}), 400
+
+    state.selected_email_domains = valid
     return jsonify({"status": "ok", "selected": valid})
 
 @app.route('/api/accounts')
@@ -702,7 +768,7 @@ def get_accounts():
                 for line in f:
                     parts = line.strip().split('|')
                     if len(parts) >= 2 and '@' in parts[0]:
-                        provider_id = parts[5].strip() if len(parts) > 5 else 'mailtm'
+                        provider_id = parts[5].strip() if len(parts) > 5 else 'nnai'
                         provider_info = email_providers.get_provider_info(provider_id)
                         accounts.append({
                             "email": parts[0].strip(),
@@ -712,8 +778,8 @@ def get_accounts():
                             "temp_credential": parts[4].strip() if len(parts) > 4 else "",
                             "provider": provider_id,
                             "provider_name": provider_info["name"] if provider_info else provider_id,
-                            "inbox_url": provider_info["inbox_url"] if provider_info else "https://mail.tm",
-                            "has_password": provider_info["has_password"] if provider_info else True,
+                            "inbox_url": provider_info["inbox_url"] if provider_info else email_providers.PROVIDERS["nnai"]["inbox_url"],
+                            "has_password": provider_info["has_password"] if provider_info else False,
                         })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -742,6 +808,9 @@ def serve_app():
 
 
 def _resolve_repo_path(path_value: str) -> Path:
+    if str(path_value) == cfg.files.accounts_file:
+        return dated_accounts_file_path(path_value)
+
     path = Path(path_value)
     if path.is_absolute():
         return path

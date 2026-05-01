@@ -15,6 +15,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
             "fail_count": server.state.fail_count,
             "current_action": server.state.current_action,
             "selected_providers": list(server.state.selected_providers),
+            "selected_email_domains": list(server.state.selected_email_domains),
             "parallel_count": server.state.parallel_count,
             "headless": server.state.headless,
             "logs": list(server.state.logs),
@@ -29,6 +30,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
         server.state.fail_count = self.original_state["fail_count"]
         server.state.current_action = self.original_state["current_action"]
         server.state.selected_providers = self.original_state["selected_providers"]
+        server.state.selected_email_domains = self.original_state["selected_email_domains"]
         server.state.parallel_count = self.original_state["parallel_count"]
         server.state.headless = self.original_state["headless"]
         server.state.logs = self.original_state["logs"]
@@ -116,7 +118,33 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(payload["current_proxy"]["host"], "9.9.9.9")
         self.assertTrue(payload["current_proxy"]["enabled"])
 
-    @mock.patch("app.server.random.choice", return_value="mailtm")
+    @mock.patch("app.server.nnai_service.get_configured_domains")
+    def test_email_domains_api_updates_selected_domains(self, get_configured_domains):
+        get_configured_domains.return_value = ["nnai.website", "mail.example.com"]
+
+        response = self.client.post(
+            "/api/email-domains",
+            json={"selected": ["mail.example.com"]},
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["selected"], ["mail.example.com"])
+        self.assertEqual(server.state.selected_email_domains, ["mail.example.com"])
+
+        response = self.client.get("/api/email-domains")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            payload,
+            [
+                {"domain": "nnai.website", "selected": False},
+                {"domain": "mail.example.com", "selected": True},
+            ],
+        )
+
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
     @mock.patch("app.server.us_proxy_pool.load_us_proxy_pool")
     @mock.patch("app.server.ensure_proxy_ready")
@@ -145,7 +173,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
         server.worker_thread(
             count=4,
-            selected_providers=["mailtm"],
+            selected_providers=["nnai"],
             parallel=1,
             headless=False,
             proxy={
@@ -167,7 +195,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(server.state.success_count, 4)
         self.assertEqual(server.state.fail_count, 0)
 
-    @mock.patch("app.server.random.choice", return_value="mailtm")
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
     @mock.patch("app.server.us_proxy_pool.load_us_proxy_pool")
     @mock.patch("app.server.ensure_proxy_ready")
@@ -209,7 +237,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
         server.worker_thread(
             count=3,
-            selected_providers=["mailtm"],
+            selected_providers=["nnai"],
             parallel=1,
             headless=False,
             proxy={
@@ -268,7 +296,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertIn("[代理 http://8.8.8.8:8080] 测试日志", server.state.logs[-1])
         original_print.assert_called_once_with("[代理 http://8.8.8.8:8080] 测试日志")
 
-    @mock.patch("app.server.random.choice", return_value="mailtm")
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
     @mock.patch("app.server.ensure_proxy_ready")
     def test_worker_thread_account_logs_include_current_proxy(
@@ -286,7 +314,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
         server.worker_thread(
             count=1,
-            selected_providers=["mailtm"],
+            selected_providers=["nnai"],
             parallel=1,
             headless=False,
             proxy={

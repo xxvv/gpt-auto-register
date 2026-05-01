@@ -4,8 +4,10 @@
 
 import io
 import os
+import random
 import re
 import socket
+import ssl
 import struct
 import subprocess
 import tempfile
@@ -13,8 +15,9 @@ import threading
 import time
 import zipfile
 from datetime import date
+from urllib.error import URLError
 import undetected_chromedriver as uc
-from selenium.common.exceptions import NoSuchWindowException
+from selenium.common.exceptions import NoSuchWindowException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -28,6 +31,7 @@ from .config import (
     BUTTON_CLICK_MAX_RETRIES,
 )
 from .utils import (
+    OPENAI_PROXY_TARGET_URLS,
     ensure_proxy_ready,
     format_probe_location,
     generate_user_info,
@@ -172,6 +176,175 @@ def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) 
     return "unknown"
 
 
+def _visible_password_input(driver):
+    password_inputs = _find_visible_elements(driver, _PASSWORD_INPUT_SELECTORS)
+    if password_inputs:
+        return password_inputs[0]
+    return None
+
+
+def _wait_for_visible_password_input(driver, timeout: int = 30, monitor_callback=None):
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        password_input = _visible_password_input(driver)
+        if password_input:
+            return password_input
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="password_input_wait",
+            interval=0.5,
+        )
+
+    raise RuntimeError("未找到密码输入框")
+
+
+def _wait_for_password_input_or_verification(
+    driver, timeout: int = 30, monitor_callback=None
+):
+    end_time = time.time() + timeout
+    verification_hits = 0
+    while time.time() < end_time:
+        password_input = _visible_password_input(driver)
+        if password_input:
+            return "password", password_input
+
+        if _is_email_verification_page(driver, require_visible_input=True):
+            verification_hits += 1
+            if verification_hits >= 2:
+                print("✅ 当前已进入邮箱验证码页，跳过密码输入")
+                return "verification", None
+        else:
+            verification_hits = 0
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="password_or_verification_wait",
+            interval=0.5,
+        )
+
+    return "unknown", None
+
+
+def _wait_for_password_submit_result(
+    driver, timeout: int = 30, monitor_callback=None
+) -> str:
+    end_time = time.time() + timeout
+    verification_hits = 0
+    password_hits = 0
+    print(f"📬 等待密码提交结果...（最长 {timeout}s）")
+
+    while time.time() < end_time:
+        if check_and_handle_error(driver, monitor_callback=monitor_callback):
+            print("↩️ 密码提交后检测到错误页，将重新输入密码")
+            return "retry_password"
+
+        if _visible_password_input(driver):
+            password_hits += 1
+            if password_hits >= 3:
+                print("↩️ 检测到密码输入框，将重新确认密码并继续")
+                return "retry_password"
+        else:
+            password_hits = 0
+
+        if _is_email_verification_page(driver):
+            verification_hits += 1
+            if verification_hits >= 2:
+                print("✅ 已进入邮箱验证码页")
+                return "verification"
+        else:
+            verification_hits = 0
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="password_submit_result_wait",
+            interval=0.5,
+        )
+
+    print("❌ 密码提交后未进入邮箱验证码页")
+    return "unknown"
+
+
+def _click_signup_or_login_entry(driver) -> bool:
+    print("🔍 检查是否需要点击 注册/登录 按钮...")
+    try:
+        signup_btns = driver.find_elements(
+            By.XPATH,
+            '//button[contains(., "Sign up")] | //button[contains(., "注册")] | //div[contains(text(), "Sign up")] | //div[contains(text(), "注册")]',
+        )
+        login_btns = driver.find_elements(
+            By.XPATH,
+            '//button[contains(., "Log in")] | //button[contains(., "登录")] | //div[contains(text(), "Log in")] | //div[contains(text(), "登录")]',
+        )
+
+        target_btn = None
+        if signup_btns:
+            target_btn = signup_btns[0]
+            print("  -> 找到 注册(Sign up) 按钮")
+        elif login_btns:
+            target_btn = login_btns[0]
+            print("  -> 找到 登录(Log in) 按钮")
+
+        if target_btn and target_btn.is_displayed():
+            driver.execute_script("arguments[0].click();", target_btn)
+            print("  ✅ 已点击入口按钮")
+            time.sleep(3)
+            return True
+    except Exception as e:
+        print(f"  ⚠️ 检查入口按钮时出错 (非致命): {e}")
+
+    return False
+
+
+def _wait_for_signup_email_input(
+    driver,
+    timeout: int = MAX_WAIT_TIME,
+    refresh_after_attempts: int = 2,
+    monitor_callback=None,
+):
+    end_time = time.time() + timeout
+    failure_count = 0
+    email_selectors = [
+        (
+            By.CSS_SELECTOR,
+            'input[type="email"], input[name="email"], input[autocomplete="email"]',
+        )
+    ]
+
+    while time.time() < end_time:
+        email_inputs = _find_visible_elements(driver, email_selectors)
+        if email_inputs:
+            return email_inputs[0]
+
+        failure_count += 1
+        if failure_count >= max(1, refresh_after_attempts):
+            print("🔄 连续两次未找到邮箱输入框，刷新页面后继续等待...")
+            driver.refresh()
+            failure_count = 0
+            _sleep_with_heartbeat(
+                driver,
+                random.randint(5, 8),
+                monitor_callback=monitor_callback,
+                step_name="signup_email_input_refresh_wait",
+            )
+            _click_signup_or_login_entry(driver)
+        else:
+            _sleep_with_heartbeat(
+                driver,
+                1,
+                monitor_callback=monitor_callback,
+                step_name="signup_email_input_wait",
+            )
+
+    raise RuntimeError("未找到邮箱输入框")
+
+
 class SafeChrome(uc.Chrome):
     """
     自定义 Chrome 类，修复 Windows 下退出时的 WinError 6
@@ -192,6 +365,61 @@ class SafeChrome(uc.Chrome):
             pass
         except Exception:
             pass
+
+
+def _is_transient_urlopen_ssl_error(exc: Exception) -> bool:
+    """识别 undetected-chromedriver 下载 driver 时常见的临时 TLS 断流。"""
+    if isinstance(exc, URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLError):
+            return True
+
+    message = str(exc).lower()
+    transient_markers = (
+        "urlopen error",
+        "unexpected_eof_while_reading",
+        "eof occurred in violation of protocol",
+        "_ssl.c",
+        "connection reset",
+        "remote end closed connection",
+    )
+    return any(marker in message for marker in transient_markers)
+
+
+def _raise_chrome_startup_network_error(exc: Exception) -> None:
+    raise RuntimeError(
+        "浏览器驱动下载/启动时 HTTPS 连接被提前断开。"
+        "这通常是网络、代理或到 Google ChromeDriver 源站的 TLS 链路不稳定导致的。"
+        "已自动重试仍失败；请检查代理/VPN 是否稳定，或先切换一条可访问 "
+        "googlechromelabs.github.io 和 storage.googleapis.com 的网络后再试。"
+        f"原始错误: {exc}"
+    ) from exc
+
+
+def _start_safe_chrome_with_retry(chrome_kwargs: dict, attempts: int = 3):
+    last_exc: Exception | None = None
+    total_attempts = max(1, int(attempts))
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return SafeChrome(**chrome_kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient_urlopen_ssl_error(exc):
+                raise
+            if attempt >= total_attempts:
+                _raise_chrome_startup_network_error(exc)
+            wait_time = min(2 ** attempt, 8)
+            print(
+                "  ⚠️ ChromeDriver 下载/启动时网络断流，"
+                f"{wait_time}s 后重试（第 {attempt}/{total_attempts} 次）: {exc}"
+            )
+            time.sleep(wait_time)
+
+    if last_exc is not None:
+        _raise_chrome_startup_network_error(last_exc)
+
+    raise RuntimeError("浏览器驱动启动失败: unknown_error")
 
 
 def _is_window_target_lost(exc: Exception) -> bool:
@@ -571,7 +799,14 @@ def create_driver(headless=False, proxy=None):
     """
     print(f"🌐 正在初始化浏览器 (Headless: {headless})...")
     if proxy and proxy.get("enabled"):
-        ensure_proxy_ready(proxy, purpose="浏览器代理预检", timeout=10)
+        ensure_proxy_ready(
+            proxy,
+            purpose="浏览器代理预检",
+            timeout=10,
+            target_urls=OPENAI_PROXY_TARGET_URLS,
+            require_target_ok=False,
+            target_timeout=5,
+        )
 
     options = uc.ChromeOptions()
 
@@ -608,7 +843,7 @@ def create_driver(headless=False, proxy=None):
         chrome_kwargs["version_main"] = chrome_major_version
 
     # 使用自定义的 SafeChrome (注意: 传入 real_headless=False)
-    driver = SafeChrome(**chrome_kwargs)
+    driver = _start_safe_chrome_with_retry(chrome_kwargs)
 
     # === 深度伪装 (针对 Headless 模式) ===
     if headless:
@@ -1184,39 +1419,13 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             except Exception:
                 pass
 
-        print("🔍 检查是否需要点击 注册/登录 按钮...")
-        try:
-            signup_btns = driver.find_elements(
-                By.XPATH,
-                '//button[contains(., "Sign up")] | //button[contains(., "注册")] | //div[contains(text(), "Sign up")] | //div[contains(text(), "注册")]',
-            )
-            login_btns = driver.find_elements(
-                By.XPATH,
-                '//button[contains(., "Log in")] | //button[contains(., "登录")] | //div[contains(text(), "Log in")] | //div[contains(text(), "登录")]',
-            )
+        _click_signup_or_login_entry(driver)
 
-            target_btn = None
-            if signup_btns:
-                target_btn = signup_btns[0]
-                print("  -> 找到 注册(Sign up) 按钮")
-            elif login_btns:
-                target_btn = login_btns[0]
-                print("  -> 找到 登录(Log in) 按钮")
-
-            if target_btn and target_btn.is_displayed():
-                driver.execute_script("arguments[0].click();", target_btn)
-                print("  ✅ 已点击入口按钮")
-                time.sleep(3)
-        except Exception as e:
-            print(f"  ⚠️ 检查入口按钮时出错 (非致命): {e}")
-
-        email_input = WebDriverWait(driver, SHORT_WAIT_TIME).until(
-            EC.visibility_of_element_located(
-                (
-                    By.CSS_SELECTOR,
-                    'input[type="email"], input[name="email"], input[autocomplete="email"]',
-                )
-            )
+        email_input = _wait_for_signup_email_input(
+            driver,
+            timeout=MAX_WAIT_TIME,
+            refresh_after_attempts=2,
+            monitor_callback=monitor_callback,
         )
 
         print("📝 正在输入邮箱...")
@@ -1252,59 +1461,77 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             monitor_callback=monitor_callback,
         )
         if next_step == "verification":
-            print("❌ 邮箱提交后直接进入验证码页，未出现密码输入框")
-            print("  为确保后续 OAuth 一致性，本次注册终止并重试")
-            return False, False
+            print("✅ 邮箱提交后直接进入验证码页，跳过密码输入")
+            return True, False
         if next_step != "password":
             return False, False
 
-        print("🔑 等待密码输入框...")
-        password_input = WebDriverWait(driver, SHORT_WAIT_TIME).until(
-            EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, 'input[autocomplete="new-password"], input[type="password"]')
+        password_entered = False
+        password_submit_attempts = max(1, ERROR_PAGE_MAX_RETRIES)
+        for password_attempt in range(1, password_submit_attempts + 1):
+            if password_attempt == 1:
+                print("🔑 等待密码输入框...")
+            else:
+                print(
+                    f"🔁 重新输入密码并继续（第 {password_attempt}/{password_submit_attempts} 次）"
+                )
+
+            password_step, password_input = _wait_for_password_input_or_verification(
+                driver,
+                timeout=SHORT_WAIT_TIME,
+                monitor_callback=monitor_callback,
             )
-        )
-        actions = ActionChains(driver)
-        actions.move_to_element(password_input)
-        actions.click()
-        actions.perform()
-        if not _fill_input_with_verification(
-            password_input, password, "密码", mask=True
-        ):
-            print("❌ 密码输入校验失败")
-            return False, False
-        _sleep_with_heartbeat(
-            driver,
-            1.5,
-            monitor_callback=monitor_callback,
-            step_name="signup_password_filled_wait",
-        )
+            if password_step == "verification":
+                return True, password_entered
+            if password_step != "password" or not password_input:
+                print("❌ 未找到密码输入框，也未进入邮箱验证码页")
+                return False, password_entered
 
-        print("🔘 点击继续按钮...")
-        if not click_button_with_retry(
-            driver, 'button[type="submit"]', monitor_callback=monitor_callback
-        ):
-            print("❌ 点击继续按钮失败")
-            return False, False
-        print("✅ 已点击继续")
-
-        time.sleep(3)
-        while check_and_handle_error(driver, monitor_callback=monitor_callback):
+            actions = ActionChains(driver)
+            actions.move_to_element(password_input)
+            actions.click()
+            actions.perform()
+            if not _fill_input_with_verification(
+                password_input, password, "密码", mask=True
+            ):
+                print("❌ 密码输入校验失败")
+                return False, password_entered
+            password_entered = True
             _sleep_with_heartbeat(
                 driver,
-                2,
+                1.5,
                 monitor_callback=monitor_callback,
-                step_name="error_recheck_wait",
+                step_name="signup_password_filled_wait",
             )
 
-        if not _wait_for_email_verification_page(
-            driver,
-            timeout=step_wait_timeout,
-            monitor_callback=monitor_callback,
-        ):
-            return False, False
+            print("🔘 点击继续按钮...")
+            if not click_button_with_retry(
+                driver, 'button[type="submit"]', monitor_callback=monitor_callback
+            ):
+                print("❌ 点击继续按钮失败")
+                return False, password_entered
+            print("✅ 已点击继续")
 
-        return True, True
+            _sleep_with_heartbeat(
+                driver,
+                3,
+                monitor_callback=monitor_callback,
+                step_name="signup_password_submit_wait",
+            )
+            submit_result = _wait_for_password_submit_result(
+                driver,
+                timeout=step_wait_timeout,
+                monitor_callback=monitor_callback,
+            )
+            if submit_result == "verification":
+                return True, True
+            if submit_result == "retry_password":
+                continue
+
+            return False, password_entered
+
+        print("❌ 密码提交多次失败，仍未进入邮箱验证码页")
+        return False, password_entered
 
     except Exception as e:
         print(f"❌ 填写表单失败: {e}")
@@ -1799,3 +2026,81 @@ def verify_logged_in(driver, timeout=90):
 
     print("❌ 登录状态验证失败：超时仍未确认登录")
     return False
+
+
+def fetch_current_access_token(driver, timeout=30):
+    """
+    从当前 ChatGPT 浏览器会话读取 /api/auth/session 里的 accessToken。
+
+    该请求必须在浏览器里发起，这样才能携带刚注册完成的登录 cookie。
+    """
+    print("🔐 正在读取 ChatGPT accessToken...")
+
+    try:
+        current_url = str(driver.current_url or "")
+    except Exception:
+        current_url = ""
+
+    if "chatgpt.com" not in current_url.lower():
+        open_chatgpt_url(driver, CHATGPT_HOME_URL)
+        time.sleep(2)
+
+    try:
+        driver.set_script_timeout(timeout)
+    except Exception:
+        pass
+
+    result = driver.execute_async_script(
+        """
+        const done = arguments[0];
+        fetch('https://chatgpt.com/api/auth/session', {
+          cache: 'no-store',
+          credentials: 'include'
+        })
+          .then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try {
+              data = text ? JSON.parse(text) : {};
+            } catch (error) {
+              done({
+                ok: false,
+                status: response.status,
+                error: 'session_json_parse_failed',
+                text: text.slice(0, 500)
+              });
+              return;
+            }
+            done({ok: response.ok, status: response.status, data});
+          })
+          .catch((error) => {
+            done({
+              ok: false,
+              status: 0,
+              error: error && error.message ? error.message : 'session_fetch_failed'
+            });
+          });
+        """
+    )
+
+    if not isinstance(result, dict):
+        raise RuntimeError("session 接口返回异常")
+    if not result.get("ok"):
+        detail = result.get("error") or result.get("text") or "unknown_error"
+        raise RuntimeError(f"session 接口失败: HTTP {result.get('status', 0)} {detail}")
+
+    data = result.get("data") or {}
+    if not isinstance(data, dict):
+        raise RuntimeError("session JSON 格式异常")
+
+    access_token = str(
+        data.get("accessToken")
+        or data.get("access_token")
+        or data.get("token")
+        or ""
+    ).strip()
+    if not access_token:
+        raise RuntimeError("session JSON 缺少 accessToken")
+
+    print("✅ 已读取 ChatGPT accessToken")
+    return access_token

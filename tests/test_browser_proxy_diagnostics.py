@@ -1,4 +1,5 @@
 import unittest
+from urllib.error import URLError
 from unittest.mock import MagicMock, patch
 
 from app import browser
@@ -82,7 +83,65 @@ class BrowserProxyDiagnosticsTests(unittest.TestCase):
         driver = browser.create_driver(headless=False, proxy=proxy)
 
         self.assertIs(driver, safe_driver)
-        ensure_ready.assert_called_once_with(proxy, purpose="浏览器代理预检", timeout=10)
+        ensure_ready.assert_called_once_with(
+            proxy,
+            purpose="浏览器代理预检",
+            timeout=10,
+            target_urls=browser.OPENAI_PROXY_TARGET_URLS,
+            require_target_ok=False,
+            target_timeout=5,
+        )
+
+    @patch("app.browser.time.sleep", return_value=None)
+    @patch("app.browser.SafeChrome")
+    @patch("app.browser._detect_chrome_major_version", return_value=None)
+    @patch("app.browser.uc.ChromeOptions")
+    def test_create_driver_retries_transient_urlopen_ssl_failure(
+        self,
+        chrome_options_cls,
+        detect_version,
+        safe_chrome_cls,
+        sleep,
+    ):
+        del chrome_options_cls, detect_version, sleep
+        safe_driver = MagicMock()
+        safe_chrome_cls.side_effect = [
+            URLError(
+                "[SSL: UNEXPECTED_EOF_WHILE_READING] "
+                "EOF occurred in violation of protocol (_ssl.c:1028)"
+            ),
+            safe_driver,
+        ]
+
+        driver = browser.create_driver(headless=False, proxy=None)
+
+        self.assertIs(driver, safe_driver)
+        self.assertEqual(safe_chrome_cls.call_count, 2)
+
+    @patch("app.browser.time.sleep", return_value=None)
+    @patch("app.browser.SafeChrome")
+    @patch("app.browser._detect_chrome_major_version", return_value=None)
+    @patch("app.browser.uc.ChromeOptions")
+    def test_create_driver_explains_persistent_urlopen_ssl_failure(
+        self,
+        chrome_options_cls,
+        detect_version,
+        safe_chrome_cls,
+        sleep,
+    ):
+        del chrome_options_cls, detect_version, sleep
+        safe_chrome_cls.side_effect = URLError(
+            "[SSL: UNEXPECTED_EOF_WHILE_READING] "
+            "EOF occurred in violation of protocol (_ssl.c:1028)"
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "浏览器驱动下载/启动时 HTTPS 连接被提前断开",
+        ):
+            browser.create_driver(headless=False, proxy=None)
+
+        self.assertEqual(safe_chrome_cls.call_count, 3)
 
     def test_open_chatgpt_url_uses_new_domain(self):
         driver = MagicMock()

@@ -14,42 +14,8 @@ registration:
 email:
   wait_timeout: 120     # 等待验证邮件的最大超时时间(秒)
   poll_interval: 3      # 轮询检查邮件的间隔(秒)
-
-# NNAI.website 邮箱无需额外配置；在 Web 面板「邮箱服务」勾选 NNAI.website 即可。
-
-# 2925 自有邮箱（共享 IMAP 收件箱 + alias）- 可选
-custom2925:
-  enabled: false
-  base_email: "your-main-mail@2925.com"
-  domain: "2925.com"
-  alias_prefix: "youralias"
-  alias_separator: "b"
-  start_index: 1
-  imap_host: "imap.2925.com"
-  imap_port: 993
-  imap_ssl: true
-  imap_user: "your-main-mail@2925.com"
-  imap_password: ""   # 建议改用环境变量 CUSTOM2925_IMAP_PASSWORD
-  mailbox: "INBOX"
-  lookback_seconds: 300
-  counter_file: "data/state/custom2925_counter.json"
-
-# Gaggle 邮箱（需要登录后的 Cookie + create-group token）- 可选
-# 推荐直接把浏览器抓到的 curl 里的 -b 内容粘到 cookie_header
-gaggle:
-  cookie_header: ""   # 例如 "session=...; GAGGLE_REFERER_KEY=...; __stripe_mid=..."
-  csrf_token: ""      # create-group 请求里的 token=...
-
-# OutlookEmail 邮箱池（接入 ../outlookemail 项目的对外 API）- 可选
-# 需先启动 outlookemail，并在其 Web 界面「设置 -> 对外 API Key」配置 API Key
-outlookemail:
-  base_url: "http://localhost:5000"
-  api_key: ""          # 建议改用环境变量 OUTLOOKEMAIL_API_KEY
-  group_id: ""         # 可选：只使用指定分组下的账号
-  account_email: ""    # 可选：固定使用某个主邮箱或别名
-  use_aliases: true     # 优先使用 outlookemail 账号别名作为注册邮箱
-  allow_reuse: false    # 是否允许重复使用已注册/本次已取用的邮箱地址
-  registered_file: "data/state/outlookemail_registered.json"  # 已注册邮箱标记文件
+  domains:             # 可配置多个 catch-all 域名；验证码统一走 NNAI Worker API
+    - "nnai.website"
 
 # 浏览器自动化配置
 browser:
@@ -78,10 +44,8 @@ batch:
 files:
   accounts_file: "data/accounts/registered_accounts.txt"
 
-# Codex OAuth 配置
+# Codex OAuth 配置（仅用于“已有账号补取 Token”，注册成功后不会自动执行 OAuth）
 oauth:
-  enabled: true          # 注册后是否自动获取 Codex OAuth Token
-  required: false         # Token 获取失败是否视为注册失败
   issuer: "https://auth.openai.com"
   client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
   redirect_uri: "http://localhost:1455/auth/callback"
@@ -90,7 +54,7 @@ oauth:
   token_json_dir: "data/tokens"
 
 # CLIProxyAPI Token 池接入（可选）
-# 注册成功后自动推送 Codex Token 到 CLIProxyAPI
+# 补取 Codex Token 后自动推送到 CLIProxyAPI
 # 也可通过环境变量设置: CLIPROXY_API_URL, CLIPROXY_API_KEY, CLIPROXY_AUTH_DIR
 cliproxy:
   enabled: false         # 是否启用自动推送

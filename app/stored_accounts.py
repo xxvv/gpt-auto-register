@@ -27,7 +27,7 @@ def load_accounts_from_file(file_path: str) -> list[dict]:
                 "timestamp": parts[2].strip() if len(parts) > 2 else "",
                 "status": parts[3].strip() if len(parts) > 3 else "",
                 "mailbox_credential": parts[4].strip() if len(parts) > 4 else "",
-                "provider": parts[5].strip() if len(parts) > 5 else "mailtm",
+                "provider": parts[5].strip() if len(parts) > 5 else "nnai",
             }
         )
     return records
@@ -67,7 +67,7 @@ def update_account_status_in_file(file_path: str, email: str, new_status: str) -
 
         password = parts[1].strip() if len(parts) > 1 else "N/A"
         mailbox_credential = parts[4].strip() if len(parts) > 4 else ""
-        provider = parts[5].strip() if len(parts) > 5 else "mailtm"
+        provider = parts[5].strip() if len(parts) > 5 else "nnai"
         updated_lines.append(
             f"{email}|{password}|{current_date}|{new_status}|{mailbox_credential}|{provider}"
         )

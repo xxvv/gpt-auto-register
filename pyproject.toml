@@ -1,7 +1,7 @@
 [project]
 name = "chatgpt-auto-register"
 version = "1.0.0"
-description = "ChatGPT 账号批量注册工具，使用 mail.tm 临时邮箱，支持 Web 管理界面"
+description = "ChatGPT 账号批量注册工具，使用 NNAI.website 邮箱渠道，支持 Web 管理界面"
 requires-python = ">=3.13"
 dependencies = [
     "curl-cffi>=0.7,<0.14",

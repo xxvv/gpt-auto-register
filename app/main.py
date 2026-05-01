@@ -1,15 +1,14 @@
 """
 ChatGPT 账号自动注册 - 主程序
-使用临时邮箱完成注册流程，支持多个临时邮箱服务提供商
+使用 NNAI Worker 邮箱完成注册流程，支持多个邮箱域名随机使用
 """
 
 import time
 import random
 
-from .config import TOTAL_ACCOUNTS, BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX, cfg
+from .config import TOTAL_ACCOUNTS, BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX
 from .utils import generate_random_password, save_to_txt, update_account_status
 from . import email_providers
-from .oauth_service import perform_codex_oauth_login, save_codex_tokens
 from .browser import (
     CHATGPT_HOME_URL,
     create_driver,
@@ -19,6 +18,7 @@ from .browser import (
     fill_profile_info,
     open_chatgpt_url,
     verify_logged_in,
+    fetch_current_access_token,
 )
 
 
@@ -26,17 +26,40 @@ class ProxyEgressCheckError(RuntimeError):
     """浏览器代理出口检测失败，可由上层触发代理切换。"""
 
 
+def _build_registered_account_info(driver, proxy=None) -> str:
+    """
+    注册成功后写入账号 TXT 第四列的内容。
+
+    直接保存当前 ChatGPT 会话 accessToken；如果连 session token 都没拿到，
+    则写入错误信息。
+    """
+    del proxy
+    try:
+        access_token = fetch_current_access_token(driver)
+    except Exception as exc:
+        message = f"错误: 获取accessToken失败: {exc}"
+        print(f"❌ {message}")
+        return message
+
+    print("✅ accessToken 已读取，准备保存")
+    return access_token
+
+
 def register_one_account(
     monitor_callback=None,
-    email_provider="mailtm",
+    email_provider="nnai",
+    email_domain=None,
     headless=False,
     proxy=None,
     raise_proxy_errors=False,
+    success_callback=None,
 ):
     """
     注册单个账号
     :param monitor_callback: 回调函数 func(driver, step_name)，用于截图和中断检查
-    :param email_provider: 临时邮箱提供商 ID（见 email_providers.PROVIDERS）
+    :param email_provider: 临时邮箱提供商 ID（当前固定为 nnai）
+    :param email_domain: NNAI 邮箱域名；为空时由服务配置随机选择
+    :param success_callback: 注册成功且 accessToken 已保存后立即调用，用于上层提前调度下个任务
 
     返回:
         tuple: (邮箱, 密码, 是否成功)
@@ -45,14 +68,16 @@ def register_one_account(
     email = None
     password = None
     success = False
+    success_notified = False
     temp_credential = None
+    account_record_info = ""
 
     # 获取提供商信息
     provider_info = email_providers.get_provider_info(email_provider)
     if not provider_info:
-        print(f"❌ 未知邮箱提供商: {email_provider}，回退到 mail.tm")
-        email_provider = "mailtm"
-        provider_info = email_providers.get_provider_info("mailtm")
+        print(f"❌ 未知邮箱提供商: {email_provider}，回退到 NNAI.website")
+        email_provider = "nnai"
+        provider_info = email_providers.get_provider_info("nnai")
 
     provider_name = provider_info["name"]
 
@@ -78,19 +103,30 @@ def register_one_account(
             except Exception as e:
                 print(f"⚠️ 释放邮箱占用失败: {e}")
 
+    def _notify_success_ready():
+        nonlocal success_notified
+        if not callable(success_callback) or success_notified:
+            return
+        success_notified = True
+        try:
+            success_callback(email, password, account_record_info)
+        except Exception as e:
+            print(f"⚠️ 注册成功回调失败: {e}")
+
     try:
         # 1. 创建临时邮箱
         print(f"📧 正在使用 {provider_name} 创建临时邮箱...")
         # 临时邮箱链路不走代理，只给 OpenAI 注册浏览器使用代理
         email, token, temp_credential = email_providers.create_temp_email(
-            email_provider
+            email_provider,
+            domain=email_domain,
         )
         if email and temp_credential:
             save_to_txt(
                 email,
                 password,
                 "邮箱已创建",
-                mailtm_password=str(temp_credential or ""),
+                mailbox_credential=str(temp_credential or ""),
                 provider=email_provider,
             )
         if not email:
@@ -143,8 +179,7 @@ def register_one_account(
             print("❌ 填写注册表单失败")
             return email, password, False
         if not password_entered:
-            print("❌ 注册流程未完成密码设置，已阻止继续获取验证码和 OAuth")
-            return email, password, False
+            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
         _report("fill_form")
 
         # 6. 等待验证邮件
@@ -181,62 +216,28 @@ def register_one_account(
             return email, password, False
         _report("verify_logged_in")
 
-        safe_token = str(token or "")
-        oauth_status = "未启用"
-        if cfg.oauth.enabled:
-            print("🔑 开始获取 Codex OAuth Token...")
-            try:
-                tokens = perform_codex_oauth_login(
-                    email=email,
-                    password=password,
-                    email_provider=email_provider,
-                    mail_token=safe_token,
-                    proxy=proxy,
-                )
-                save_codex_tokens(email=email, tokens=tokens, proxy=proxy)
-                oauth_status = "成功"
-                print("✅ Codex OAuth Token 已保存")
-            except Exception as e:
-                oauth_status = f"失败: {e}"
-                print(f"❌ OAuth 获取失败: {e}")
-                if cfg.oauth.required:
-                    save_to_txt(
-                        email,
-                        password,
-                        "已注册/OAuth失败",
-                        mailtm_password=str(temp_credential or ""),
-                        provider=email_provider,
-                    )
-                    _mark_provider_registered("已注册/OAuth失败")
-                    return email, password, False
-
+        account_record_info = _build_registered_account_info(driver, proxy=proxy)
         account_status = "已注册"
-        if cfg.oauth.enabled:
-            account_status = (
-                "已注册/OAuth成功" if oauth_status == "成功" else "已注册/OAuth失败"
-            )
 
         # 保存账号信息（含临时邮箱凭证和提供商，用于再次登录临时邮箱）
         save_to_txt(
             email,
             password,
-            account_status,
-            mailtm_password=str(temp_credential or ""),
+            account_record_info or account_status,
+            mailbox_credential=str(temp_credential or ""),
             provider=email_provider,
         )
+        success = True
         _mark_provider_registered(account_status)
+        _notify_success_ready()
 
         print("\n" + "=" * 50)
         print("🎉 注册成功！")
         print(f"   邮箱: {email}")
         print(f"   密码: {password}")
-        print(f"   邮箱服务: {provider_name}")
-        if cfg.oauth.enabled:
-            print(f"   OAuth: {oauth_status}")
+        print(f"   邮箱渠道: {provider_name}")
         print("=" * 50)
 
-        success = True
-        time.sleep(3)
         _report("registered")
 
     except InterruptedError:
@@ -276,14 +277,14 @@ def register_one_account(
 def run_batch(selected_providers=None):
     """
     批量注册账号
-    :param selected_providers: 可用提供商列表，每次随机从中选一个；为 None 则仅用 mailtm
+    :param selected_providers: 可用提供商列表；当前固定为 nnai
     """
-    if not selected_providers:
-        selected_providers = ["mailtm"]
+    del selected_providers
+    selected_providers = ["nnai"]
 
     print("\n" + "=" * 60)
     print(f"🚀 开始批量注册，目标数量: {TOTAL_ACCOUNTS}")
-    print(f"   邮箱服务: {', '.join(selected_providers)}")
+    print(f"   邮箱渠道: {', '.join(selected_providers)}")
     print("=" * 60 + "\n")
 
     success_count = 0
@@ -295,9 +296,7 @@ def run_batch(selected_providers=None):
         print(f"📝 正在注册第 {i + 1}/{TOTAL_ACCOUNTS} 个账号")
         print("#" * 60 + "\n")
 
-        # 随机选择提供商
-        provider = random.choice(selected_providers)
-        email, password, success = register_one_account(email_provider=provider)
+        email, password, success = register_one_account(email_provider="nnai")
 
         if success:
             success_count += 1

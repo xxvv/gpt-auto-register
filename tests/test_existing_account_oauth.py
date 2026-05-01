@@ -1,8 +1,9 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
-from app.config import cfg
+from app.config import PROJECT_ROOT, cfg, dated_accounts_file_path
 from app.mailtm_service import login_existing_email
 from app.stored_accounts import (
     OAUTH_SUCCESS_STATUS,
@@ -40,6 +41,17 @@ class FakeSession:
 
 
 class StoredAccountsTests(unittest.TestCase):
+    def test_dated_accounts_file_path_adds_date_to_default_filename(self):
+        path = dated_accounts_file_path("data/accounts/registered_accounts.txt")
+
+        self.assertEqual(path.parent, PROJECT_ROOT / "data/accounts")
+        self.assertRegex(path.name, r"registered_accounts_\d{8}\.txt")
+
+    def test_dated_accounts_file_path_preserves_custom_filename(self):
+        path = dated_accounts_file_path(Path("/tmp/accounts.txt"))
+
+        self.assertEqual(path, Path("/tmp/accounts.txt"))
+
     def test_load_account_from_file_reads_mailtm_credentials(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
             handle.write(

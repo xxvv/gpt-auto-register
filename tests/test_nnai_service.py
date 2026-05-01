@@ -41,12 +41,29 @@ class NNAIServiceTests(unittest.TestCase):
         nnai_service._sessions.clear()
 
     def test_create_temp_email_returns_nnai_address_and_credential(self):
-        with mock.patch.object(nnai_service, "_generate_local_part", return_value="xxvv"):
+        with (
+            mock.patch.object(nnai_service, "_generate_local_part", return_value="xxvv"),
+            mock.patch.object(nnai_service, "get_configured_domains", return_value=["nnai.website"]),
+        ):
             email, session_id, credential = nnai_service.create_temp_email()
 
         self.assertEqual(email, "xxvv@nnai.website")
         self.assertEqual(credential, "xxvv@nnai.website")
         self.assertIn(session_id, nnai_service._sessions)
+
+    def test_create_temp_email_accepts_selected_domain(self):
+        with mock.patch.object(nnai_service, "_generate_local_part", return_value="xxvv"):
+            email, session_id, credential = nnai_service.create_temp_email(domain="mail.example.com")
+
+        self.assertEqual(email, "xxvv@mail.example.com")
+        self.assertEqual(credential, "xxvv@mail.example.com")
+        self.assertIn(session_id, nnai_service._sessions)
+
+    def test_normalize_domain_list_deduplicates_and_strips_at_prefix(self):
+        self.assertEqual(
+            nnai_service.normalize_domain_list(["@NNAI.website", "nnai.website", "mail.example.com"]),
+            ["nnai.website", "mail.example.com"],
+        )
 
     def test_client_fetches_code_with_email_and_json_format(self):
         fake_session = FakeSession(
@@ -90,9 +107,9 @@ class NNAIServiceTests(unittest.TestCase):
 
         self.assertEqual(nnai_service.list_verification_codes(session_id), ["654321"])
 
-    def test_login_existing_email_requires_nnai_domain(self):
-        with self.assertRaisesRegex(RuntimeError, "@nnai.website"):
-            nnai_service.login_existing_email("user@example.com", "")
+    def test_login_existing_email_requires_valid_email(self):
+        with self.assertRaisesRegex(RuntimeError, "格式无效"):
+            nnai_service.login_existing_email("not-an-email", "")
 
         session_id = nnai_service.login_existing_email("xxvv@nnai.website", "")
         self.assertIn(session_id, nnai_service._sessions)
