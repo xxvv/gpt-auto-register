@@ -25,19 +25,69 @@ DEFAULT_ACCOUNTS_FILE = "data/accounts/registered_accounts.txt"
 DEFAULT_TOKEN_DIR = "data/tokens"
 DEFAULT_TOKEN_EXPORT_DIR = "token_exports"
 DEFAULT_EMAIL_DOMAINS = ["nnai.website"]
+_ACTIVE_OUTPUT_BATCH_ID: str | None = None
+
+
+def _resolve_project_path(path_value: str | Path) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def output_batch_id() -> str:
+    """Return the active output batch id, allocating today's next batch if needed."""
+    global _ACTIVE_OUTPUT_BATCH_ID
+    if _ACTIVE_OUTPUT_BATCH_ID:
+        return _ACTIVE_OUTPUT_BATCH_ID
+
+    _ACTIVE_OUTPUT_BATCH_ID = allocate_output_batch_id()
+    return _ACTIVE_OUTPUT_BATCH_ID
+
+
+def set_output_batch_id(batch_id: str | None) -> None:
+    """Set the active output batch id for the current batch task."""
+    global _ACTIVE_OUTPUT_BATCH_ID
+    _ACTIVE_OUTPUT_BATCH_ID = str(batch_id or "").strip() or None
+
+
+def allocate_output_batch_id(date_str: str | None = None) -> str:
+    """Allocate the next YYYYMMDD_NNN batch id across account/export folders."""
+    date_part = date_str or datetime.now().strftime("%Y%m%d")
+    search_dirs = [
+        _resolve_project_path("data/accounts"),
+        _resolve_project_path("data/cpa"),
+        _resolve_project_path("data/sub2api"),
+    ]
+    max_batch = 0
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for path in directory.glob(f"{date_part}_*.txt"):
+            suffix = path.stem.removeprefix(f"{date_part}_")
+            if suffix.isdigit():
+                max_batch = max(max_batch, int(suffix))
+    return f"{date_part}_{max_batch + 1:03d}"
 
 
 def dated_accounts_file_path(path_value: str | Path | None = None) -> Path:
-    """Return today's accounts TXT path, adding YYYYMMDD to the default filename."""
+    """Return the active batch accounts TXT path for the default accounts file."""
     path = Path(path_value or DEFAULT_ACCOUNTS_FILE)
-    dated_name = f"registered_accounts_{datetime.now().strftime('%Y%m%d')}.txt"
 
     if path.name == Path(DEFAULT_ACCOUNTS_FILE).name:
-        path = path.with_name(dated_name)
+        path = path.with_name(f"{output_batch_id()}.txt")
 
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def batch_export_file_path(kind: str, batch_id: str | None = None) -> Path:
+    """Return data/<kind>/YYYYMMDD_NNN.txt for CPA/sub2api style exports."""
+    safe_kind = str(kind or "").strip().lower()
+    if safe_kind not in {"cpa", "sub2api"}:
+        raise ValueError(f"未知批次导出类型: {kind}")
+    return PROJECT_ROOT / "data" / safe_kind / f"{batch_id or output_batch_id()}.txt"
 
 # 尝试导入 yaml，如果未安装则提示
 try:

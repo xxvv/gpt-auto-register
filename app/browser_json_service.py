@@ -6,17 +6,20 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
-from .config import PROJECT_ROOT, cfg
-from .oauth_service import perform_browser_codex_oauth_login, save_codex_tokens
+from .config import batch_export_file_path, cfg
+from .oauth_service import NeedPhoneError, perform_browser_codex_oauth_login, save_codex_tokens
 from .stored_accounts import (
+    NEED_PHONE_STATUS,
     OAUTH_SUCCESS_STATUS,
     load_accounts_from_file,
     update_account_status_in_file,
 )
+
+BROWSER_JSON_FAILED_STATUS = f"获取Token失败/{NEED_PHONE_STATUS}"
 
 
 def _build_output_oauth_cfg(output_dir: str):
@@ -43,12 +46,10 @@ def _append_browser_json_exports(
     token_path: str,
     tokens: dict,
 ):
-    data_dir = os.path.join(PROJECT_ROOT, "data")
-    os.makedirs(data_dir, exist_ok=True)
-
-    date_str = datetime.now().strftime("%Y%m%d")
-    cpa_path = os.path.join(data_dir, f"accounts-cpa-{date_str}.txt")
-    sub2api_path = os.path.join(data_dir, f"accounts-sub2api-{date_str}.txt")
+    cpa_path = batch_export_file_path("cpa")
+    sub2api_path = batch_export_file_path("sub2api")
+    os.makedirs(cpa_path.parent, exist_ok=True)
+    os.makedirs(sub2api_path.parent, exist_ok=True)
 
     token_json = _compact_token_json(token_path, tokens)
     inbox_url = f"https://getemail.nnai.website/?email={quote(email, safe='')}"
@@ -72,7 +73,7 @@ def _append_browser_json_exports(
 
 
 def process_selected_accounts(
-    accounts_file: str,
+    accounts_file: str | os.PathLike | list[str | os.PathLike],
     emails: list[str],
     output_dir: str,
     proxy: dict | None = None,
@@ -84,11 +85,21 @@ def process_selected_accounts(
     save_tokens_func=save_codex_tokens,
 ):
     selected = {str(email).strip().lower() for email in emails if str(email).strip()}
-    records = [
-        record
-        for record in load_accounts_from_file(accounts_file)
-        if record["email"].strip().lower() in selected
-    ]
+    account_files = (
+        [Path(path) for path in accounts_file]
+        if isinstance(accounts_file, (list, tuple, set))
+        else [Path(accounts_file)]
+    )
+    matched_records = {}
+    record_files: dict[str, str] = {}
+    for account_file in account_files:
+        for record in load_accounts_from_file(str(account_file)):
+            email_key = record["email"].strip().lower()
+            if email_key not in selected:
+                continue
+            matched_records[email_key] = record
+            record_files[email_key] = str(account_file)
+    records = list(matched_records.values())
     oauth_cfg = _build_output_oauth_cfg(output_dir)
     success = 0
     fail = 0
@@ -125,6 +136,7 @@ def process_selected_accounts(
             break
 
         email = record["email"]
+        account_file = record_files[email.strip().lower()]
         password = record["password"]
         print(f"🌐 浏览器获取 JSON: {email}")
 
@@ -156,11 +168,16 @@ def process_selected_accounts(
                 token_path=saved_token_path,
                 tokens=tokens,
             )
-            update_account_status_in_file(accounts_file, email, OAUTH_SUCCESS_STATUS)
+            update_account_status_in_file(account_file, email, OAUTH_SUCCESS_STATUS)
             success += 1
             processed += 1
             print(f"✅ JSON 已保存: {saved_token_path}")
             report_progress(current_email=email, status="success")
+        except NeedPhoneError as exc:
+            fail += 1
+            update_account_status_in_file(account_file, email, BROWSER_JSON_FAILED_STATUS)
+            print(f"❌ 浏览器获取 JSON 失败 {email}: {exc}，已标记 {BROWSER_JSON_FAILED_STATUS}")
+            report_progress(current_email=email, status="failed_need_phone")
         except Exception as exc:
             fail += 1
             print(f"❌ 浏览器获取 JSON 失败 {email}: {exc}")

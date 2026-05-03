@@ -6,7 +6,13 @@ ChatGPT 账号自动注册 - 主程序
 import time
 import random
 
-from .config import TOTAL_ACCOUNTS, BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX
+from .config import (
+    TOTAL_ACCOUNTS,
+    BATCH_INTERVAL_MIN,
+    BATCH_INTERVAL_MAX,
+    allocate_output_batch_id,
+    set_output_batch_id,
+)
 from .utils import generate_random_password, save_to_txt, update_account_status
 from . import email_providers
 from .browser import (
@@ -24,8 +30,12 @@ from .browser import (
 )
 
 
-SUCCESS_WINDOW_HOLD_SECONDS = 20
+SUCCESS_WINDOW_HOLD_MIN_SECONDS = 20
+SUCCESS_WINDOW_HOLD_MAX_SECONDS = 30
+SUCCESS_WINDOW_HOLD_SECONDS = SUCCESS_WINDOW_HOLD_MIN_SECONDS
 LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = 5
+REGISTRATION_GROUP_REST_EVERY = 4
+REGISTRATION_GROUP_REST_SECONDS = 120
 
 
 class ProxyEgressCheckError(RuntimeError):
@@ -49,6 +59,10 @@ def _build_registered_account_info(driver, proxy=None) -> str:
 
     print("✅ accessToken 已读取，准备保存")
     return access_token
+
+
+def _registration_success_hold_seconds() -> int:
+    return random.randint(SUCCESS_WINDOW_HOLD_MIN_SECONDS, SUCCESS_WINDOW_HOLD_MAX_SECONDS)
 
 
 def register_one_account(
@@ -244,8 +258,9 @@ def register_one_account(
         print("=" * 50)
 
         _report("registered")
-        print(f"⏳ accessToken 已保存，保留浏览器窗口 {SUCCESS_WINDOW_HOLD_SECONDS} 秒后继续下一个任务...")
-        time.sleep(SUCCESS_WINDOW_HOLD_SECONDS)
+        hold_seconds = _registration_success_hold_seconds()
+        print(f"⏳ accessToken 已保存，保留浏览器窗口 {hold_seconds} 秒后继续下一个任务...")
+        time.sleep(hold_seconds)
         _notify_success_ready()
 
     except InterruptedError:
@@ -424,35 +439,50 @@ def run_batch(selected_providers=None):
     print("\n" + "=" * 60)
     print(f"🚀 开始批量注册，目标数量: {TOTAL_ACCOUNTS}")
     print(f"   邮箱渠道: {', '.join(selected_providers)}")
+    batch_id = allocate_output_batch_id()
+    set_output_batch_id(batch_id)
+    print(f"   输出批次: {batch_id}")
     print("=" * 60 + "\n")
 
     success_count = 0
     fail_count = 0
     registered_accounts = []
 
-    for i in range(TOTAL_ACCOUNTS):
-        print("\n" + "#" * 60)
-        print(f"📝 正在注册第 {i + 1}/{TOTAL_ACCOUNTS} 个账号")
-        print("#" * 60 + "\n")
+    try:
+        for i in range(TOTAL_ACCOUNTS):
+            print("\n" + "#" * 60)
+            print(f"📝 正在注册第 {i + 1}/{TOTAL_ACCOUNTS} 个账号")
+            print("#" * 60 + "\n")
 
-        email, password, success = register_one_account(email_provider="nnai")
+            email, password, success = register_one_account(email_provider="nnai")
 
-        if success:
-            success_count += 1
-            registered_accounts.append((email, password))
-        else:
-            fail_count += 1
+            if success:
+                success_count += 1
+                registered_accounts.append((email, password))
+            else:
+                fail_count += 1
 
-        print("\n" + "-" * 40)
-        print(f"📊 当前进度: {i + 1}/{TOTAL_ACCOUNTS}")
-        print(f"   ✅ 成功: {success_count}")
-        print(f"   ❌ 失败: {fail_count}")
-        print("-" * 40)
+            print("\n" + "-" * 40)
+            print(f"📊 当前进度: {i + 1}/{TOTAL_ACCOUNTS}")
+            print(f"   ✅ 成功: {success_count}")
+            print(f"   ❌ 失败: {fail_count}")
+            print("-" * 40)
 
-        if i < TOTAL_ACCOUNTS - 1:
-            wait_time = random.randint(BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX)
-            print(f"\n⏳ 等待 {wait_time} 秒后继续下一个注册...")
-            time.sleep(wait_time)
+            if (
+                (i + 1) % REGISTRATION_GROUP_REST_EVERY == 0
+                and i < TOTAL_ACCOUNTS - 1
+            ):
+                print(
+                    f"\n⏸️ 已处理 {i + 1} 个账号，休息 "
+                    f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
+                )
+                time.sleep(REGISTRATION_GROUP_REST_SECONDS)
+            elif i < TOTAL_ACCOUNTS - 1:
+                wait_time = random.randint(BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX)
+                print(f"\n⏳ 等待 {wait_time} 秒后继续下一个注册...")
+                time.sleep(wait_time)
+    finally:
+        set_output_batch_id(None)
 
     print("\n" + "=" * 60)
     print("🏁 批量注册完成")

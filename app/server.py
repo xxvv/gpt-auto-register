@@ -21,10 +21,19 @@ from . import account_login_service
 from . import browser_json_service
 from . import us_proxy_pool
 from . import utils
-from .config import PROJECT_ROOT, cfg, dated_accounts_file_path
+from .config import (
+    DEFAULT_ACCOUNTS_FILE,
+    PROJECT_ROOT,
+    allocate_output_batch_id,
+    cfg,
+    dated_accounts_file_path,
+    set_output_batch_id,
+)
 from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
+REGISTRATION_GROUP_REST_EVERY = 4
+REGISTRATION_GROUP_REST_SECONDS = 120
 
 app = Flask(__name__, static_url_path="", static_folder=str(STATIC_DIR))
 
@@ -261,6 +270,8 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
     state.current_action = f"🚀 任务启动，目标: {count}"
     state.reset_progress(task_type="registration", total=count)
     state.update_frame(None)
+    batch_id = allocate_output_batch_id()
+    set_output_batch_id(batch_id)
 
     task_proxy, auto_selected_proxy = _pick_registration_start_proxy(proxy)
     if auto_selected_proxy and task_proxy and task_proxy.get("enabled"):
@@ -294,6 +305,7 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
 
     with _log_proxy_context(task_proxy):
         main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
+        main.print(f"🧾 输出批次: {batch_id}")
         main.print("📬 邮箱渠道: NNAI.website")
         main.print(f"🌐 邮箱域名: {', '.join(email_domains)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
@@ -304,6 +316,7 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                 ensure_proxy_ready(task_proxy, purpose="批量注册任务启动前代理预检", timeout=10)
             except Exception as exc:
                 state.is_running = False
+                set_output_batch_id(None)
                 state.current_action = "代理预检失败"
                 main.print(f"🛑 任务启动终止: {exc}")
                 return
@@ -312,6 +325,9 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
         counter_lock = threading.Lock()
         register_slot = threading.Semaphore(max(1, int(parallel)))
         started = [0]
+        completed_for_rest = [0]
+        group_gate = threading.Condition()
+        rest_after_completed = [0]
 
         def monitor(driver, _step):
             if state.stop_requested:
@@ -338,7 +354,28 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                 release_slot()
                 return
 
-            with counter_lock:
+            with group_gate:
+                while (
+                    rest_after_completed[0]
+                    and completed_for_rest[0] >= rest_after_completed[0]
+                    and not state.stop_requested
+                ):
+                    state.current_action = (
+                        f"已处理 {rest_after_completed[0]} 个账号，休息 "
+                        f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
+                    )
+                    main.print(
+                        f"⏸️ 已处理 {rest_after_completed[0]} 个账号，休息 "
+                        f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
+                    )
+                    rest_after_completed[0] = 0
+                    group_gate.release()
+                    time.sleep(REGISTRATION_GROUP_REST_SECONDS)
+                    group_gate.acquire()
+                    group_gate.notify_all()
+                if state.stop_requested:
+                    release_slot()
+                    return
                 started[0] += 1
                 idx = started[0]
             account_proxy = dict(task_proxy) if task_proxy else None
@@ -405,6 +442,14 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                             completed=state.success_count + state.fail_count,
                             processed=state.success_count,
                         )
+                    with group_gate:
+                        completed_for_rest[0] += 1
+                        if (
+                            completed_for_rest[0] % REGISTRATION_GROUP_REST_EVERY == 0
+                            and completed_for_rest[0] < count
+                        ):
+                            rest_after_completed[0] = completed_for_rest[0]
+                        group_gate.notify_all()
                 except InterruptedError:
                     main.print("🛑 任务已中断")
                 except Exception as e:
@@ -414,6 +459,14 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                             completed=state.success_count + state.fail_count,
                             processed=state.success_count,
                         )
+                    with group_gate:
+                        completed_for_rest[0] += 1
+                        if (
+                            completed_for_rest[0] % REGISTRATION_GROUP_REST_EVERY == 0
+                            and completed_for_rest[0] < count
+                        ):
+                            rest_after_completed[0] = completed_for_rest[0]
+                        group_gate.notify_all()
                     main.print(f"❌ 异常: {str(e)}")
                 finally:
                     release_slot()
@@ -433,6 +486,7 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
             main.print(f"💥 严重错误: {e}")
         finally:
             state.is_running = False
+            set_output_batch_id(None)
             state.current_action = "任务已完成"
             main.print("🏁 任务结束")
 
@@ -598,10 +652,12 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
         state.reset_progress(task_type="browser_json", total=len(emails))
         state.current_action = "正在通过浏览器获取 JSON..."
         state.update_frame(None)
+        batch_id = allocate_output_batch_id()
+        set_output_batch_id(batch_id)
 
-        accounts_file = str(_resolve_repo_path(cfg.files.accounts_file))
         main.print("🌐 开始浏览器获取 JSON")
-        main.print(f"📄 账号文件: {accounts_file}")
+        main.print(f"🧾 输出批次: {batch_id}")
+        main.print(f"📄 账号文件: {PROJECT_ROOT / 'data' / 'accounts'}")
         main.print(f"📁 输出目录: {output_dir}")
         main.print(f"🧾 勾选账号数: {len(emails)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
@@ -611,6 +667,7 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
                 ensure_proxy_ready(proxy, purpose="浏览器 JSON 任务启动前代理预检", timeout=10)
             except Exception as exc:
                 state.is_running = False
+                set_output_batch_id(None)
                 state.current_action = "代理预检失败"
                 main.print(f"🛑 浏览器 JSON 任务启动终止: {exc}")
                 return
@@ -643,8 +700,9 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
                 state.current_action += f" - {progress['current_email']}"
 
         try:
+            account_files = _account_list_paths()
             result = browser_json_service.process_selected_accounts(
-                accounts_file=accounts_file,
+                accounts_file=account_files,
                 emails=emails,
                 output_dir=output_dir,
                 proxy=proxy,
@@ -673,6 +731,7 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
             main.print(f"❌ 浏览器 JSON 任务失败: {e}")
         finally:
             state.is_running = False
+            set_output_batch_id(None)
 
 # ==========================================
 # 🌊 MJPEG 流生成器
@@ -753,8 +812,10 @@ def get_settings():
 
 @app.route('/api/token-import/settings', methods=['GET'])
 def get_token_import_settings():
+    account_paths = _account_list_paths()
+    accounts_file = account_paths[-1] if account_paths else _default_accounts_candidate_path()
     return jsonify({
-        "accounts_file": str(_resolve_repo_path(cfg.files.accounts_file)),
+        "accounts_file": str(accounts_file),
         "output_dir": str(_resolve_repo_path(cfg.oauth.token_json_dir)),
     })
 
@@ -1001,8 +1062,9 @@ def set_email_domains():
 @app.route('/api/accounts')
 def get_accounts():
     accounts = []
-    accounts_path = _resolve_repo_path(cfg.files.accounts_file)
-    if accounts_path.exists():
+    for accounts_path in _account_list_paths():
+        if not accounts_path.exists():
+            continue
         try:
             with open(accounts_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -1059,6 +1121,18 @@ def _resolve_repo_path(path_value: str) -> Path:
 
 def _resolve_request_path(path_value: str) -> Path:
     return Path(os.path.abspath(os.path.expanduser(str(path_value))))
+
+
+def _account_list_paths() -> list[Path]:
+    if cfg.files.accounts_file == DEFAULT_ACCOUNTS_FILE:
+        account_dir = PROJECT_ROOT / "data" / "accounts"
+        if account_dir.exists():
+            return sorted(account_dir.glob("*.txt"))
+    return [_resolve_repo_path(cfg.files.accounts_file)]
+
+
+def _default_accounts_candidate_path() -> Path:
+    return PROJECT_ROOT / "data" / "accounts" / f"{datetime.now().strftime('%Y%m%d')}_001.txt"
 
 
 if __name__ == '__main__':

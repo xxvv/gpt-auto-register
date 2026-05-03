@@ -334,6 +334,44 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(len(matching_logs), 1)
         self.assertIn("[代理 http://4.4.4.4:80] 账号流程测试日志", matching_logs[0])
 
+    @mock.patch("app.server.time.sleep")
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
+    @mock.patch("app.server.main.register_one_account")
+    def test_worker_thread_rests_after_every_four_completed_accounts(
+        self,
+        register_one_account,
+        _random_choice,
+        sleep,
+    ):
+        def fake_register_one_account(**kwargs):
+            del kwargs
+            return "user@example.com", "secret", True
+
+        register_one_account.side_effect = fake_register_one_account
+
+        server.worker_thread(
+            count=5,
+            selected_providers=["nnai"],
+            parallel=1,
+            headless=False,
+            proxy={
+                "enabled": False,
+                "type": "http",
+                "host": "",
+                "port": 8080,
+                "use_auth": False,
+                "username": "",
+                "password": "",
+            },
+        )
+
+        sleep.assert_called_once_with(server.REGISTRATION_GROUP_REST_SECONDS)
+        self.assertEqual(server.state.success_count, 5)
+        self.assertTrue(
+            any("已处理 4 个账号，休息 120 秒" in line for line in server.state.logs),
+            server.state.logs,
+        )
+
     def test_start_login_task_returns_400_when_file_missing(self):
         response = self.client.post(
             "/api/login/start",

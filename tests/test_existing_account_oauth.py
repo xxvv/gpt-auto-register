@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app import config
 from app.config import PROJECT_ROOT, cfg, dated_accounts_file_path
 from app.mailtm_service import login_existing_email
 from app.stored_accounts import (
@@ -44,10 +45,11 @@ class FakeSession:
 
 class StoredAccountsTests(unittest.TestCase):
     def test_dated_accounts_file_path_adds_date_to_default_filename(self):
-        path = dated_accounts_file_path("data/accounts/registered_accounts.txt")
+        with unittest.mock.patch.object(config, "output_batch_id", return_value="20260309_002"):
+            path = dated_accounts_file_path("data/accounts/registered_accounts.txt")
 
         self.assertEqual(path.parent, PROJECT_ROOT / "data/accounts")
-        self.assertRegex(path.name, r"registered_accounts_\d{8}\.txt")
+        self.assertEqual(path.name, "20260309_002.txt")
 
     def test_dated_accounts_file_path_preserves_custom_filename(self):
         path = dated_accounts_file_path(Path("/tmp/accounts.txt"))

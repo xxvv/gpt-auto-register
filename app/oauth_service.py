@@ -657,6 +657,15 @@ class BrowserCodexOAuthClient:
         normalized = str(url or "").lower()
         return self._is_oauth_consent_url(normalized) or "/auth/callback" in normalized
 
+    def _is_need_phone_url(self, url: str) -> bool:
+        return _needs_phone_verification(url)
+
+    def _raise_if_need_phone_url(self, driver) -> None:
+        current_url = self._driver_current_url(driver)
+        if self._is_need_phone_url(current_url):
+            self._print_driver_url(driver, "检测到手机号绑定页")
+            raise NeedPhoneError("OAuth 阶段需要绑定手机号")
+
     def _click_continue_like_selenium(self, driver, monitor_callback=None) -> bool:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.common.action_chains import ActionChains
@@ -765,6 +774,7 @@ class BrowserCodexOAuthClient:
                 success_url_predicate=self._is_oauth_callback_or_consent_url,
             )
             if not form_ok:
+                self._raise_if_need_phone_url(driver)
                 raise RuntimeError("Selenium 登录表单填写失败")
             if not password_entered:
                 self._print("[OAuth][Selenium] 未检测到密码输入，继续处理邮箱验证码页")
@@ -781,6 +791,8 @@ class BrowserCodexOAuthClient:
                 if result:
                     self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
                     return result
+
+                self._raise_if_need_phone_url(driver)
 
                 if is_email_already_verified_page(driver):
                     self._print("[OAuth][Selenium] 邮箱验证页显示已验证，关闭页面后重新进行 OAuth 流程")
@@ -823,6 +835,7 @@ class BrowserCodexOAuthClient:
                     if result:
                         self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
                         return result
+                    self._raise_if_need_phone_url(driver)
                     if is_email_already_verified_page(driver):
                         self._print("[OAuth][Selenium] 验证码提交后页面显示邮箱已验证，准备重新进行 OAuth 流程")
                         raise EmailAlreadyVerifiedRestart("email already verified")
@@ -835,6 +848,7 @@ class BrowserCodexOAuthClient:
                         if result:
                             self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
                             return result
+                        self._raise_if_need_phone_url(driver)
                     time.sleep(1)
 
             raise RuntimeError("等待 OAuth callback 超时")

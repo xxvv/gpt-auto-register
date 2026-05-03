@@ -19,6 +19,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fetch_current_access_token.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
+    @mock.patch("app.main._registration_success_hold_seconds", return_value=27)
     @mock.patch(
         "app.main._build_registered_account_info",
         return_value="session-access-token",
@@ -55,6 +56,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fill_profile_info,
         verify_logged_in,
         build_account_info,
+        success_hold_seconds,
         save_to_txt,
     ):
         driver = mock.Mock()
@@ -73,9 +75,10 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
             "session-access-token",
         )
         self.assertIn(
-            mock.call(main.SUCCESS_WINDOW_HOLD_SECONDS),
+            mock.call(27),
             sleep.call_args_list,
         )
+        success_hold_seconds.assert_called_once_with()
         build_account_info.assert_called_once_with(driver, proxy=None)
         driver.quit.assert_called_once()
 
@@ -147,6 +150,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         driver.quit.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
+    @mock.patch("app.main._registration_success_hold_seconds", return_value=24)
     @mock.patch(
         "app.main._build_registered_account_info",
         return_value="session-access-token",
@@ -183,6 +187,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fill_profile_info,
         verify_logged_in,
         build_account_info,
+        success_hold_seconds,
         save_to_txt,
     ):
         driver = mock.Mock()
@@ -213,7 +218,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
             events[-3:],
             [
                 ("save", "user@example.com", "session-access-token"),
-                ("sleep", main.SUCCESS_WINDOW_HOLD_SECONDS),
+                ("sleep", 24),
                 (
                     "callback",
                     "user@example.com",
@@ -223,9 +228,10 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
             ],
         )
         self.assertIn(
-            mock.call(main.SUCCESS_WINDOW_HOLD_SECONDS),
+            mock.call(24),
             sleep.call_args_list,
         )
+        success_hold_seconds.assert_called_once_with()
         driver.quit.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
