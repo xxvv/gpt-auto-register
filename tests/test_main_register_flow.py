@@ -60,7 +60,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         driver = mock.Mock()
         create_driver.return_value = driver
 
-        with mock.patch("app.main.time.sleep", return_value=None):
+        with mock.patch("app.main.time.sleep", return_value=None) as sleep:
             email, password, success = main.register_one_account(
                 email_provider="nnai"
             )
@@ -72,7 +72,78 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
             save_to_txt.call_args_list[-1].args[2],
             "session-access-token",
         )
+        self.assertIn(
+            mock.call(main.SUCCESS_WINDOW_HOLD_SECONDS),
+            sleep.call_args_list,
+        )
         build_account_info.assert_called_once_with(driver, proxy=None)
+        driver.quit.assert_called_once()
+
+    @mock.patch("app.main.time.sleep", return_value=None)
+    @mock.patch("app.main.verify_logged_in", return_value=True)
+    @mock.patch("app.main.click_getting_started_button", return_value=True)
+    @mock.patch("app.main.enter_verification_code", return_value=True)
+    @mock.patch(
+        "app.main.email_providers.wait_for_verification_email",
+        return_value="123456",
+    )
+    @mock.patch("app.main.fill_login_form", return_value=(True, False))
+    @mock.patch("app.main.open_chatgpt_url")
+    @mock.patch("app.main.create_driver")
+    @mock.patch(
+        "app.main.email_providers.get_provider_info",
+        return_value={
+            "name": "NNAI.website",
+            "module": mock.Mock(login_existing_email=mock.Mock(return_value="mail-token")),
+        },
+    )
+    def test_login_one_account_uses_nnai_otp_and_getting_started_button(
+        self,
+        get_provider_info,
+        create_driver,
+        open_chatgpt_url,
+        fill_login_form,
+        wait_for_verification_email,
+        enter_verification_code,
+        click_getting_started_button,
+        verify_logged_in,
+        _sleep,
+    ):
+        driver = mock.Mock()
+        create_driver.return_value = driver
+
+        email, success = main.login_one_account(
+            "user@nnai.website",
+            "Secret123!",
+            monitor_callback=mock.Mock(),
+            headless=True,
+            proxy=None,
+        )
+
+        provider_module = get_provider_info.return_value["module"]
+        self.assertEqual(email, "user@nnai.website")
+        self.assertTrue(success)
+        provider_module.login_existing_email.assert_called_once_with(
+            "user@nnai.website",
+            "user@nnai.website",
+        )
+        fill_login_form.assert_called_once_with(
+            driver,
+            "user@nnai.website",
+            "Secret123!",
+            monitor_callback=mock.ANY,
+        )
+        wait_for_verification_email.assert_called_once_with("nnai", "mail-token")
+        enter_verification_code.assert_called_once_with(
+            driver,
+            "123456",
+            monitor_callback=mock.ANY,
+        )
+        click_getting_started_button.assert_called_once_with(
+            driver,
+            monitor_callback=mock.ANY,
+        )
+        verify_logged_in.assert_called_once_with(driver)
         driver.quit.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
@@ -124,9 +195,12 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         def fake_success_callback(email, password, account_record_info):
             events.append(("callback", email, password, account_record_info))
 
+        def fake_sleep(seconds):
+            events.append(("sleep", seconds))
+
         save_to_txt.side_effect = fake_save_to_txt
 
-        with mock.patch("app.main.time.sleep", return_value=None):
+        with mock.patch("app.main.time.sleep", side_effect=fake_sleep) as sleep:
             email, password, success = main.register_one_account(
                 email_provider="nnai",
                 success_callback=fake_success_callback,
@@ -136,9 +210,10 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         self.assertEqual(password, "Secret123!")
         self.assertTrue(success)
         self.assertEqual(
-            events[-2:],
+            events[-3:],
             [
                 ("save", "user@example.com", "session-access-token"),
+                ("sleep", main.SUCCESS_WINDOW_HOLD_SECONDS),
                 (
                     "callback",
                     "user@example.com",
@@ -146,6 +221,10 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
                     "session-access-token",
                 ),
             ],
+        )
+        self.assertIn(
+            mock.call(main.SUCCESS_WINDOW_HOLD_SECONDS),
+            sleep.call_args_list,
         )
         driver.quit.assert_called_once()
 

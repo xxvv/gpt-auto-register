@@ -396,6 +396,20 @@ td {
     color: var(--text-main);
 }
 
+.select-col {
+    width: 44px;
+    padding-left: 16px;
+    padding-right: 8px;
+    text-align: center;
+}
+
+.select-col input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
 tr:last-child td {
     border-bottom: none;
 }

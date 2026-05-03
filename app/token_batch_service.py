@@ -8,13 +8,18 @@ import os
 from types import SimpleNamespace
 
 from .config import cfg
-from .oauth_service import perform_codex_oauth_login, save_codex_tokens
+from .oauth_service import NeedPhoneError, perform_codex_oauth_login, save_codex_tokens
 from .stored_accounts import (
+    NEED_PHONE_STATUS,
     OAUTH_SUCCESS_STATUS,
+    is_need_phone_status,
     is_oauth_success_status,
     load_accounts_from_file,
     update_account_status_in_file,
 )
+
+
+EMAIL_AS_CREDENTIAL_PROVIDERS = {"nnai"}
 
 
 def _build_output_oauth_cfg(output_dir: str):
@@ -38,6 +43,15 @@ def _login_existing_mailbox(provider: str, email: str, mailbox_credential: str):
         raise RuntimeError(f"provider={provider} 暂不支持重新登录收件箱")
 
     return login_func(email, mailbox_credential)
+
+
+def _resolve_mailbox_credential(provider: str, email: str, mailbox_credential: str) -> str:
+    credential = str(mailbox_credential or "").strip()
+    if credential:
+        return credential
+    if str(provider or "").strip().lower() in EMAIL_AS_CREDENTIAL_PROVIDERS:
+        return str(email or "").strip()
+    return ""
 
 
 def process_accounts_from_file(
@@ -91,8 +105,17 @@ def process_accounts_from_file(
             print(f"⏭️ 跳过 {email}: 已是 OAuth 成功状态")
             report_progress(current_email=email, status="skipped_existing_success")
             continue
+        if is_need_phone_status(record["status"]):
+            skipped += 1
+            print(f"⏭️ 跳过 {email}: 已标记 need-phone")
+            report_progress(current_email=email, status="skipped_need_phone")
+            continue
 
-        mailbox_credential = record["mailbox_credential"]
+        mailbox_credential = _resolve_mailbox_credential(
+            provider,
+            email,
+            record["mailbox_credential"],
+        )
         if not mailbox_credential:
             fail += 1
             print(f"⚠️ 跳过 {email}: 缺少邮箱收件凭证")
@@ -119,6 +142,11 @@ def process_accounts_from_file(
             processed += 1
             print(f"✅ 已生成 Token: {email}")
             report_progress(current_email=email, status="success")
+        except NeedPhoneError as exc:
+            skipped += 1
+            update_account_status_in_file(accounts_file, email, NEED_PHONE_STATUS)
+            print(f"⏭️ 跳过 {email}: {exc}，已标记 {NEED_PHONE_STATUS}")
+            report_progress(current_email=email, status="need_phone")
         except Exception as exc:
             fail += 1
             print(f"❌ 处理失败 {email}: {exc}")

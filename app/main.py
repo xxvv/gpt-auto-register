@@ -14,12 +14,18 @@ from .browser import (
     create_driver,
     log_browser_egress_ip,
     fill_signup_form,
+    fill_login_form,
     enter_verification_code,
     fill_profile_info,
     open_chatgpt_url,
     verify_logged_in,
     fetch_current_access_token,
+    click_getting_started_button,
 )
+
+
+SUCCESS_WINDOW_HOLD_SECONDS = 20
+LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = 5
 
 
 class ProxyEgressCheckError(RuntimeError):
@@ -59,7 +65,7 @@ def register_one_account(
     :param monitor_callback: 回调函数 func(driver, step_name)，用于截图和中断检查
     :param email_provider: 临时邮箱提供商 ID（当前固定为 nnai）
     :param email_domain: NNAI 邮箱域名；为空时由服务配置随机选择
-    :param success_callback: 注册成功且 accessToken 已保存后立即调用，用于上层提前调度下个任务
+    :param success_callback: 注册成功且 accessToken 已保存、保留窗口结束后调用，用于上层调度下个任务
 
     返回:
         tuple: (邮箱, 密码, 是否成功)
@@ -229,7 +235,6 @@ def register_one_account(
         )
         success = True
         _mark_provider_registered(account_status)
-        _notify_success_ready()
 
         print("\n" + "=" * 50)
         print("🎉 注册成功！")
@@ -239,6 +244,9 @@ def register_one_account(
         print("=" * 50)
 
         _report("registered")
+        print(f"⏳ accessToken 已保存，保留浏览器窗口 {SUCCESS_WINDOW_HOLD_SECONDS} 秒后继续下一个任务...")
+        time.sleep(SUCCESS_WINDOW_HOLD_SECONDS)
+        _notify_success_ready()
 
     except InterruptedError:
         print("🛑 任务已被用户强制中断")
@@ -272,6 +280,137 @@ def register_one_account(
         _release_provider_reservation()
 
     return email, password, success
+
+
+def login_one_account(
+    email: str,
+    password: str,
+    monitor_callback=None,
+    headless=False,
+    proxy=None,
+    email_provider="nnai",
+    success_callback=None,
+):
+    """
+    登录单个已有 ChatGPT 账号。
+
+    返回:
+        tuple: (邮箱, 是否成功)
+    """
+    driver = None
+    success = False
+    email = str(email or "").strip()
+    password = str(password or "")
+
+    def _report(step_name):
+        if monitor_callback and driver:
+            monitor_callback(driver, step_name)
+
+    try:
+        if not email or not password:
+            raise RuntimeError("邮箱或密码为空")
+
+        provider_info = email_providers.get_provider_info(email_provider)
+        if not provider_info:
+            raise RuntimeError(f"未知邮箱提供商: {email_provider}")
+
+        login_mailbox_func = getattr(provider_info["module"], "login_existing_email", None)
+        if not callable(login_mailbox_func):
+            raise RuntimeError(f"provider={email_provider} 暂不支持重新登录收件箱")
+
+        print(f"🔐 开始登录账号: {email}")
+        print("📬 使用 NNAI Worker 接收邮箱验证码")
+        mail_token = login_mailbox_func(email, email)
+
+        driver = create_driver(headless=headless, proxy=proxy)
+        _report("login_init_browser")
+
+        if proxy and proxy.get("enabled"):
+            browser_proxy_diag = log_browser_egress_ip(driver)
+            if not browser_proxy_diag.get("ok"):
+                raise ProxyEgressCheckError(
+                    f"浏览器代理出口检测失败: {browser_proxy_diag.get('reason', 'unknown_error')}"
+                )
+            _report("login_proxy_ip_check")
+
+        print(f"🌐 正在打开 {CHATGPT_HOME_URL}...")
+        open_chatgpt_url(driver, CHATGPT_HOME_URL)
+        time.sleep(3)
+        _report("login_open_page")
+
+        form_ok, password_entered = fill_login_form(
+            driver,
+            email,
+            password,
+            monitor_callback=monitor_callback,
+        )
+        if not form_ok:
+            print("❌ 填写登录表单失败")
+            return email, False
+        if not password_entered:
+            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
+        _report("login_fill_form")
+
+        verification_code = email_providers.wait_for_verification_email(
+            email_provider,
+            str(mail_token or ""),
+        )
+        if not verification_code:
+            print("❌ 未获取到验证码，终止登录")
+            return email, False
+
+        if not enter_verification_code(
+            driver,
+            verification_code,
+            monitor_callback=monitor_callback,
+        ):
+            print("❌ 输入验证码失败")
+            return email, False
+        _report("login_enter_code")
+
+        time.sleep(4)
+        if not click_getting_started_button(
+            driver,
+            monitor_callback=monitor_callback,
+        ):
+            print("❌ 点击“好的，开始吧”失败")
+            return email, False
+        _report("login_getting_started")
+
+        if not verify_logged_in(driver):
+            print("❌ 最终登录状态校验失败")
+            return email, False
+        _report("login_verify_logged_in")
+
+        if callable(success_callback):
+            success_callback(driver, email, password)
+            _report("login_success_callback")
+
+        success = True
+        print("\n" + "=" * 50)
+        print("🎉 登录成功！")
+        print(f"   邮箱: {email}")
+        print("=" * 50)
+        print(f"⏳ 登录成功，保留浏览器窗口 {LOGIN_SUCCESS_WINDOW_HOLD_SECONDS} 秒后继续下一个任务...")
+        time.sleep(LOGIN_SUCCESS_WINDOW_HOLD_SECONDS)
+
+    except InterruptedError:
+        print("🛑 登录任务已被用户强制中断")
+        return email, False
+    except ProxyEgressCheckError:
+        raise
+    except Exception as e:
+        print(f"❌ 登录失败 {email}: {e}")
+        return email, False
+    finally:
+        if driver:
+            print("🔒 正在关闭浏览器...")
+            try:
+                driver.quit()
+            except Exception as e:
+                print(f"⚠️ 关闭浏览器时忽略异常: {e}")
+
+    return email, success
 
 
 def run_batch(selected_providers=None):

@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
+import queue
 import random
 import re
 import secrets
+import socket
+import socketserver
 import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone, timedelta
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse, unquote
@@ -66,6 +71,153 @@ _CHROME_PROFILES = [
         "sec_ch_ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
     },
 ]
+
+
+class NeedPhoneError(RuntimeError):
+    """OAuth 登录需要绑定手机号。"""
+
+
+class OAuthCallbackError(RuntimeError):
+    """浏览器 OAuth callback 返回错误。"""
+
+
+class EmailAlreadyVerifiedRestart(RuntimeError):
+    """邮箱验证页提示已验证，需要关闭当前页面并重新开始 OAuth。"""
+
+
+class _ReusableHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class LocalOAuthCallbackServer:
+    def __init__(self, redirect_uri: str, expected_state: str):
+        parsed = urlparse(redirect_uri)
+        self.host = parsed.hostname or "localhost"
+        self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self.path = parsed.path or "/auth/callback"
+        self.expected_state = expected_state
+        self._queue: queue.Queue[dict] = queue.Queue(maxsize=1)
+        self._server: _ReusableHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        callback = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                if parsed.path != callback.path:
+                    self.send_error(404, "Not Found")
+                    return
+
+                params = _extract_callback_params(self.path)
+                code = params.get("code", "").strip()
+                state = params.get("state", "").strip()
+                error = params.get("error", "").strip()
+                error_description = params.get("error_description", "").strip()
+
+                if state != callback.expected_state:
+                    result = {
+                        "error": "invalid_state",
+                        "error_description": f"expected {callback.expected_state}, got {state}",
+                        "state": state,
+                    }
+                    self._send_html(
+                        400,
+                        "Codex OAuth failed",
+                        "State mismatch. You can close this tab.",
+                    )
+                elif error:
+                    result = {
+                        "error": error,
+                        "error_description": error_description,
+                        "state": state,
+                    }
+                    self._send_html(
+                        400,
+                        "Codex OAuth failed",
+                        error_description or error,
+                    )
+                elif not code:
+                    result = {
+                        "error": "no_code",
+                        "error_description": "No authorization code received",
+                        "state": state,
+                    }
+                    self._send_html(
+                        400,
+                        "Codex OAuth failed",
+                        "No authorization code received. You can close this tab.",
+                    )
+                else:
+                    result = {"code": code, "state": state}
+                    self._send_html(
+                        200,
+                        "Codex OAuth complete",
+                        "Authentication finished. You can close this tab.",
+                    )
+
+                try:
+                    callback._queue.put_nowait(result)
+                except queue.Full:
+                    pass
+
+            def _send_html(self, status: int, title: str, message: str):
+                body = (
+                    '<!doctype html><html><head><meta charset="utf-8">'
+                    f"<title>{html.escape(title)}</title>"
+                    "<style>body{font-family:-apple-system,BlinkMacSystemFont,"
+                    "Segoe UI,sans-serif;margin:48px;line-height:1.5}</style>"
+                    "</head><body>"
+                    f"<h1>{html.escape(title)}</h1>"
+                    f"<p>{html.escape(message)}</p>"
+                    "</body></html>"
+                )
+                raw = body.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, fmt, *args):
+                return
+
+        bind_host = "127.0.0.1" if self.host in ("localhost", "127.0.0.1") else self.host
+        self._server = _ReusableHTTPServer((bind_host, self.port), Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="codex-oauth-callback",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def wait(self, timeout: float):
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def poll(self):
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+        self._thread = None
+
+
+def _truncate(value, maxlen=500):
+    text = str(value)
+    return text[:maxlen] + f"...(共{len(text)}字符)" if len(text) > maxlen else text
 
 
 def _request_kwargs(impersonate: str | None = None) -> dict:
@@ -121,6 +273,20 @@ def _extract_code_from_url(url: str):
         return None
 
 
+def _extract_callback_params(url: str) -> dict:
+    try:
+        parsed = urlparse(url or "")
+        query = parse_qs(parsed.query)
+    except Exception:
+        return {}
+    return {
+        "code": (query.get("code") or [""])[0],
+        "state": (query.get("state") or [""])[0],
+        "error": (query.get("error") or [""])[0],
+        "error_description": (query.get("error_description") or [""])[0],
+    }
+
+
 def _decode_jwt_payload(token: str):
     try:
         parts = token.split(".")
@@ -161,6 +327,11 @@ def _needs_email_otp(page_type: str, continue_url: str) -> bool:
         normalized_page_type in email_otp_page_types
         or any(marker in normalized_continue_url for marker in email_otp_url_markers)
     )
+
+
+def _needs_phone_verification(continue_url: str) -> bool:
+    normalized_continue_url = str(continue_url or "").strip().lower().replace("_", "-")
+    return "add-phone" in normalized_continue_url
 
 
 def _has_usable_password(password: str | None) -> bool:
@@ -352,6 +523,393 @@ def build_sentinel_token(session, device_id, flow="authorize_continue", user_age
         {"p": p_value, "t": "", "c": c_value, "id": device_id, "flow": flow},
         separators=(",", ":"),
     )
+
+
+class BrowserCodexOAuthClient:
+    GETEMAIL_COMPAT_PROVIDERS = {"getemail", "nnai"}
+
+    def __init__(self, proxy: dict | None = None, headless: bool | None = None):
+        self.proxy = proxy or {}
+        self.headless = headless
+        self.session = _new_session()
+        proxies = build_requests_proxies(self.proxy)
+        if proxies:
+            self.session.proxies = proxies
+        self.ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        )
+        self.session.headers.update({"User-Agent": self.ua})
+
+    def _print(self, message: str):
+        with _print_lock:
+            print(message)
+
+    def _build_authorize_url(self, state: str, challenge: str) -> str:
+        issuer = cfg.oauth.issuer.rstrip("/")
+        params = {
+            "client_id": cfg.oauth.client_id,
+            "response_type": "code",
+            "redirect_uri": cfg.oauth.redirect_uri,
+            "scope": "openid email profile offline_access",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "login",
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+        }
+        return f"{issuer}/oauth/authorize?{urlencode(params)}"
+
+    def _exchange_code_for_tokens(self, code: str, verifier: str) -> dict:
+        issuer = cfg.oauth.issuer.rstrip("/")
+        token_url = f"{issuer}/oauth/token"
+        self._print(f"[OAuth] 访问 token 交换地址: {token_url}")
+        resp = self.session.post(
+            token_url,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": self.ua,
+            },
+            data={
+                "grant_type": "authorization_code",
+                "client_id": cfg.oauth.client_id,
+                "code": code,
+                "redirect_uri": cfg.oauth.redirect_uri,
+                "code_verifier": verifier,
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"token 交换失败: HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if not data.get("access_token"):
+            raise RuntimeError("token 响应缺少 access_token")
+        return data
+
+    def _poll_getemail_code(
+        self,
+        email: str,
+        tried_codes: set[str],
+        timeout_seconds: float,
+        interval_seconds: float = 5,
+    ) -> str | None:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                url = f"https://getemail.nnai.website/api/code?email={email}&format=json"
+                self._print(f"[OAuth] 访问验证码接口: {url}")
+                resp = self.session.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    code = str(data.get("code") or "").strip()
+                    if not code:
+                        time.sleep(interval_seconds)
+                        continue
+                    if not code.isdigit() or len(code) != 6:
+                        self._print(f"[OAuth] 忽略无效邮箱验证码 {code}")
+                        time.sleep(interval_seconds)
+                        continue
+                    if code in tried_codes:
+                        time.sleep(interval_seconds)
+                        continue
+                    tried_codes.add(code)
+                    return code
+            except Exception as exc:
+                self._print(f"[OAuth] 获取验证码失败，继续等待: {exc}")
+            time.sleep(interval_seconds)
+        return None
+
+    def _driver_current_url(self, driver) -> str:
+        try:
+            return str(driver.current_url or "")
+        except Exception:
+            return ""
+
+    def _print_driver_url(self, driver, label: str):
+        self._print(f"[OAuth][Selenium] {label}: {self._driver_current_url(driver) or 'N/A'}")
+
+    def _callback_from_driver_url(self, driver, expected_state: str):
+        params = _extract_callback_params(self._driver_current_url(driver))
+        if not any(params.values()):
+            return None
+        if params.get("state") and params.get("state") != expected_state:
+            return {
+                "error": "invalid_state",
+                "error_description": f"expected {expected_state}, got {params.get('state')}",
+                "state": params.get("state"),
+            }
+        if params.get("error"):
+            return params
+        if params.get("code"):
+            return {"code": params["code"], "state": params.get("state", "")}
+        return None
+
+    def _is_oauth_consent_url(self, url: str) -> bool:
+        normalized = str(url or "").lower()
+        return (
+            "auth.openai.com/sign-in-with-chatgpt/codex/consent" in normalized
+            or "/sign-in-with-chatgpt/codex/consent" in normalized
+        )
+
+    def _is_oauth_callback_or_consent_url(self, url: str) -> bool:
+        normalized = str(url or "").lower()
+        return self._is_oauth_consent_url(normalized) or "/auth/callback" in normalized
+
+    def _click_continue_like_selenium(self, driver, monitor_callback=None) -> bool:
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        candidates = [
+            (By.CSS_SELECTOR, "button[type='submit']"),
+            (
+                By.XPATH,
+                '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "continue") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "next") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "confirm") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "verify") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "allow") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "authorize") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "log in") '
+                'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "sign in") '
+                'or contains(normalize-space(.), "继续") '
+                'or contains(normalize-space(.), "下一步") '
+                'or contains(normalize-space(.), "确定") '
+                'or contains(normalize-space(.), "确认") '
+                'or contains(normalize-space(.), "验证") '
+                'or contains(normalize-space(.), "允许") '
+                'or contains(normalize-space(.), "授权") '
+                'or contains(normalize-space(.), "登录")]',
+            ),
+            (By.CSS_SELECTOR, "input[type='submit']"),
+            (By.CSS_SELECTOR, "button"),
+        ]
+
+        for by, selector in candidates:
+            try:
+                button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((by, selector))
+                )
+                self._print("[OAuth][Selenium] 准备点击继续/确认按钮，等待 1.5s")
+                time.sleep(1.5)
+                try:
+                    ActionChains(driver).move_to_element(button).click().perform()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", button)
+                self._print("[OAuth][Selenium] 已点击继续/确认按钮")
+                time.sleep(3)
+                self._print_driver_url(driver, "点击后当前地址")
+                return True
+            except Exception:
+                continue
+
+        if monitor_callback:
+            monitor_callback(driver, "oauth_continue_button_not_found")
+        return False
+
+    def _run_browser_flow(
+        self,
+        email: str,
+        password: str | None,
+        authorize_url: str,
+        state: str,
+        callback_server: LocalOAuthCallbackServer,
+        monitor_callback=None,
+    ) -> dict:
+        from .browser import (
+            create_driver,
+            enter_verification_code,
+            fill_login_form,
+            is_email_already_verified_page,
+            log_browser_egress_ip,
+            open_chatgpt_url,
+        )
+
+        timeout_seconds = 300
+        deadline = time.time() + timeout_seconds
+        tried_codes: set[str] = set()
+        driver = None
+
+        def _report(step_name: str):
+            if monitor_callback and driver:
+                monitor_callback(driver, step_name)
+
+        self._print(f"[OAuth][Selenium] 启动浏览器获取 JSON，等待 callback 最长 {timeout_seconds}s")
+        self._print(f"[OAuth][Selenium] 访问授权地址: {authorize_url}")
+
+        try:
+            driver = create_driver(headless=self.headless, proxy=self.proxy)
+            _report("oauth_init_browser")
+
+            if self.proxy and self.proxy.get("enabled"):
+                browser_proxy_diag = log_browser_egress_ip(driver)
+                if not browser_proxy_diag.get("ok"):
+                    raise RuntimeError(
+                        f"浏览器代理出口检测失败: {browser_proxy_diag.get('reason', 'unknown_error')}"
+                    )
+                _report("oauth_proxy_ip_check")
+
+            open_chatgpt_url(driver, authorize_url)
+            time.sleep(3)
+            self._print_driver_url(driver, "授权页打开后当前地址")
+            _report("oauth_open_authorize_url")
+
+            form_ok, password_entered = fill_login_form(
+                driver,
+                email,
+                password or "",
+                monitor_callback=monitor_callback,
+                success_url_predicate=self._is_oauth_callback_or_consent_url,
+            )
+            if not form_ok:
+                raise RuntimeError("Selenium 登录表单填写失败")
+            if not password_entered:
+                self._print("[OAuth][Selenium] 未检测到密码输入，继续处理邮箱验证码页")
+            self._print_driver_url(driver, "登录表单提交后当前地址")
+            _report("oauth_fill_login_form")
+
+            while time.time() < deadline:
+                callback_result = callback_server.poll()
+                if callback_result:
+                    self._print(f"[OAuth][Selenium] callback server 收到结果: {callback_result}")
+                    return callback_result
+
+                result = self._callback_from_driver_url(driver, state)
+                if result:
+                    self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
+                    return result
+
+                if is_email_already_verified_page(driver):
+                    self._print("[OAuth][Selenium] 邮箱验证页显示已验证，关闭页面后重新进行 OAuth 流程")
+                    raise EmailAlreadyVerifiedRestart("email already verified")
+
+                current_url = self._driver_current_url(driver)
+                if self._is_oauth_consent_url(current_url):
+                    self._print_driver_url(driver, "已进入 Codex 授权确认页")
+                    if self._click_continue_like_selenium(
+                        driver,
+                        monitor_callback=monitor_callback,
+                    ):
+                        _report("oauth_click_consent_submit")
+                        continue
+
+                remaining = max(min(deadline - time.time(), 120), 1)
+                self._print("[OAuth][Selenium] 等待邮箱验证码")
+                code = self._poll_getemail_code(
+                    email=email,
+                    tried_codes=tried_codes,
+                    timeout_seconds=remaining,
+                )
+                if not code:
+                    break
+
+                self._print(f"[OAuth][Selenium] 获取到验证码，准备输入: {code}")
+                if not enter_verification_code(driver, code, monitor_callback=monitor_callback):
+                    self._print("[OAuth][Selenium] 验证码输入/提交失败，继续等待新验证码")
+                    continue
+                self._print_driver_url(driver, "验证码提交后当前地址")
+                _report("oauth_enter_code")
+
+                for _ in range(20):
+                    callback_result = callback_server.poll()
+                    if callback_result:
+                        self._print(f"[OAuth][Selenium] callback server 收到结果: {callback_result}")
+                        return callback_result
+
+                    result = self._callback_from_driver_url(driver, state)
+                    if result:
+                        self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
+                        return result
+                    if is_email_already_verified_page(driver):
+                        self._print("[OAuth][Selenium] 验证码提交后页面显示邮箱已验证，准备重新进行 OAuth 流程")
+                        raise EmailAlreadyVerifiedRestart("email already verified")
+                    if self._click_continue_like_selenium(
+                        driver,
+                        monitor_callback=monitor_callback,
+                    ):
+                        _report("oauth_click_continue")
+                        result = self._callback_from_driver_url(driver, state)
+                        if result:
+                            self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
+                            return result
+                    time.sleep(1)
+
+            raise RuntimeError("等待 OAuth callback 超时")
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+    def perform_login(
+        self,
+        email: str,
+        password: str | None,
+        email_provider: str,
+        mail_token: str | None = None,
+        monitor_callback=None,
+    ):
+        normalized_provider = str(email_provider or "").strip().lower()
+        if normalized_provider not in self.GETEMAIL_COMPAT_PROVIDERS:
+            raise RuntimeError(f"浏览器 OAuth 暂仅支持 getemail/nnai provider: {email_provider}")
+        if mail_token:
+            self._print("[OAuth] 浏览器流程使用 NNAI/getemail API 获取验证码，已忽略邮箱 token")
+
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            verifier, challenge = _generate_pkce()
+            state = secrets.token_urlsafe(24)
+            authorize_url = self._build_authorize_url(state, challenge)
+            callback_server = LocalOAuthCallbackServer(cfg.oauth.redirect_uri, state)
+
+            try:
+                callback_server.start()
+            except OSError as exc:
+                if isinstance(exc, socket.error):
+                    raise RuntimeError(
+                        f"OAuth callback 端口不可用，请确认 {cfg.oauth.redirect_uri} 未被占用"
+                    ) from exc
+                raise
+
+            try:
+                result = self._run_browser_flow(
+                    email=email,
+                    password=password,
+                    authorize_url=authorize_url,
+                    state=state,
+                    callback_server=callback_server,
+                    monitor_callback=monitor_callback,
+                )
+                break
+            except EmailAlreadyVerifiedRestart:
+                if attempt >= max_attempts:
+                    raise RuntimeError("邮箱验证页持续显示已验证，重新进行 OAuth 后仍未拿到 callback")
+                self._print(f"[OAuth][Selenium] 重新开始 OAuth 流程（第 {attempt + 1}/{max_attempts} 次）")
+                time.sleep(2)
+                continue
+            finally:
+                callback_server.stop()
+
+        error = (result or {}).get("error")
+        if error:
+            description = (result or {}).get("error_description") or error
+            raise OAuthCallbackError(f"OAuth callback error: {description}")
+
+        code = (result or {}).get("code", "").strip()
+        result_state = (result or {}).get("state", "").strip()
+        if not code:
+            raise RuntimeError("OAuth callback 缺少 authorization code")
+        if result_state != state:
+            raise RuntimeError("OAuth callback state 不匹配")
+
+        self._print("[OAuth] 已获取 authorization code，开始交换 token")
+        data = self._exchange_code_for_tokens(code, verifier)
+        self._print("[OAuth] token 交换成功")
+        return data
 
 
 class CodexOAuthClient:
@@ -774,6 +1332,8 @@ class CodexOAuthClient:
                     page_type = (otp_data.get("page") or {}).get("type", "") or page_type
                     otp_ok = True
                     self._print(f"[OAuth] OTP {otp_code} 校验成功")
+                    if _needs_phone_verification(continue_url):
+                        raise NeedPhoneError("OAuth 阶段需要绑定手机号")
                     break
 
             if not otp_ok:
@@ -1028,4 +1588,25 @@ def perform_codex_oauth_login(email: str, password: str, email_provider: str, ma
         password=password,
         email_provider=email_provider,
         mail_token=mail_token,
+    )
+
+
+def perform_browser_codex_oauth_login(
+    email: str,
+    password: str,
+    email_provider: str = "getemail",
+    mail_token: str | None = None,
+    proxy: dict | None = None,
+    headless: bool | None = None,
+    monitor_callback=None,
+):
+    if proxy and proxy.get("enabled"):
+        ensure_proxy_ready(proxy, purpose="浏览器 OAuth 代理预检", timeout=10)
+    client = BrowserCodexOAuthClient(proxy=proxy, headless=headless)
+    return client.perform_login(
+        email=email,
+        password=password,
+        email_provider=email_provider,
+        mail_token=mail_token,
+        monitor_callback=monitor_callback,
     )

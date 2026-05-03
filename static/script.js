@@ -1,6 +1,7 @@
 let isRunning = false;
 let logIndex = 0;
 let pollInterval = null;
+let selectedAccountEmails = new Set();
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -9,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadProviders();
     loadSettings();
     loadTokenImportSettings();
+    loadLoginSettings();
     loadUsProxyPool();
 });
 
@@ -33,6 +35,9 @@ function switchTab(tabName) {
     }
     if (tabName === 'tokens') {
         loadTokenImportSettings();
+    }
+    if (tabName === 'login') {
+        loadLoginSettings();
     }
     if (tabName === 'proxies') {
         loadUsProxyPool();
@@ -72,6 +77,11 @@ function updateUI(data) {
     document.getElementById('tokenFail').textContent = data.fail ?? 0;
     document.getElementById('tokenSkipped').textContent = progress.skipped ?? 0;
     document.getElementById('tokenRemaining').textContent = progress.remaining ?? 0;
+    document.getElementById('loginTotal').textContent = progress.total ?? 0;
+    document.getElementById('loginCompleted').textContent = progress.completed ?? 0;
+    document.getElementById('loginFail').textContent = data.fail ?? 0;
+    document.getElementById('loginSkipped').textContent = progress.skipped ?? 0;
+    document.getElementById('loginRemaining').textContent = progress.remaining ?? 0;
     const proxyCurrentSetting = document.getElementById('proxyCurrentSetting');
     if (proxyCurrentSetting) {
         proxyCurrentSetting.textContent = renderCurrentProxy(currentProxy);
@@ -86,11 +96,15 @@ function updateUI(data) {
     if (isRunning) {
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
+        const btnBrowserJson = document.getElementById('btnBrowserJson');
+        if (btnBrowserJson) btnBrowserJson.disabled = true;
         statusDot.classList.add('running');
         statusText.textContent = "运行中";
     } else {
         btnStart.classList.remove('hidden');
         btnStop.classList.add('hidden');
+        const btnBrowserJson = document.getElementById('btnBrowserJson');
+        if (btnBrowserJson) btnBrowserJson.disabled = false;
         statusDot.classList.remove('running');
         statusText.textContent = "系统空闲";
     }
@@ -261,6 +275,16 @@ async function loadTokenImportSettings() {
         document.getElementById('tokenOutputDir').value = data.output_dir || '';
     } catch (e) {
         console.error("加载 Token 设置失败:", e);
+    }
+}
+
+async function loadLoginSettings() {
+    try {
+        const res = await fetch('/api/login/settings');
+        const data = await res.json();
+        document.getElementById('loginAccountsFile').value = data.accounts_file || '';
+    } catch (e) {
+        console.error("加载登录设置失败:", e);
     }
 }
 
@@ -456,6 +480,35 @@ async function startTokenImportTask() {
     }
 }
 
+async function startLoginTask() {
+    const accountsFile = document.getElementById('loginAccountsFile').value.trim();
+
+    if (!accountsFile) {
+        alert('登录 TXT 路径为空');
+        return;
+    }
+
+    clearLogs();
+
+    try {
+        const res = await fetch('/api/login/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accounts_file: accountsFile })
+        });
+
+        if (!res.ok) {
+            const data = await res.text();
+            alert("启动失败: " + data);
+            return;
+        }
+
+        switchTab('dashboard');
+    } catch (e) {
+        alert("请求失败: " + e);
+    }
+}
+
 function clearLogs() {
     document.getElementById('logContainer').innerHTML = '<div class="log-placeholder">等待任务启动...</div>';
 }
@@ -466,7 +519,7 @@ function clearLogs() {
 
 async function loadAccounts() {
     const tbody = document.getElementById('accountTableBody');
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">加载中...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center">加载中...</td></tr>';
 
     try {
         const res = await fetch('/api/accounts');
@@ -482,7 +535,8 @@ function renderAccounts(accounts) {
     tbody.innerHTML = '';
 
     if (accounts.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666">暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#666">暂无数据</td></tr>';
+        updateSelectedAccountCount();
         return;
     }
 
@@ -518,7 +572,12 @@ function renderAccounts(accounts) {
         }
 
         const tr = document.createElement('tr');
+        const checked = selectedAccountEmails.has(acc.email) ? 'checked' : '';
         tr.innerHTML = `
+            <td class="select-col">
+                <input type="checkbox" class="account-select" value="${escapeHtml(acc.email)}" ${checked}
+                    onchange="toggleAccountSelection('${escapeHtml(acc.email)}', this.checked)">
+            </td>
             <td>${acc.email}</td>
             <td style="font-family:monospace">${acc.password}</td>
             <td><span class="status-tag ${statusClass}">${acc.status}</span></td>
@@ -529,6 +588,8 @@ function renderAccounts(accounts) {
     });
 
     window.allAccounts = accounts;
+    syncSelectAllState();
+    updateSelectedAccountCount();
 }
 
 function filterAccounts() {
@@ -539,4 +600,72 @@ function filterAccounts() {
         acc.email.toLowerCase().includes(term)
     );
     renderAccounts(filtered);
+}
+
+function toggleAccountSelection(email, checked) {
+    if (checked) {
+        selectedAccountEmails.add(email);
+    } else {
+        selectedAccountEmails.delete(email);
+    }
+    syncSelectAllState();
+    updateSelectedAccountCount();
+}
+
+function toggleAllAccounts(checked) {
+    document.querySelectorAll('.account-select').forEach(checkbox => {
+        checkbox.checked = checked;
+        if (checked) {
+            selectedAccountEmails.add(checkbox.value);
+        } else {
+            selectedAccountEmails.delete(checkbox.value);
+        }
+    });
+    syncSelectAllState();
+    updateSelectedAccountCount();
+}
+
+function syncSelectAllState() {
+    const selectAll = document.getElementById('selectAllAccounts');
+    if (!selectAll) return;
+
+    const visible = Array.from(document.querySelectorAll('.account-select'));
+    const checkedCount = visible.filter(checkbox => checkbox.checked).length;
+    selectAll.checked = visible.length > 0 && checkedCount === visible.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < visible.length;
+}
+
+function updateSelectedAccountCount() {
+    const el = document.getElementById('selectedAccountCount');
+    if (el) el.textContent = `已选 ${selectedAccountEmails.size}`;
+}
+
+async function startBrowserJsonTask() {
+    const emails = Array.from(selectedAccountEmails);
+    if (emails.length === 0) {
+        alert('请先勾选需要获取 JSON 的账号');
+        return;
+    }
+
+    if (!confirm(`确定为 ${emails.length} 个账号通过浏览器获取 JSON？`)) return;
+
+    clearLogs();
+
+    try {
+        const res = await fetch('/api/accounts/browser-json/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emails })
+        });
+
+        if (!res.ok) {
+            const data = await res.text();
+            alert("启动失败: " + data);
+            return;
+        }
+
+        switchTab('dashboard');
+    } catch (e) {
+        alert("请求失败: " + e);
+    }
 }

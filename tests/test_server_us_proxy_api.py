@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+import tempfile
 
 from app import server
 
@@ -332,6 +333,92 @@ class ServerUsProxyApiTests(unittest.TestCase):
         matching_logs = [line for line in server.state.logs if "账号流程测试日志" in line]
         self.assertEqual(len(matching_logs), 1)
         self.assertIn("[代理 http://4.4.4.4:80] 账号流程测试日志", matching_logs[0])
+
+    def test_start_login_task_returns_400_when_file_missing(self):
+        response = self.client.post(
+            "/api/login/start",
+            json={"accounts_file": "/tmp/definitely-missing-accounts-login.txt"},
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("登录账号 TXT 文件不存在", payload["error"])
+
+    def test_start_login_task_rejects_when_already_running(self):
+        server.state.is_running = True
+
+        response = self.client.post("/api/login/start", json={})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "Already running")
+
+    @mock.patch("app.server.threading.Thread")
+    def test_start_login_task_starts_background_worker(self, thread_cls):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("user@nnai.website|secret\n")
+            accounts_path = handle.name
+
+        thread = mock.Mock()
+        thread_cls.return_value = thread
+
+        response = self.client.post(
+            "/api/login/start",
+            json={"accounts_file": accounts_path},
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["accounts_file"], accounts_path)
+        thread_cls.assert_called_once()
+        kwargs = thread_cls.call_args.kwargs
+        self.assertTrue(kwargs["daemon"])
+        self.assertIs(kwargs["target"], server.login_worker_thread)
+        self.assertEqual(kwargs["args"][0], accounts_path)
+        thread.start.assert_called_once()
+
+    @mock.patch("app.server.account_login_service.process_login_accounts_from_file")
+    def test_login_worker_thread_updates_progress_counts(self, process_login_accounts):
+        def fake_process(*, progress_callback, **kwargs):
+            progress_callback(
+                {
+                    "task_type": "account_login",
+                    "total": 2,
+                    "processed": 1,
+                    "completed": 1,
+                    "success": 1,
+                    "fail": 0,
+                    "skipped": 0,
+                    "remaining": 1,
+                    "current_email": "user1@nnai.website",
+                    "status": "success",
+                }
+            )
+            return {
+                "total": 2,
+                "processed": 2,
+                "completed": 2,
+                "success": 1,
+                "fail": 1,
+                "skipped": 0,
+                "remaining": 0,
+            }
+
+        process_login_accounts.side_effect = fake_process
+
+        server.login_worker_thread(
+            accounts_file="/tmp/accounts-login.txt",
+            headless=True,
+            proxy={"enabled": False},
+        )
+
+        self.assertFalse(server.state.is_running)
+        self.assertEqual(server.state.success_count, 1)
+        self.assertEqual(server.state.fail_count, 1)
+        progress = server.state.get_progress()
+        self.assertEqual(progress["task_type"], "account_login")
+        self.assertEqual(progress["total"], 2)
+        self.assertEqual(progress["completed"], 2)
 
 
 if __name__ == "__main__":

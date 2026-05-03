@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import app as app_package
-from app.oauth_service import CodexOAuthClient
+from app.oauth_service import CodexOAuthClient, NeedPhoneError
 
 
 class FakeResponse:
@@ -178,6 +178,53 @@ class OAuthBranchingTests(unittest.TestCase):
         self.assertIn("https://auth.openai.com/oauth/token", posted_urls)
         self.assertNotIn("https://auth.openai.com/api/accounts/password/verify", posted_urls)
         self.assertEqual(follow_referers, ["https://auth.openai.com/email-verification"])
+
+    @patch("app.oauth_service._generate_pkce", return_value=("verifier", "challenge"))
+    @patch("app.oauth_service._request_kwargs", return_value={})
+    @patch("app.oauth_service.build_sentinel_token", side_effect=["authorize-token"])
+    def test_perform_login_raises_need_phone_when_otp_validate_requires_phone(
+        self,
+        mock_build_sentinel,
+        mock_request_kwargs,
+        mock_pkce,
+    ):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    payload={
+                        "continue_url": "/u/email-otp/challenge",
+                        "page": {"type": "email_otp"},
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    payload={
+                        "continue_url": "https://auth.openai.com/add-phone",
+                        "page": {"type": "phone_number"},
+                    },
+                ),
+            ]
+        )
+
+        with patch("app.oauth_service._new_session", return_value=session):
+            client = CodexOAuthClient(proxy=None)
+
+        fake_email_providers = types.SimpleNamespace(list_verification_codes=lambda provider, token: ["654321"])
+        with patch.object(client, "_bootstrap_oauth_session", return_value=("https://auth.openai.com/log-in", True)):
+            with patch.dict("sys.modules", {"app.email_providers": fake_email_providers}):
+                with patch.object(app_package, "email_providers", fake_email_providers, create=True):
+                    with self.assertRaises(NeedPhoneError):
+                        client.perform_login(
+                            email="user@example.com",
+                            password="saved-chatgpt-password",
+                            email_provider="mailtm",
+                            mail_token="mail-session",
+                        )
+
+        posted_urls = [call["url"] for call in session.post_calls]
+        self.assertIn("https://auth.openai.com/api/accounts/email-otp/validate", posted_urls)
+        self.assertNotIn("https://auth.openai.com/oauth/token", posted_urls)
 
 
 if __name__ == "__main__":

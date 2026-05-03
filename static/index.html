@@ -30,6 +30,9 @@
             <div class="nav-item" data-tab="tokens" onclick="switchTab('tokens')">
                 <span>🪪</span> Token 获取
             </div>
+            <div class="nav-item" data-tab="login" onclick="switchTab('login')">
+                <span>🔐</span> 账号登录
+            </div>
             <div class="nav-item" data-tab="proxies" onclick="switchTab('proxies')">
                 <span>🧭</span> 代理池
             </div>
@@ -165,14 +168,26 @@
         <div id="view-accounts" class="view-section hidden">
             <div class="panel">
                 <div class="panel-header">
-                    <input type="text" id="searchInput" placeholder="搜索邮箱..." class="ctrl-input" style="width: 300px"
-                        onkeyup="filterAccounts()">
-                    <button class="action-btn" onclick="loadAccounts()">🔄 刷新列表</button>
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <input type="text" id="searchInput" placeholder="搜索邮箱..." class="ctrl-input" style="width: 300px"
+                            onkeyup="filterAccounts()">
+                        <button class="action-btn" onclick="loadAccounts()">🔄 刷新列表</button>
+                    </div>
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <span class="status-pill neutral" id="selectedAccountCount">已选 0</span>
+                        <button class="btn btn-primary" style="width:auto; padding:10px 18px;" id="btnBrowserJson"
+                            onclick="startBrowserJsonTask()">
+                            <span>🌐</span> 获取 JSON
+                        </button>
+                    </div>
                 </div>
                 <div class="table-container" style="border:none; box-shadow:none; border-radius:0">
                     <table>
                         <thead>
                             <tr>
+                                <th class="select-col">
+                                    <input type="checkbox" id="selectAllAccounts" onchange="toggleAllAccounts(this.checked)">
+                                </th>
                                 <th>ChatGPT 邮箱</th>
                                 <th>密码</th>
                                 <th>状态</th>
@@ -243,6 +258,57 @@
                         <div class="stat-card" style="min-height:auto;">
                             <div class="stat-label">剩余</div>
                             <div class="stat-value blue" id="tokenRemaining">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Login Tab -->
+        <div id="view-login" class="view-section hidden">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span>🔐</span> 从 TXT 批量登录账号
+                    </div>
+                </div>
+
+                <div style="padding: 24px; display: grid; gap: 18px;">
+                    <div>
+                        <label class="ctrl-label">TXT 路径</label>
+                        <input type="text" id="loginAccountsFile" class="ctrl-input" readonly>
+                        <div style="font-size:12px;color:#6b7280;margin-top:6px;">
+                            每行格式：邮箱|密码。验证码统一通过当前 NNAI Worker 接收。
+                        </div>
+                    </div>
+
+                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                        <button class="action-btn" style="padding:10px 16px;" onclick="loadLoginSettings()">刷新路径</button>
+                        <button class="btn btn-primary" style="width:auto; padding:10px 18px;" onclick="startLoginTask()">
+                            <span>🔐</span> 开始登录账号
+                        </button>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px;">
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">总数</div>
+                            <div class="stat-value" id="loginTotal">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">已完成</div>
+                            <div class="stat-value" id="loginCompleted">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">失败</div>
+                            <div class="stat-value red" id="loginFail">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">已跳过</div>
+                            <div class="stat-value" id="loginSkipped">0</div>
+                        </div>
+                        <div class="stat-card" style="min-height:auto;">
+                            <div class="stat-label">剩余</div>
+                            <div class="stat-value blue" id="loginRemaining">0</div>
                         </div>
                     </div>
                 </div>

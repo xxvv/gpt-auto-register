@@ -17,6 +17,8 @@ from . import nnai_service
 from . import email_providers
 from . import oauth_service
 from . import token_batch_service
+from . import account_login_service
+from . import browser_json_service
 from . import us_proxy_pool
 from . import utils
 from .config import PROJECT_ROOT, cfg, dated_accounts_file_path
@@ -179,6 +181,8 @@ for module in (
     nnai_service,
     oauth_service,
     token_batch_service,
+    account_login_service,
+    browser_json_service,
     us_proxy_pool,
     utils,
 ):
@@ -357,7 +361,7 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                     attempt_proxy = account_proxy
 
                     def on_success_ready(_email, _password, _account_record_info):
-                        main.print("⚡ accessToken 已保存，立即开始排队下个注册任务")
+                        main.print("⚡ accessToken 已保存并保留窗口完成，开始排队下个注册任务")
                         release_slot()
 
                     while True:
@@ -503,6 +507,173 @@ def token_worker_thread(accounts_file, output_dir, proxy):
         finally:
             state.is_running = False
 
+
+def login_worker_thread(accounts_file, headless, proxy):
+    with _log_proxy_context(proxy):
+        state.is_running = True
+        state.stop_requested = False
+        state.success_count = 0
+        state.fail_count = 0
+        state.reset_progress(task_type="account_login", total=0)
+        state.current_action = "正在批量登录账号..."
+        state.update_frame(None)
+
+        main.print("🔐 开始批量登录账号")
+        main.print(f"📄 登录账号 TXT: {accounts_file}")
+        main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
+        if proxy and proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(proxy)}")
+            try:
+                ensure_proxy_ready(proxy, purpose="登录任务启动前代理预检", timeout=10)
+            except Exception as exc:
+                state.is_running = False
+                state.current_action = "代理预检失败"
+                main.print(f"🛑 登录任务启动终止: {exc}")
+                return
+
+        def monitor(driver, _step):
+            if state.stop_requested:
+                main.print("🛑 检测到停止请求，正在中断登录任务...")
+                raise InterruptedError("用户请求停止")
+            try:
+                state.update_frame(driver.get_screenshot_as_png())
+            except Exception:
+                pass
+
+        def on_progress(progress):
+            state.success_count = progress["success"]
+            state.fail_count = progress["fail"]
+            state.update_progress(
+                task_type=progress["task_type"],
+                total=progress["total"],
+                completed=progress["completed"],
+                processed=progress["processed"],
+                skipped=progress["skipped"],
+            )
+            if progress["total"] > 0:
+                state.current_action = (
+                    f"账号登录中: {progress['completed']}/{progress['total']} "
+                    f"(成功 {progress['success']} / 失败 {progress['fail']} / 跳过 {progress['skipped']})"
+                )
+            if progress.get("current_email"):
+                state.current_action += f" - {progress['current_email']}"
+
+        try:
+            result = account_login_service.process_login_accounts_from_file(
+                accounts_file=accounts_file,
+                headless=headless,
+                proxy=proxy,
+                monitor_callback=monitor,
+                stop_requested=lambda: state.stop_requested,
+                progress_callback=on_progress,
+            )
+            state.success_count = result["success"]
+            state.fail_count = result["fail"]
+            state.update_progress(
+                task_type="account_login",
+                total=result["total"],
+                completed=result["completed"],
+                processed=result["processed"],
+                skipped=result["skipped"],
+            )
+            state.current_action = (
+                f"账号登录完成: {result['completed']}/{result['total']} "
+                f"(成功 {result['success']} / 失败 {result['fail']} / 跳过 {result['skipped']})"
+            )
+            main.print("🏁 批量登录账号完成")
+        except Exception as e:
+            state.fail_count += 1
+            state.current_action = "账号登录失败"
+            main.print(f"❌ 批量登录任务失败: {e}")
+        finally:
+            state.is_running = False
+
+
+def browser_json_worker_thread(emails, output_dir, headless, proxy):
+    with _log_proxy_context(proxy):
+        state.is_running = True
+        state.stop_requested = False
+        state.success_count = 0
+        state.fail_count = 0
+        state.reset_progress(task_type="browser_json", total=len(emails))
+        state.current_action = "正在通过浏览器获取 JSON..."
+        state.update_frame(None)
+
+        accounts_file = str(_resolve_repo_path(cfg.files.accounts_file))
+        main.print("🌐 开始浏览器获取 JSON")
+        main.print(f"📄 账号文件: {accounts_file}")
+        main.print(f"📁 输出目录: {output_dir}")
+        main.print(f"🧾 勾选账号数: {len(emails)}")
+        main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
+        if proxy and proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(proxy)}")
+            try:
+                ensure_proxy_ready(proxy, purpose="浏览器 JSON 任务启动前代理预检", timeout=10)
+            except Exception as exc:
+                state.is_running = False
+                state.current_action = "代理预检失败"
+                main.print(f"🛑 浏览器 JSON 任务启动终止: {exc}")
+                return
+
+        def monitor(driver, _step):
+            if state.stop_requested:
+                main.print("🛑 检测到停止请求，正在中断浏览器 JSON 任务...")
+                raise InterruptedError("用户请求停止")
+            try:
+                state.update_frame(driver.get_screenshot_as_png())
+            except Exception:
+                pass
+
+        def on_progress(progress):
+            state.success_count = progress["success"]
+            state.fail_count = progress["fail"]
+            state.update_progress(
+                task_type=progress["task_type"],
+                total=progress["total"],
+                completed=progress["completed"],
+                processed=progress["processed"],
+                skipped=progress["skipped"],
+            )
+            if progress["total"] > 0:
+                state.current_action = (
+                    f"浏览器获取 JSON: {progress['completed']}/{progress['total']} "
+                    f"(成功 {progress['success']} / 失败 {progress['fail']})"
+                )
+            if progress.get("current_email"):
+                state.current_action += f" - {progress['current_email']}"
+
+        try:
+            result = browser_json_service.process_selected_accounts(
+                accounts_file=accounts_file,
+                emails=emails,
+                output_dir=output_dir,
+                proxy=proxy,
+                headless=headless,
+                monitor_callback=monitor,
+                stop_requested=lambda: state.stop_requested,
+                progress_callback=on_progress,
+            )
+            state.success_count = result["success"]
+            state.fail_count = result["fail"]
+            state.update_progress(
+                task_type="browser_json",
+                total=result["total"],
+                completed=result["completed"],
+                processed=result["processed"],
+                skipped=result["skipped"],
+            )
+            state.current_action = (
+                f"浏览器 JSON 获取完成: {result['completed']}/{result['total']} "
+                f"(成功 {result['success']} / 失败 {result['fail']})"
+            )
+            main.print(f"🏁 浏览器 JSON 获取完成，输出目录: {result['output_dir']}")
+        except Exception as e:
+            state.fail_count += 1
+            state.current_action = "浏览器 JSON 获取失败"
+            main.print(f"❌ 浏览器 JSON 任务失败: {e}")
+        finally:
+            state.is_running = False
+
 # ==========================================
 # 🌊 MJPEG 流生成器
 # ==========================================
@@ -588,6 +759,13 @@ def get_token_import_settings():
     })
 
 
+@app.route('/api/login/settings', methods=['GET'])
+def get_login_settings():
+    return jsonify({
+        "accounts_file": str(account_login_service.DEFAULT_LOGIN_ACCOUNTS_FILE),
+    })
+
+
 @app.route('/api/token-import/start', methods=['POST'])
 def start_token_import():
     if state.is_running:
@@ -606,6 +784,68 @@ def start_token_import():
         daemon=True
     ).start()
     return jsonify({"status": "started", "accounts_file": accounts_file, "output_dir": output_dir})
+
+
+@app.route('/api/login/start', methods=['POST'])
+def start_login_task():
+    if state.is_running:
+        return jsonify({"error": "Already running"}), 400
+
+    data = request.json or {}
+    accounts_file = str(
+        _resolve_request_path(
+            data.get("accounts_file", str(account_login_service.DEFAULT_LOGIN_ACCOUNTS_FILE))
+        )
+    )
+
+    if not os.path.exists(accounts_file):
+        return jsonify({"error": "登录账号 TXT 文件不存在"}), 400
+
+    threading.Thread(
+        target=login_worker_thread,
+        args=(accounts_file, state.headless, dict(state.proxy)),
+        daemon=True
+    ).start()
+    return jsonify({"status": "started", "accounts_file": accounts_file})
+
+
+@app.route('/api/accounts/browser-json/start', methods=['POST'])
+def start_accounts_browser_json():
+    if state.is_running:
+        return jsonify({"error": "Already running"}), 400
+
+    data = request.json or {}
+    emails = data.get("emails", [])
+    if not isinstance(emails, list):
+        return jsonify({"error": "emails 必须是数组"}), 400
+
+    normalized_emails = []
+    seen = set()
+    for email in emails:
+        normalized = str(email).strip()
+        if not normalized or "@" not in normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_emails.append(normalized)
+
+    if not normalized_emails:
+        return jsonify({"error": "请先勾选需要获取 JSON 的账号"}), 400
+
+    output_dir = str(_resolve_request_path(data.get("output_dir", cfg.oauth.token_json_dir)))
+
+    threading.Thread(
+        target=browser_json_worker_thread,
+        args=(normalized_emails, output_dir, state.headless, dict(state.proxy)),
+        daemon=True
+    ).start()
+    return jsonify({
+        "status": "started",
+        "emails": normalized_emails,
+        "output_dir": output_dir,
+    })
 
 @app.route('/api/settings', methods=['POST'])
 def set_settings():

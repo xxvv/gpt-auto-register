@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 OAUTH_SUCCESS_STATUS = "已注册/OAuth成功"
+NEED_PHONE_STATUS = "need-phone"
 
 
 def load_accounts_from_file(file_path: str) -> list[dict]:
@@ -43,6 +44,10 @@ def load_account_from_file(file_path: str, email: str) -> dict:
 
 def is_oauth_success_status(status: str) -> bool:
     return (status or "").strip() == OAUTH_SUCCESS_STATUS
+
+
+def is_need_phone_status(status: str) -> bool:
+    return (status or "").strip().lower() == NEED_PHONE_STATUS
 
 
 def update_account_status_in_file(file_path: str, email: str, new_status: str) -> None:

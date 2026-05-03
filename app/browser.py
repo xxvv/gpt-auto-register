@@ -72,6 +72,16 @@ _VERIFICATION_TEXT_MARKERS = [
     "we sent a code",
     "enter the code we sent",
 ]
+_EMAIL_ALREADY_VERIFIED_MARKERS = [
+    "电子邮件地址已验证",
+    "邮箱地址已验证",
+    "邮件地址已验证",
+    "email address has been verified",
+    "email address verified",
+    "email verified",
+    "your email has been verified",
+    "your email address has been verified",
+]
 
 
 def _page_text(driver) -> str:
@@ -141,6 +151,18 @@ def _is_email_verification_page(driver, require_visible_input: bool = False) -> 
         return has_verification_url and has_verification_text
 
     return has_verification_text or (has_verification_url and has_verification_text)
+
+
+def is_email_already_verified_page(driver) -> bool:
+    try:
+        current_url = (driver.current_url or "").lower()
+    except Exception:
+        current_url = ""
+    if "email-verification" not in current_url and "email-verify" not in current_url:
+        return False
+
+    body_text = _visible_body_text(driver)
+    return any(marker in body_text for marker in _EMAIL_ALREADY_VERIFIED_MARKERS)
 
 
 def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) -> str:
@@ -231,7 +253,7 @@ def _wait_for_password_input_or_verification(
 
 
 def _wait_for_password_submit_result(
-    driver, timeout: int = 30, monitor_callback=None
+    driver, timeout: int = 30, monitor_callback=None, success_url_predicate=None
 ) -> str:
     end_time = time.time() + timeout
     verification_hits = 0
@@ -239,6 +261,15 @@ def _wait_for_password_submit_result(
     print(f"📬 等待密码提交结果...（最长 {timeout}s）")
 
     while time.time() < end_time:
+        if callable(success_url_predicate):
+            try:
+                current_url = str(driver.current_url or "")
+            except Exception:
+                current_url = ""
+            if success_url_predicate(current_url):
+                print(f"✅ 密码提交后进入目标页面: {current_url}")
+                return "success"
+
         if check_and_handle_error(driver, monitor_callback=monitor_callback):
             print("↩️ 密码提交后检测到错误页，将重新输入密码")
             return "retry_password"
@@ -302,6 +333,40 @@ def _click_signup_or_login_entry(driver) -> bool:
     return False
 
 
+def _click_login_entry(driver) -> bool:
+    print("🔍 检查是否需要点击登录按钮...")
+    xpaths = [
+        '//button[@data-testid="login-button"]',
+        '//a[@data-testid="login-button"]',
+        '//button[contains(., "Log in")]',
+        '//a[contains(., "Log in")]',
+        '//button[contains(., "登录")]',
+        '//a[contains(., "登录")]',
+        '//div[contains(text(), "Log in")]',
+        '//div[contains(text(), "登录")]',
+    ]
+
+    for xpath in xpaths:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+        except Exception:
+            continue
+
+        for element in elements:
+            try:
+                if not element.is_displayed():
+                    continue
+                driver.execute_script("arguments[0].click();", element)
+                print("  ✅ 已点击登录按钮")
+                time.sleep(3)
+                return True
+            except Exception:
+                continue
+
+    print("  ℹ️ 未找到显式登录按钮，继续等待邮箱输入框")
+    return False
+
+
 def _wait_for_signup_email_input(
     driver,
     timeout: int = MAX_WAIT_TIME,
@@ -343,6 +408,49 @@ def _wait_for_signup_email_input(
             )
 
     raise RuntimeError("未找到邮箱输入框")
+
+
+def _wait_for_login_email_input(
+    driver,
+    timeout: int = MAX_WAIT_TIME,
+    refresh_after_attempts: int = 2,
+    monitor_callback=None,
+):
+    end_time = time.time() + timeout
+    failure_count = 0
+    email_selectors = [
+        (
+            By.CSS_SELECTOR,
+            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+        )
+    ]
+
+    while time.time() < end_time:
+        email_inputs = _find_visible_elements(driver, email_selectors)
+        if email_inputs:
+            return email_inputs[0]
+
+        failure_count += 1
+        if failure_count >= max(1, refresh_after_attempts):
+            print("🔄 连续未找到登录邮箱输入框，刷新页面后继续等待...")
+            driver.refresh()
+            failure_count = 0
+            _sleep_with_heartbeat(
+                driver,
+                random.randint(5, 8),
+                monitor_callback=monitor_callback,
+                step_name="login_email_input_refresh_wait",
+            )
+            _click_login_entry(driver)
+        else:
+            _sleep_with_heartbeat(
+                driver,
+                1,
+                monitor_callback=monitor_callback,
+                step_name="login_email_input_wait",
+            )
+
+    raise RuntimeError("未找到登录邮箱输入框")
 
 
 class SafeChrome(uc.Chrome):
@@ -463,7 +571,12 @@ def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
 
     for attempt in range(1, total_attempts + 1):
         try:
+            print(f"🌐 浏览器访问地址: {url}")
             driver.get(url)
+            try:
+                print(f"🌐 浏览器当前地址: {driver.current_url or 'N/A'}")
+            except Exception:
+                pass
             return
         except Exception as exc:
             last_exc = exc
@@ -1054,6 +1167,8 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
     if max_retries is None:
         max_retries = ERROR_PAGE_MAX_RETRIES
 
+    handled_error = False
+
     for attempt in range(max_retries):
         try:
             page_source = driver.page_source.lower()
@@ -1084,7 +1199,8 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
                         monitor_callback=monitor_callback,
                         step_name=f"error_retry_{attempt + 1}",
                     )
-                    return True
+                    handled_error = True
+                    continue
                 except Exception:
                     _sleep_with_heartbeat(
                         driver,
@@ -1093,12 +1209,14 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
                         step_name="error_retry_backoff",
                     )
                     continue
-            return False
+            return handled_error
 
         except Exception as e:
             print(f"  错误检测异常: {e}")
-            return False
+            return handled_error
 
+    if handled_error:
+        print(f"❌ 错误页面重试已达上限（{max_retries} 次），停止重试")
     return False
 
 
@@ -1538,177 +1656,188 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         return False, False
 
 
-def login(driver, email, password):
+def fill_login_form(
+    driver, email: str, password: str, monitor_callback=None, success_url_predicate=None
+):
     """
-    登录 ChatGPT
+    填写 ChatGPT 登录表单。
+
+    返回:
+        tuple: (是否成功进入验证码页, 是否已输入密码)
     """
-    print(f"🔐 正在登录 {email}...")
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, MAX_WAIT_TIME)
+    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 60))
 
     try:
-        open_chatgpt_url(driver, CHATGPT_LOGIN_URL)
-        time.sleep(5)
+        print(f"DEBUG: 当前页面标题: {driver.title}")
+        print(f"DEBUG: 当前页面URL: {driver.current_url}")
+        print(f"🔐 准备登录 {email}...")
 
-        # 0. 点击初始页面的 Log in / 登录 按钮
-        print("🔘 寻找 Log in / 登录 按钮...")
-        try:
-            # 尝试多种选择器，支持中文
-            xpaths = [
-                '//button[@data-testid="login-button"]',
-                '//button[contains(., "Log in")]',
-                '//button[contains(., "登录")]',
-                '//div[contains(text(), "Log in")]',
-                '//div[contains(text(), "登录")]',
-            ]
-
-            login_btn = None
-            for xpath in xpaths:
-                try:
-                    btns = driver.find_elements(By.XPATH, xpath)
-                    for btn in btns:
-                        if btn.is_displayed():
-                            login_btn = btn
-                            break
-                    if login_btn:
-                        break
-                except Exception:
-                    continue
-
-            if login_btn:
-                # 确保点击
-                try:
-                    login_btn.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", login_btn)
-                print("✅ 点击了登录按钮")
-            else:
-                print("⚠️ 未找到显式的登录按钮，尝试直接寻找输入框")
-        except Exception as e:
-            print(f"⚠️ 点击登录按钮出错: {e}")
-
-        time.sleep(3)
-
-        # 1. 输入邮箱
-        print("📧 输入邮箱...")
-        # 增加等待时间
-        email_input = wait.until(
-            EC.visibility_of_element_located(
-                (
-                    By.CSS_SELECTOR,
-                    'input[name="username"], input[name="email"], input[id="email-input"]',
-                )
-            )
-        )
-        email_input.clear()
-        type_slowly(email_input, email)
-
-        # 点击继续
-        print("🔘 点击继续...")
-        continue_btn = driver.find_element(
-            By.CSS_SELECTOR, 'button[type="submit"], button[class*="continue-btn"]'
-        )
-        continue_btn.click()
-        time.sleep(3)
-
-        # ⚠️ 关键修正：检查是否进入了验证码模式，如果是，切换回密码模式
-        print("🔍 检查登录方式...")
-        try:
-            # 寻找所有包含 "密码" 或 "Password" 的文本元素，只要它们看起来像链接或按钮
-            # 排除掉密码输入框本身的 label
-            switch_candidates = driver.find_elements(
-                By.XPATH,
-                '//*[contains(text(), "密码") or contains(text(), "Password")]',
-            )
-
-            clicked_switch = False
-            for el in switch_candidates:
-                if not el.is_displayed():
-                    continue
-
-                tag_name = el.tag_name.lower()
-                text = el.text
-
-                # 排除 label 和 title
-                if (
-                    tag_name in ["h1", "h2", "label", "span"]
-                    and "输入" not in text
-                    and "Enter" not in text
-                    and "使用" not in text
-                ):
-                    continue
-
-                # 尝试点击看起来像切换链接的元素
-                if (
-                    "输入密码" in text
-                    or "Enter password" in text
-                    or "使用密码" in text
-                    or "password instead" in text
-                ):
-                    print(f"⚠️ 尝试点击切换链接: '{text}' ({tag_name})...")
-                    try:
-                        el.click()
-                        clicked_switch = True
-                        time.sleep(2)
-                        break
-                    except Exception:
-                        # 可能是被遮挡，尝试 JS 点击
-                        driver.execute_script("arguments[0].click();", el)
-                        clicked_switch = True
-                        time.sleep(2)
-                        break
-
-            if not clicked_switch:
-                print("  ℹ️ 未找到明显的'切换密码'链接，假设在密码输入页或强制验证码页")
-
-        except Exception as e:
-            print(f"  检查登录方式出错: {e}")
-
-        # 2. 输入密码
-        print("🔑 等待密码输入框...")
-        try:
-            password_input = wait.until(
-                EC.visibility_of_element_located(
-                    (By.CSS_SELECTOR, 'input[name="password"], input[type="password"]')
-                )
-            )
-            password_input.clear()
-            type_slowly(password_input, password)
-
-            # 点击继续/登录
-            print("🔘 点击登录...")
-            continue_btn = driver.find_element(
-                By.CSS_SELECTOR, 'button[type="submit"], button[name="action"]'
-            )
-            continue_btn.click()
-
-            print("⏳ 等待登录完成...")
+        if (
+            "Just a moment" in driver.title
+            or "Ray ID" in driver.page_source
+            or "请稍候" in driver.title
+        ):
+            print("⚠️ 检测到 Cloudflare 验证页面，等待后继续...")
             time.sleep(10)
+            if "Just a moment" in driver.title or "请稍候" in driver.title:
+                driver.refresh()
+                time.sleep(10)
 
-        except Exception as e:
-            print("❌ 未找到密码输入框。")
-            print("  可能原因: 1. 强制验证码登录; 2. 页面加载过慢; 3. 选择器失效")
-            print("  尝试手动干预或检查页面...")
-            raise e  # 抛出异常以终止测试
+        print("📧 等待登录邮箱输入框...")
+        email_input = _wait_for_login_email_input(
+            driver,
+            timeout=MAX_WAIT_TIME,
+            refresh_after_attempts=2,
+            monitor_callback=monitor_callback,
+        )
 
-        # 检查是否登录成功
-        if "auth" not in driver.current_url:
-            print("✅ 登录成功")
-            return True
-        else:
-            print("⚠️ 可能还在登录页面 (URL包含 auth)")
-            # 再次检查是否有错误提示
-            try:
-                err = driver.find_element(
-                    By.CSS_SELECTOR, '.error-message, [role="alert"]'
+        actions = ActionChains(driver)
+        actions.move_to_element(email_input)
+        actions.click()
+        actions.perform()
+        if not _fill_input_with_verification(email_input, email, "邮箱"):
+            print("❌ 邮箱输入校验失败")
+            return False, False
+
+        print("🔘 点击继续按钮...")
+        continue_btn = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
+        )
+        actions = ActionChains(driver)
+        actions.move_to_element(continue_btn)
+        actions.click()
+        actions.perform()
+        print("✅ 已点击继续")
+        _sleep_with_heartbeat(
+            driver,
+            1.5,
+            monitor_callback=monitor_callback,
+            step_name="login_email_submit_wait",
+        )
+
+        next_step = _wait_for_post_email_step(
+            driver,
+            timeout=step_wait_timeout,
+            monitor_callback=monitor_callback,
+        )
+        if next_step == "verification":
+            print("✅ 邮箱提交后直接进入验证码页，跳过密码输入")
+            return True, False
+        if next_step != "password":
+            return False, False
+
+        password_entered = False
+        password_submit_attempts = max(1, ERROR_PAGE_MAX_RETRIES)
+        for password_attempt in range(1, password_submit_attempts + 1):
+            if password_attempt == 1:
+                print("🔑 等待密码输入框...")
+            else:
+                print(
+                    f"🔁 重新输入密码并继续（第 {password_attempt}/{password_submit_attempts} 次）"
                 )
-                print(f"❌登录错误提示: {err.text}")
-            except Exception:
-                pass
-            return True
+
+            password_step, password_input = _wait_for_password_input_or_verification(
+                driver,
+                timeout=SHORT_WAIT_TIME,
+                monitor_callback=monitor_callback,
+            )
+            if password_step == "verification":
+                return True, password_entered
+            if password_step != "password" or not password_input:
+                print("❌ 未找到密码输入框，也未进入邮箱验证码页")
+                return False, password_entered
+
+            actions = ActionChains(driver)
+            actions.move_to_element(password_input)
+            actions.click()
+            actions.perform()
+            if not _fill_input_with_verification(
+                password_input, password, "密码", mask=True
+            ):
+                print("❌ 密码输入校验失败")
+                return False, password_entered
+            password_entered = True
+
+            print("🔘 点击继续按钮...")
+            if not click_button_with_retry(
+                driver, 'button[type="submit"]', monitor_callback=monitor_callback
+            ):
+                print("❌ 点击继续按钮失败")
+                return False, password_entered
+            print("✅ 已点击继续")
+
+            _sleep_with_heartbeat(
+                driver,
+                3,
+                monitor_callback=monitor_callback,
+                step_name="login_password_submit_wait",
+            )
+            submit_result = _wait_for_password_submit_result(
+                driver,
+                timeout=step_wait_timeout,
+                monitor_callback=monitor_callback,
+                success_url_predicate=success_url_predicate,
+            )
+            if submit_result == "success":
+                return True, True
+            if submit_result == "verification":
+                return True, True
+            if submit_result == "retry_password":
+                continue
+
+            return False, password_entered
+
+        print("❌ 密码提交多次失败，仍未进入邮箱验证码页")
+        return False, password_entered
 
     except Exception as e:
-        print(f"❌ 登录失败: {e}")
-        return False
+        print(f"❌ 填写登录表单失败: {e}")
+        return False, False
+
+
+def click_getting_started_button(driver, timeout: int = 30, monitor_callback=None) -> bool:
+    """点击登录后的“好的，开始吧”引导按钮；已登录但按钮不存在时也视为成功。"""
+    print("🔘 等待并点击“好的，开始吧”按钮...")
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        try:
+            buttons = driver.find_elements(
+                By.CSS_SELECTOR,
+                'button[data-testid="getting-started-button"]',
+            )
+            for button in buttons:
+                try:
+                    if button.is_displayed() and button.is_enabled():
+                        driver.execute_script("arguments[0].click();", button)
+                        print("✅ 已点击“好的，开始吧”按钮")
+                        time.sleep(2)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="getting_started_button_wait",
+            interval=0.5,
+        )
+
+    if verify_logged_in(driver, timeout=10):
+        print("ℹ️ 引导按钮未出现，已确认登录成功")
+        return True
+
+    print("❌ 未找到“好的，开始吧”按钮，也未确认登录成功")
+    return False
+
+
+def login(driver, email, password):
+    """兼容旧调用：执行表单登录，不负责接收/输入邮箱验证码。"""
+    return fill_login_form(driver, email, password)[0]
 
 
 def _find_verification_inputs(driver, code: str):

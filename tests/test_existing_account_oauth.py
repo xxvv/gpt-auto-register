@@ -6,10 +6,12 @@ from pathlib import Path
 from app.config import PROJECT_ROOT, cfg, dated_accounts_file_path
 from app.mailtm_service import login_existing_email
 from app.stored_accounts import (
+    NEED_PHONE_STATUS,
     OAUTH_SUCCESS_STATUS,
     load_account_from_file,
     load_accounts_from_file,
 )
+from app.oauth_service import NeedPhoneError
 from app.token_batch_service import process_accounts_from_file
 
 
@@ -195,6 +197,96 @@ class TokenBatchServiceTests(unittest.TestCase):
             self.assertEqual(seen["mail_login"], [("mailtm", "user2@example.com", "mailbox-pass-2")])
             self.assertEqual(seen["oauth"][0][0], "user2@example.com")
             self.assertEqual(seen["save"], ["user2@example.com"])
+
+    def test_process_accounts_from_file_uses_email_as_nnai_mailbox_credential(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            accounts_path = os.path.join(tmpdir, "accounts.txt")
+            output_dir = os.path.join(tmpdir, "token-output")
+            with open(accounts_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "i421rbkv704g@nnai.website|chatgpt-pass|20260309_010101|已注册||nnai\n"
+                )
+
+            seen = {"mail_login": [], "oauth": [], "save": []}
+
+            def fake_mail_login(provider, email, mailbox_password):
+                seen["mail_login"].append((provider, email, mailbox_password))
+                return "mail-token"
+
+            def fake_oauth(email, password, email_provider, mail_token, proxy):
+                seen["oauth"].append((email, password, email_provider, mail_token, proxy))
+                return {"access_token": "a", "refresh_token": "r"}
+
+            def fake_save(email, tokens, oauth_cfg, proxy):
+                seen["save"].append(email)
+                return os.path.join(oauth_cfg.token_json_dir, f"{email}.json")
+
+            result = process_accounts_from_file(
+                accounts_file=accounts_path,
+                output_dir=output_dir,
+                proxy=None,
+                mail_login_func=fake_mail_login,
+                oauth_login_func=fake_oauth,
+                save_tokens_func=fake_save,
+            )
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["success"], 1)
+            self.assertEqual(result["fail"], 0)
+            self.assertEqual(
+                seen["mail_login"],
+                [("nnai", "i421rbkv704g@nnai.website", "i421rbkv704g@nnai.website")],
+            )
+            self.assertEqual(seen["oauth"][0][2], "nnai")
+            self.assertEqual(seen["save"], ["i421rbkv704g@nnai.website"])
+
+    def test_process_accounts_from_file_marks_and_skips_need_phone_accounts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            accounts_path = os.path.join(tmpdir, "accounts.txt")
+            output_dir = os.path.join(tmpdir, "token-output")
+            with open(accounts_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "user1@example.com|chatgpt-pass|20260309_010101|已注册|mailbox-pass|mailtm\n"
+                )
+                handle.write(
+                    f"user2@example.com|chatgpt-pass-2|20260309_020202|{NEED_PHONE_STATUS}|mailbox-pass-2|mailtm\n"
+                )
+
+            progress_events = []
+            seen = {"mail_login": [], "oauth": [], "save": []}
+
+            def fake_mail_login(provider, email, mailbox_password):
+                seen["mail_login"].append((provider, email, mailbox_password))
+                return "mail-token"
+
+            def fake_oauth(email, password, email_provider, mail_token, proxy):
+                seen["oauth"].append(email)
+                raise NeedPhoneError("OAuth 阶段需要绑定手机号")
+
+            def fake_save(email, tokens, oauth_cfg, proxy):
+                seen["save"].append(email)
+
+            result = process_accounts_from_file(
+                accounts_file=accounts_path,
+                output_dir=output_dir,
+                proxy=None,
+                progress_callback=progress_events.append,
+                mail_login_func=fake_mail_login,
+                oauth_login_func=fake_oauth,
+                save_tokens_func=fake_save,
+            )
+
+            self.assertEqual(result["total"], 2)
+            self.assertEqual(result["success"], 0)
+            self.assertEqual(result["fail"], 0)
+            self.assertEqual(result["skipped"], 2)
+            self.assertEqual(seen["mail_login"], [("mailtm", "user1@example.com", "mailbox-pass")])
+            self.assertEqual(seen["oauth"], ["user1@example.com"])
+            self.assertEqual(seen["save"], [])
+            self.assertEqual(load_account_from_file(accounts_path, "user1@example.com")["status"], NEED_PHONE_STATUS)
+            self.assertEqual(load_account_from_file(accounts_path, "user2@example.com")["status"], NEED_PHONE_STATUS)
+            self.assertIn("need_phone", [event["status"] for event in progress_events])
+            self.assertIn("skipped_need_phone", [event["status"] for event in progress_events])
 
     def test_process_accounts_from_file_uses_output_directory_for_token_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
