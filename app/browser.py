@@ -17,7 +17,7 @@ import zipfile
 from datetime import date
 from urllib.error import URLError
 import undetected_chromedriver as uc
-from selenium.common.exceptions import NoSuchWindowException, TimeoutException
+from selenium.common.exceptions import NoSuchWindowException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -45,6 +45,12 @@ _PASSWORD_INPUT_SELECTORS = [
     (By.CSS_SELECTOR, 'input[autocomplete="new-password"]'),
     (By.CSS_SELECTOR, 'input[name="password"]'),
     (By.CSS_SELECTOR, 'input[type="password"]'),
+]
+_EMAIL_INPUT_SELECTORS = [
+    (
+        By.CSS_SELECTOR,
+        'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+    )
 ]
 _VERIFICATION_INPUT_SELECTORS = [
     (By.CSS_SELECTOR, 'input[name="code"]'),
@@ -169,7 +175,19 @@ def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) 
     end_time = time.time() + timeout
     print(f"🔀 等待密码或验证码页面...（最长 {timeout}s）")
     verification_hits = 0
+    email_hits_after_retry = 0
+    handled_retry = False
     while time.time() < end_time:
+        error_status = check_and_handle_error_status(
+            driver, monitor_callback=monitor_callback
+        )
+        if error_status in {"handled", "exhausted"}:
+            handled_retry = True
+            verification_hits = 0
+            if error_status == "handled":
+                email_hits_after_retry = 0
+                continue
+
         password_inputs = _find_visible_elements(driver, _PASSWORD_INPUT_SELECTORS)
         if password_inputs:
             print("✅ 检测到密码页，继续输入密码")
@@ -182,6 +200,14 @@ def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) 
                 return "verification"
         else:
             verification_hits = 0
+
+        if handled_retry and _visible_email_input(driver):
+            email_hits_after_retry += 1
+            if email_hits_after_retry >= 2:
+                print("↩️ 重试后回到邮箱输入页，将重新提交邮箱")
+                return "email"
+        else:
+            email_hits_after_retry = 0
 
         _sleep_with_heartbeat(
             driver,
@@ -198,10 +224,62 @@ def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) 
     return "unknown"
 
 
+def _wait_for_auth_step_after_retry(
+    driver, timeout: int = 12, monitor_callback=None
+) -> str:
+    end_time = time.time() + timeout
+    email_hits = 0
+    password_hits = 0
+    verification_hits = 0
+
+    while time.time() < end_time:
+        if _visible_email_input(driver):
+            email_hits += 1
+            if email_hits >= 2:
+                print("↩️ 重试后检测到邮箱输入页")
+                return "email"
+        else:
+            email_hits = 0
+
+        if _visible_password_input(driver):
+            password_hits += 1
+            if password_hits >= 2:
+                print("↩️ 重试后检测到密码输入页")
+                return "password"
+        else:
+            password_hits = 0
+
+        if _is_email_verification_page(driver):
+            verification_hits += 1
+            if verification_hits >= 2:
+                print("✅ 重试后已进入邮箱验证码页")
+                return "verification"
+        else:
+            verification_hits = 0
+
+        _sleep_with_heartbeat(
+            driver,
+            0.5,
+            monitor_callback=monitor_callback,
+            step_name="auth_step_after_retry_wait",
+            interval=0.5,
+        )
+
+    print("❌ 重试后未识别到邮箱、密码或验证码页面")
+    return "unknown"
+
+
 def _visible_password_input(driver):
     password_inputs = _find_visible_elements(driver, _PASSWORD_INPUT_SELECTORS)
     if password_inputs:
         return password_inputs[0]
+    return None
+
+
+def _visible_email_input(driver):
+    email_inputs = _find_visible_elements(driver, _EMAIL_INPUT_SELECTORS)
+    if email_inputs:
+        return email_inputs[0]
     return None
 
 
@@ -271,6 +349,15 @@ def _wait_for_password_submit_result(
                 return "success"
 
         if check_and_handle_error(driver, monitor_callback=monitor_callback):
+            retry_step = _wait_for_auth_step_after_retry(
+                driver,
+                timeout=min(12, max(5, timeout)),
+                monitor_callback=monitor_callback,
+            )
+            if retry_step == "verification":
+                return "verification"
+            if retry_step == "email":
+                return "retry_email"
             print("↩️ 密码提交后检测到错误页，将重新输入密码")
             return "retry_password"
 
@@ -375,17 +462,10 @@ def _wait_for_signup_email_input(
 ):
     end_time = time.time() + timeout
     failure_count = 0
-    email_selectors = [
-        (
-            By.CSS_SELECTOR,
-            'input[type="email"], input[name="email"], input[autocomplete="email"]',
-        )
-    ]
-
     while time.time() < end_time:
-        email_inputs = _find_visible_elements(driver, email_selectors)
-        if email_inputs:
-            return email_inputs[0]
+        email_input = _visible_email_input(driver)
+        if email_input:
+            return email_input
 
         failure_count += 1
         if failure_count >= max(1, refresh_after_attempts):
@@ -418,17 +498,10 @@ def _wait_for_login_email_input(
 ):
     end_time = time.time() + timeout
     failure_count = 0
-    email_selectors = [
-        (
-            By.CSS_SELECTOR,
-            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
-        )
-    ]
-
     while time.time() < end_time:
-        email_inputs = _find_visible_elements(driver, email_selectors)
-        if email_inputs:
-            return email_inputs[0]
+        email_input = _visible_email_input(driver)
+        if email_input:
+            return email_input
 
         failure_count += 1
         if failure_count >= max(1, refresh_after_attempts):
@@ -538,6 +611,41 @@ def _is_window_target_lost(exc: Exception) -> bool:
     return "target window already closed" in message or "web view not found" in message
 
 
+def _normalize_url_host(url: str) -> str:
+    match = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#:]+)", str(url or "").strip(), re.I)
+    return (match.group(1) if match else "").lower()
+
+
+def _is_chatgpt_navigation_timeout(driver, url: str, exc: Exception) -> bool:
+    """
+    Chrome sometimes times out waiting for the renderer even after it has reached
+    chatgpt.com. Treat that as a soft navigation success so later element waits
+    can continue from the partially loaded page.
+    """
+    if not isinstance(exc, TimeoutException):
+        return False
+
+    target_host = _normalize_url_host(url)
+    if target_host not in {"chatgpt.com", "www.chatgpt.com"}:
+        return False
+
+    try:
+        current_host = _normalize_url_host(driver.current_url or "")
+    except Exception:
+        current_host = ""
+
+    return current_host in {"chatgpt.com", "www.chatgpt.com"}
+
+
+def _stop_page_load(driver) -> None:
+    try:
+        driver.execute_script("window.stop();")
+    except WebDriverException:
+        pass
+    except Exception:
+        pass
+
+
 def _recover_window_target(driver) -> bool:
     """
     尝试恢复 Selenium 当前 window target。
@@ -565,13 +673,17 @@ def _recover_window_target(driver) -> bool:
 
 
 def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
-    """打开 ChatGPT 页面，若当前 tab target 丢失则尝试恢复后重试。"""
+    """打开 ChatGPT 页面，若加载卡住或当前 tab target 丢失则进行容错。"""
     last_exc: Exception | None = None
     total_attempts = max(1, int(attempts))
 
     for attempt in range(1, total_attempts + 1):
         try:
             print(f"🌐 浏览器访问地址: {url}")
+            try:
+                driver.set_page_load_timeout(max(int(SHORT_WAIT_TIME), 30))
+            except Exception:
+                pass
             driver.get(url)
             try:
                 print(f"🌐 浏览器当前地址: {driver.current_url or 'N/A'}")
@@ -580,6 +692,16 @@ def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
             return
         except Exception as exc:
             last_exc = exc
+            if _is_chatgpt_navigation_timeout(driver, url, exc):
+                _stop_page_load(driver)
+                try:
+                    print(
+                        "  ⚠️ ChatGPT 页面加载未完全结束，但已进入目标站，继续等待页面元素..."
+                        f" current_url={driver.current_url or 'N/A'}"
+                    )
+                except Exception:
+                    print("  ⚠️ ChatGPT 页面加载未完全结束，但已进入目标站，继续等待页面元素...")
+                return
             if attempt >= total_attempts or not _is_window_target_lost(exc):
                 raise
             print(
@@ -1153,7 +1275,51 @@ def _sleep_with_heartbeat(
         time.sleep(min(interval, max(0.05, remaining)))
 
 
-def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
+def _find_error_retry_button(driver):
+    selectors = [
+        (By.CSS_SELECTOR, 'button[data-dd-action-name="Try again"]'),
+        (By.CSS_SELECTOR, 'button[data-testid*="retry" i]'),
+        (By.CSS_SELECTOR, 'button[aria-label*="try again" i]'),
+        (By.CSS_SELECTOR, 'button[aria-label*="retry" i]'),
+        (By.CSS_SELECTOR, 'button[aria-label*="重试"]'),
+    ]
+    for by, selector in selectors:
+        for element in _find_visible_elements(driver, [(by, selector)]):
+            try:
+                if element.is_enabled():
+                    return element
+            except Exception:
+                return element
+        try:
+            element = driver.find_element(by, selector)
+            if element:
+                return element
+        except Exception:
+            pass
+
+    retry_xpaths = [
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "try again")]',
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "retry")]',
+        '//button[contains(normalize-space(.), "重试")]',
+    ]
+    for xpath in retry_xpaths:
+        for element in _find_visible_elements(driver, [(By.XPATH, xpath)]):
+            try:
+                if element.is_enabled():
+                    return element
+            except Exception:
+                return element
+        try:
+            element = driver.find_element(By.XPATH, xpath)
+            if element:
+                return element
+        except Exception:
+            pass
+
+    return None
+
+
+def check_and_handle_error_status(driver, max_retries=None, monitor_callback=None) -> str:
     """
     检测页面错误并自动重试
 
@@ -1162,7 +1328,10 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
         max_retries: 最大重试次数
 
     返回:
-        bool: 是否检测到错误并处理
+        str:
+            `none` 未检测到错误；
+            `handled` 检测到错误并已执行重试；
+            `exhausted` 检测到错误但重试已达上限。
     """
     if max_retries is None:
         max_retries = ERROR_PAGE_MAX_RETRIES
@@ -1176,6 +1345,7 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
                 "出错",
                 "error",
                 "timed out",
+                "operation timed out",
                 "operation timeout",
                 "route error",
                 "invalid content",
@@ -1184,9 +1354,9 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
 
             if has_error:
                 try:
-                    retry_btn = driver.find_element(
-                        By.CSS_SELECTOR, 'button[data-dd-action-name="Try again"]'
-                    )
+                    retry_btn = _find_error_retry_button(driver)
+                    if not retry_btn:
+                        raise LookupError("未找到重试按钮")
                     print(
                         f"⚠️ 检测到错误页面，正在重试（第 {attempt + 1}/{max_retries} 次）..."
                     )
@@ -1209,15 +1379,27 @@ def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
                         step_name="error_retry_backoff",
                     )
                     continue
-            return handled_error
+            return "handled" if handled_error else "none"
 
         except Exception as e:
             print(f"  错误检测异常: {e}")
-            return handled_error
+            return "handled" if handled_error else "none"
 
     if handled_error:
         print(f"❌ 错误页面重试已达上限（{max_retries} 次），停止重试")
-    return False
+        return "exhausted"
+    return "none"
+
+
+def check_and_handle_error(driver, max_retries=None, monitor_callback=None):
+    return (
+        check_and_handle_error_status(
+            driver,
+            max_retries=max_retries,
+            monitor_callback=monitor_callback,
+        )
+        == "handled"
+    )
 
 
 def click_button_with_retry(driver, selector, max_retries=None, monitor_callback=None):
@@ -1301,6 +1483,76 @@ def _fill_input_with_verification(
         )
 
     return False
+
+
+def _submit_email_until_next_step(
+    driver,
+    email: str,
+    wait: WebDriverWait,
+    input_waiter,
+    input_waiter_kwargs: dict,
+    submit_wait_step_name: str,
+    monitor_callback=None,
+) -> str:
+    email_submit_attempts = max(1, ERROR_PAGE_MAX_RETRIES + 1)
+
+    for email_attempt in range(1, email_submit_attempts + 1):
+        if email_attempt == 1:
+            print("📝 正在输入邮箱...")
+        else:
+            print(
+                f"🔁 重试后重新输入邮箱并继续（第 {email_attempt}/{email_submit_attempts} 次）"
+            )
+
+        email_input = _visible_email_input(driver)
+        if not email_input:
+            email_input = input_waiter(driver, **input_waiter_kwargs)
+
+        actions = ActionChains(driver)
+        actions.move_to_element(email_input)
+        actions.click()
+        actions.perform()
+        if not _fill_input_with_verification(email_input, email, "邮箱"):
+            print("❌ 邮箱输入校验失败")
+            return "unknown"
+
+        _sleep_with_heartbeat(
+            driver,
+            1,
+            monitor_callback=monitor_callback,
+            step_name=f"{submit_wait_step_name}_before_click",
+        )
+
+        print("🔘 点击继续按钮...")
+        continue_btn = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
+        )
+        actions = ActionChains(driver)
+        actions.move_to_element(continue_btn)
+        actions.click()
+        actions.perform()
+        print("✅ 已点击继续")
+        _sleep_with_heartbeat(
+            driver,
+            1.5,
+            monitor_callback=monitor_callback,
+            step_name=submit_wait_step_name,
+        )
+
+        next_step = _wait_for_post_email_step(
+            driver,
+            timeout=max(20, min(SHORT_WAIT_TIME, 60)),
+            monitor_callback=monitor_callback,
+        )
+        if next_step in {"password", "verification"}:
+            return next_step
+        if next_step == "email":
+            continue
+
+        return next_step
+
+    print("❌ 邮箱提交多次重试后仍回到邮箱输入页")
+    return "unknown"
 
 
 def _wait_for_email_verification_page(driver, timeout: int = 30, monitor_callback=None) -> bool:
@@ -1539,43 +1791,17 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
 
         _click_signup_or_login_entry(driver)
 
-        email_input = _wait_for_signup_email_input(
+        next_step = _submit_email_until_next_step(
             driver,
-            timeout=MAX_WAIT_TIME,
-            refresh_after_attempts=2,
-            monitor_callback=monitor_callback,
-        )
-
-        print("📝 正在输入邮箱...")
-        actions = ActionChains(driver)
-        actions.move_to_element(email_input)
-        actions.click()
-        actions.perform()
-        if not _fill_input_with_verification(email_input, email, "邮箱"):
-            print("❌ 邮箱输入校验失败")
-            return False, False
-
-        time.sleep(1)
-
-        print("🔘 点击继续按钮...")
-        continue_btn = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
-        )
-        actions = ActionChains(driver)
-        actions.move_to_element(continue_btn)
-        actions.click()
-        actions.perform()
-        print("✅ 已点击继续")
-        _sleep_with_heartbeat(
-            driver,
-            1.5,
-            monitor_callback=monitor_callback,
-            step_name="signup_email_submit_wait",
-        )
-
-        next_step = _wait_for_post_email_step(
-            driver,
-            timeout=step_wait_timeout,
+            email,
+            wait,
+            _wait_for_signup_email_input,
+            {
+                "timeout": MAX_WAIT_TIME,
+                "refresh_after_attempts": 2,
+                "monitor_callback": monitor_callback,
+            },
+            "signup_email_submit_wait",
             monitor_callback=monitor_callback,
         )
         if next_step == "verification":
@@ -1643,6 +1869,26 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             )
             if submit_result == "verification":
                 return True, True
+            if submit_result == "retry_email":
+                next_step = _submit_email_until_next_step(
+                    driver,
+                    email,
+                    wait,
+                    _wait_for_signup_email_input,
+                    {
+                        "timeout": MAX_WAIT_TIME,
+                        "refresh_after_attempts": 2,
+                        "monitor_callback": monitor_callback,
+                    },
+                    "signup_email_submit_wait",
+                    monitor_callback=monitor_callback,
+                )
+                if next_step == "verification":
+                    return True, False
+                if next_step != "password":
+                    return False, password_entered
+                password_entered = False
+                continue
             if submit_result == "retry_password":
                 continue
 
@@ -1685,40 +1931,17 @@ def fill_login_form(
                 time.sleep(10)
 
         print("📧 等待登录邮箱输入框...")
-        email_input = _wait_for_login_email_input(
+        next_step = _submit_email_until_next_step(
             driver,
-            timeout=MAX_WAIT_TIME,
-            refresh_after_attempts=2,
-            monitor_callback=monitor_callback,
-        )
-
-        actions = ActionChains(driver)
-        actions.move_to_element(email_input)
-        actions.click()
-        actions.perform()
-        if not _fill_input_with_verification(email_input, email, "邮箱"):
-            print("❌ 邮箱输入校验失败")
-            return False, False
-
-        print("🔘 点击继续按钮...")
-        continue_btn = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
-        )
-        actions = ActionChains(driver)
-        actions.move_to_element(continue_btn)
-        actions.click()
-        actions.perform()
-        print("✅ 已点击继续")
-        _sleep_with_heartbeat(
-            driver,
-            1.5,
-            monitor_callback=monitor_callback,
-            step_name="login_email_submit_wait",
-        )
-
-        next_step = _wait_for_post_email_step(
-            driver,
-            timeout=step_wait_timeout,
+            email,
+            wait,
+            _wait_for_login_email_input,
+            {
+                "timeout": MAX_WAIT_TIME,
+                "refresh_after_attempts": 2,
+                "monitor_callback": monitor_callback,
+            },
+            "login_email_submit_wait",
             monitor_callback=monitor_callback,
         )
         if next_step == "verification":
@@ -1783,6 +2006,26 @@ def fill_login_form(
                 return True, True
             if submit_result == "verification":
                 return True, True
+            if submit_result == "retry_email":
+                next_step = _submit_email_until_next_step(
+                    driver,
+                    email,
+                    wait,
+                    _wait_for_login_email_input,
+                    {
+                        "timeout": MAX_WAIT_TIME,
+                        "refresh_after_attempts": 2,
+                        "monitor_callback": monitor_callback,
+                    },
+                    "login_email_submit_wait",
+                    monitor_callback=monitor_callback,
+                )
+                if next_step == "verification":
+                    return True, False
+                if next_step != "password":
+                    return False, password_entered
+                password_entered = False
+                continue
             if submit_result == "retry_password":
                 continue
 
@@ -1885,6 +2128,21 @@ def _find_verification_inputs(driver, code: str):
     return None, []
 
 
+def _handle_verification_retry_transition(driver, monitor_callback=None) -> str:
+    retry_step = _wait_for_auth_step_after_retry(
+        driver,
+        timeout=min(12, max(5, SHORT_WAIT_TIME)),
+        monitor_callback=monitor_callback,
+    )
+    if retry_step in {"email", "password"}:
+        print("↩️ 验证码页重试后已回到账号输入流程")
+        return "retry_auth"
+    if retry_step == "verification":
+        print("🔁 验证码页重试后返回验证码输入页，将重新输入验证码")
+        return "retry_verification"
+    return "failed"
+
+
 def enter_verification_code(driver, code: str, monitor_callback=None):
     """
     输入验证码
@@ -1894,70 +2152,117 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
         code: 验证码
 
     返回:
-        bool: 是否成功
+        bool | str:
+            `True` 表示验证码已成功提交；
+            `False` 表示提交失败；
+            `retry_auth` 表示点击重试后已回到邮箱/密码输入流程。
     """
     try:
-        print("🔢 正在输入验证码...")
+        code_attempts = max(1, ERROR_PAGE_MAX_RETRIES + 1)
 
-        while check_and_handle_error(driver, monitor_callback=monitor_callback):
-            _sleep_with_heartbeat(
-                driver,
-                2,
-                monitor_callback=monitor_callback,
-                step_name="code_error_recheck_wait",
-            )
+        for code_attempt in range(1, code_attempts + 1):
+            if code_attempt == 1:
+                print("🔢 正在输入验证码...")
+            else:
+                print(
+                    f"🔁 重新输入验证码并继续（第 {code_attempt}/{code_attempts} 次）"
+                )
 
-        input_mode = None
-        input_elements = []
-        end_time = time.time() + 60
-        while time.time() < end_time:
-            input_mode, input_elements = _find_verification_inputs(driver, code)
-            if input_elements:
-                break
-            time.sleep(0.5)
-
-        if not input_elements:
-            raise RuntimeError("未找到验证码输入框")
-
-        if input_mode == "single":
-            code_input = input_elements[0]
-            code_input.clear()
-            time.sleep(0.5)
-            type_slowly(code_input, code, delay=0.1)
-        else:
-            for idx, digit in enumerate(code):
-                if idx >= len(input_elements):
+            while check_and_handle_error(driver, monitor_callback=monitor_callback):
+                retry_result = _handle_verification_retry_transition(
+                    driver,
+                    monitor_callback=monitor_callback,
+                )
+                if retry_result == "retry_auth":
+                    return "retry_auth"
+                if retry_result == "retry_verification":
                     break
-                box = input_elements[idx]
-                try:
-                    box.clear()
-                except Exception:
-                    pass
-                box.click()
-                time.sleep(0.1)
-                box.send_keys(digit)
+                _sleep_with_heartbeat(
+                    driver,
+                    2,
+                    monitor_callback=monitor_callback,
+                    step_name="code_error_recheck_wait",
+                )
 
-        print(f"✅ 已输入验证码: {code}")
-        time.sleep(2)
+            input_mode = None
+            input_elements = []
+            end_time = time.time() + 60
+            while time.time() < end_time:
+                if check_and_handle_error(driver, monitor_callback=monitor_callback):
+                    retry_result = _handle_verification_retry_transition(
+                        driver,
+                        monitor_callback=monitor_callback,
+                    )
+                    if retry_result == "retry_auth":
+                        return "retry_auth"
+                    if retry_result == "retry_verification":
+                        input_mode = None
+                        input_elements = []
+                        break
 
-        print("🔘 点击继续按钮...")
-        if not click_button_with_retry(
-            driver, 'button[type="submit"]', monitor_callback=monitor_callback
-        ):
-            print("❌ 点击继续按钮失败")
-            return False
-        print("✅ 已点击继续")
+                input_mode, input_elements = _find_verification_inputs(driver, code)
+                if input_elements:
+                    break
+                time.sleep(0.5)
 
-        time.sleep(3)
-        while check_and_handle_error(driver, monitor_callback=monitor_callback):
-            _sleep_with_heartbeat(
-                driver,
-                2,
-                monitor_callback=monitor_callback,
-                step_name="code_submit_error_recheck_wait",
-            )
+            if not input_elements:
+                continue
 
-        return True
+            if input_mode == "single":
+                code_input = input_elements[0]
+                code_input.clear()
+                time.sleep(0.5)
+                type_slowly(code_input, code, delay=0.1)
+            else:
+                for idx, digit in enumerate(code):
+                    if idx >= len(input_elements):
+                        break
+                    box = input_elements[idx]
+                    try:
+                        box.clear()
+                    except Exception:
+                        pass
+                    box.click()
+                    time.sleep(0.1)
+                    box.send_keys(digit)
+
+            print(f"✅ 已输入验证码: {code}")
+            time.sleep(2)
+
+            print("🔘 点击继续按钮...")
+            if not click_button_with_retry(
+                driver, 'button[type="submit"]', monitor_callback=monitor_callback
+            ):
+                print("❌ 点击继续按钮失败")
+                return False
+            print("✅ 已点击继续")
+
+            time.sleep(3)
+            retry_verification = False
+            while check_and_handle_error(driver, monitor_callback=monitor_callback):
+                retry_result = _handle_verification_retry_transition(
+                    driver,
+                    monitor_callback=monitor_callback,
+                )
+                if retry_result == "retry_auth":
+                    return "retry_auth"
+                if retry_result == "retry_verification":
+                    retry_verification = True
+                    break
+                _sleep_with_heartbeat(
+                    driver,
+                    2,
+                    monitor_callback=monitor_callback,
+                    step_name="code_submit_error_recheck_wait",
+                )
+
+            if retry_verification:
+                continue
+
+            return True
+
+        print("❌ 验证码多次提交后仍未通过")
+        return False
 
     except Exception as e:
         print(f"❌ 输入验证码失败: {e}")

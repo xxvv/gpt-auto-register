@@ -91,6 +91,46 @@ class PersistentErrorDriver:
         self.clicks += 1
 
 
+class OperationTimeoutDriver:
+    def __init__(self):
+        self.page_source = "Operation timed out"
+        self.clicks = 0
+        self.retry_button = FakeElement()
+
+    def find_elements(self, by, selector):
+        if by == browser.By.XPATH and "try again" in selector:
+            return [self.retry_button]
+        return []
+
+    def find_element(self, by, selector):
+        raise LookupError((by, selector))
+
+    def execute_script(self, script, element):
+        self.clicks += 1
+        self.page_source = "ok"
+
+
+class ExhaustedRetryToEmailDriver:
+    def __init__(self):
+        self.current_url = "https://auth.openai.com/u/signup"
+        self.body_text = "Email address"
+        self.page_source = ""
+
+    def find_elements(self, by, selector):
+        if (
+            by == browser.By.CSS_SELECTOR
+            and selector
+            == 'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]'
+        ):
+            return [FakeElement()]
+        return []
+
+    def find_element(self, by, selector):
+        if (by, selector) == (browser.By.TAG_NAME, "body"):
+            return FakeBodyElement(self.body_text)
+        raise LookupError((by, selector))
+
+
 class SequenceDriver:
     def __init__(self, states):
         self.states = list(states)
@@ -112,6 +152,15 @@ class SequenceDriver:
         if (by, selector) == (browser.By.TAG_NAME, "body"):
             return FakeBodyElement(self.states[self.index].get("body_text", ""))
         raise LookupError((by, selector))
+
+
+class RetryToEmailDriver(SequenceDriver):
+    @property
+    def page_source(self):
+        return self.states[self.index].get("page_source", "")
+
+    def execute_script(self, script, element):
+        self.advance()
 
 
 class GettingStartedDriver:
@@ -160,6 +209,15 @@ class RefreshingEmailDriver:
         self.refresh_calls += 1
 
 
+class VerificationRetryToEmailDriver(SequenceDriver):
+    @property
+    def page_source(self):
+        return self.states[self.index].get("page_source", "")
+
+    def execute_script(self, script, element):
+        self.advance()
+
+
 class BrowserSignupFlowTests(unittest.TestCase):
     def test_check_and_handle_error_stops_after_retry_limit(self):
         driver = PersistentErrorDriver()
@@ -169,6 +227,15 @@ class BrowserSignupFlowTests(unittest.TestCase):
 
         self.assertFalse(handled)
         self.assertEqual(driver.clicks, 3)
+
+    def test_check_and_handle_error_clicks_operation_timeout_try_again_button(self):
+        driver = OperationTimeoutDriver()
+
+        with patch.object(browser, "_sleep_with_heartbeat", return_value=None):
+            handled = browser.check_and_handle_error(driver, max_retries=3)
+
+        self.assertTrue(handled)
+        self.assertEqual(driver.clicks, 1)
 
     def test_fill_input_with_verification_retries_until_value_matches(self):
         element = RetryingInputElement()
@@ -266,6 +333,51 @@ class BrowserSignupFlowTests(unittest.TestCase):
 
         self.assertEqual(step, "verification")
 
+    def test_wait_for_post_email_step_returns_email_after_timeout_retry(self):
+        email_input = FakeElement()
+        retry_button = FakeElement()
+        driver = RetryToEmailDriver(
+            [
+                {
+                    "page_source": "Operation timed out",
+                    "current_url": "https://auth.openai.com/u/email-verification",
+                    "body_text": "Operation timed out",
+                    "mapping": {
+                        (
+                            browser.By.CSS_SELECTOR,
+                            'button[data-dd-action-name="Try again"]',
+                        ): [retry_button]
+                    },
+                },
+                {
+                    "page_source": "",
+                    "current_url": "https://auth.openai.com/u/signup",
+                    "body_text": "Email address",
+                    "mapping": {
+                        (
+                            browser.By.CSS_SELECTOR,
+                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+                        ): [email_input]
+                    },
+                },
+            ]
+        )
+
+        with patch.object(browser, "_sleep_with_heartbeat", return_value=None):
+            step = browser._wait_for_post_email_step(driver, timeout=3)
+
+        self.assertEqual(step, "email")
+
+    def test_wait_for_post_email_step_returns_email_after_retry_exhausted(self):
+        driver = ExhaustedRetryToEmailDriver()
+
+        with patch.object(
+            browser, "check_and_handle_error_status", return_value="exhausted"
+        ), patch.object(browser, "_sleep_with_heartbeat", return_value=None):
+            step = browser._wait_for_post_email_step(driver, timeout=3)
+
+        self.assertEqual(step, "email")
+
     def test_wait_for_password_input_or_verification_accepts_verification_page(self):
         driver = SequenceDriver(
             [
@@ -297,11 +409,25 @@ class BrowserSignupFlowTests(unittest.TestCase):
 
         with patch.object(
             browser, "check_and_handle_error", return_value=True
+        ), patch.object(
+            browser, "_wait_for_auth_step_after_retry", return_value="password"
         ), patch.object(browser, "_is_email_verification_page") as is_verification:
             result = browser._wait_for_password_submit_result(driver, timeout=3)
 
         self.assertEqual(result, "retry_password")
         is_verification.assert_not_called()
+
+    def test_password_submit_result_retries_email_when_retry_returns_email_page(self):
+        driver = StaticDriver()
+
+        with patch.object(
+            browser, "check_and_handle_error", return_value=True
+        ), patch.object(
+            browser, "_wait_for_auth_step_after_retry", return_value="email"
+        ):
+            result = browser._wait_for_password_submit_result(driver, timeout=3)
+
+        self.assertEqual(result, "retry_email")
 
     def test_password_submit_result_retries_when_password_input_returns(self):
         password_input = FakeElement()
@@ -441,6 +567,42 @@ class BrowserSignupFlowTests(unittest.TestCase):
             result = browser.click_getting_started_button(driver, timeout=0)
 
         self.assertTrue(result)
+
+    def test_enter_verification_code_returns_retry_auth_after_timeout_goes_back_to_email(self):
+        retry_button = FakeElement()
+        driver = VerificationRetryToEmailDriver(
+            [
+                {
+                    "page_source": "Operation timed out",
+                    "current_url": "https://auth.openai.com/u/email-verification",
+                    "body_text": "Operation timed out",
+                    "mapping": {
+                        (
+                            browser.By.CSS_SELECTOR,
+                            'button[data-dd-action-name="Try again"]',
+                        ): [retry_button]
+                    },
+                },
+                {
+                    "page_source": "",
+                    "current_url": "https://auth.openai.com/u/signup",
+                    "body_text": "Email address",
+                    "mapping": {
+                        (
+                            browser.By.CSS_SELECTOR,
+                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+                        ): [FakeElement()]
+                    },
+                },
+            ]
+        )
+
+        with patch.object(browser.time, "sleep", return_value=None), patch.object(
+            browser, "_sleep_with_heartbeat", return_value=None
+        ):
+            result = browser.enter_verification_code(driver, "123456")
+
+        self.assertEqual(result, "retry_auth")
 
 
 if __name__ == "__main__":
