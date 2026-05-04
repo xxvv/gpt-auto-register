@@ -352,7 +352,7 @@ class ConfigLoader:
         if 'email' in self.raw_config:
             email = self.raw_config['email']
             self.config.email = EmailConfig(
-                wait_timeout=email.get('wait_timeout', 120),
+                wait_timeout=email.get('wait_timeout', EmailConfig.wait_timeout),
                 poll_interval=email.get('poll_interval', 3),
                 domains=self._as_list(
                     os.environ.get('NNAI_EMAIL_DOMAINS', email.get('domains', DEFAULT_EMAIL_DOMAINS))
