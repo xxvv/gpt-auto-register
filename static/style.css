@@ -173,6 +173,16 @@ body {
     background: var(--primary-hover);
 }
 
+.btn-secondary {
+    background: #eef2ff;
+    color: var(--primary);
+    border: 1px solid #c7d2fe;
+}
+
+.btn-secondary:hover {
+    background: #e0e7ff;
+}
+
 .btn-danger {
     background: #fee2e2;
     color: var(--danger);
@@ -181,6 +191,12 @@ body {
 
 .btn-danger:hover {
     background: #fecaca;
+}
+
+.proxy-task-actions {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 12px;
 }
 
 /* Main Content */

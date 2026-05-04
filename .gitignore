@@ -21,6 +21,10 @@ data/tokens/*.json
 data/accounts/*.txt
 data/state/*.json
 token_exports/
+卡密导出*.txt
+accounts-cpa.txt
+accounts-output.txt
+card-keys.txt
 
 # User config (contains personal settings)
 config.yaml

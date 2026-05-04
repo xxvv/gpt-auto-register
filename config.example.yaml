@@ -12,7 +12,7 @@ registration:
 
 # 临时邮箱服务
 email:
-  wait_timeout: 120     # 等待验证邮件的最大超时时间(秒)
+  wait_timeout: 30      # 等待验证邮件的最大超时时间(秒)
   poll_interval: 3      # 轮询检查邮件的间隔(秒)
   domains:             # 可配置多个 catch-all 域名；验证码统一走 NNAI Worker API
     - "nnai.website"
@@ -66,3 +66,28 @@ cliproxy:
 cpa:
   upload_api_url: ""     # 例如 https://your-cpa.example.com/upload
   upload_api_token: ""   # 建议优先通过环境变量 CPA_UPLOAD_API_TOKEN 提供
+
+# 注册后支付流程（可选）
+# Webshare API Key 建议通过环境变量 WEBSHARE_API_KEY 提供
+payment:
+  enabled_default: false
+  webshare_api_key: ""
+  webshare_plan_id: ""
+  proxy_debug_mode: false
+  debug_proxy_type: "http"
+  debug_proxy_host: ""
+  debug_proxy_port: 8080
+  debug_proxy_use_auth: false
+  debug_proxy_username: ""
+  debug_proxy_password: ""
+  card_debug_mode: false
+  debug_card_key: ""
+  card_keys_file: "card-keys.txt"
+  card_usage_file: "data/state/card_keys_usage.json"
+  request_payurl_api: "https://payurl.779.chat/api/request"
+  redeem_api: "https://cards.779.chat/web-api/redeem/submit"
+  redeem_device_id: "749d7aaf-67e0-4341-b5e6-0ecdf5ea2fb0"
+  http_timeout: 30
+  payurl_max_retries: 5
+  webshare_poll_interval: 5
+  webshare_poll_timeout: 180

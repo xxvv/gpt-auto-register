@@ -46,6 +46,39 @@
                 <input type="number" id="targetCount" class="ctrl-input" value="1" min="1" max="50">
             </div>
 
+            <div class="ctrl-row" style="margin-top: 8px;">
+                <label class="ctrl-label">支付流程</label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="completePaymentFlow" style="width:14px;height:14px;cursor:pointer;accent-color:#7c6af7;"
+                        onchange="saveSettings()">
+                    <span style="font-size:12px;color:#aaa;">完成支付流程</span>
+                </label>
+            </div>
+
+            <div class="ctrl-row" style="margin-top: 8px;">
+                <label class="ctrl-label">Webshare 代理</label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="useProxyForTasks" style="width:14px;height:14px;cursor:pointer;accent-color:#7c6af7;"
+                        onchange="syncProxyTaskOptions('main')">
+                    <span style="font-size:12px;color:#aaa;">启用代理</span>
+                </label>
+            </div>
+
+            <div class="ctrl-row" style="margin-top: 8px;">
+                <label class="ctrl-label">切换 IP 间隔</label>
+                <input type="number" id="proxySwitchInterval" class="ctrl-input" value="1" min="1" max="1000"
+                    onchange="syncProxyTaskOptions('main')">
+            </div>
+
+            <div class="proxy-task-actions">
+                <button id="btnGetWebshareProxy" class="btn btn-secondary" onclick="getCurrentWebshareProxy()">
+                    <span>🔎</span> 获取当前代理
+                </button>
+                <button id="btnReplaceWebshareProxy" class="btn btn-secondary" onclick="replaceWebshareProxy()">
+                    <span>🔁</span> 替换代理
+                </button>
+            </div>
+
             <button id="btnStart" class="btn btn-primary" onclick="startTask()">
                 <span>🚀</span> 启动任务
             </button>
@@ -175,6 +208,14 @@
                     </div>
                     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                         <span class="status-pill neutral" id="selectedAccountCount">已选 0</span>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                            <input type="checkbox" id="browserJsonUseProxy" style="width:14px;height:14px;cursor:pointer;accent-color:#7c6af7;"
+                                onchange="syncProxyTaskOptions('browser-json')">
+                            <span style="font-size:12px;color:#6b7280;">Webshare 代理</span>
+                        </label>
+                        <input type="number" id="browserJsonProxySwitchInterval" class="ctrl-input" value="1" min="1" max="1000"
+                            title="切换 IP 间隔"
+                            style="width: 140px;" onchange="syncProxyTaskOptions('browser-json')">
                         <button class="btn btn-primary" style="width:auto; padding:10px 18px;" id="btnBrowserJson"
                             onclick="startBrowserJsonTask()">
                             <span>🌐</span> 获取 JSON
@@ -334,7 +375,7 @@
                 <div style="padding: 24px; display: grid; gap: 18px;">
                     <div class="proxy-pool-note">
                         代理地址只从 <code>data/socks/Webshare 10 proxies.txt</code> 读取，并在刷新时做连通性体检。
-                        这里只缓存“当前可连通”的结果。批量注册开始时，如果你还没有手动设置起始代理，系统会自动切换到缓存列表里的首条可用代理，并按缓存顺序为每个账号轮换到下一条。你也可以手动指定某一条作为下次任务的起点。
+                        这里只缓存“当前可连通”的结果，方便你检查本地代理文件质量。实际执行“生成账号”和“获取 JSON”时，启用代理后会走 Webshare 换美国 IP，并按你设置的任务间隔切换新 IP。
                     </div>
 
                     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px;">

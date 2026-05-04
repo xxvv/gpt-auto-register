@@ -19,6 +19,7 @@ from . import oauth_service
 from . import token_batch_service
 from . import account_login_service
 from . import browser_json_service
+from . import payment_service
 from . import us_proxy_pool
 from . import utils
 from .config import (
@@ -34,6 +35,7 @@ from .utils import describe_proxy, ensure_proxy_ready
 STATIC_DIR = PROJECT_ROOT / "static"
 REGISTRATION_GROUP_REST_EVERY = 4
 REGISTRATION_GROUP_REST_SECONDS = 120
+DEFAULT_PROXY_SWITCH_INTERVAL = 1
 
 app = Flask(__name__, static_url_path="", static_folder=str(STATIC_DIR))
 
@@ -66,6 +68,13 @@ class AppState:
 
         # 是否使用 headless 浏览器
         self.headless = False
+
+        # 是否注册后完成支付流程
+        self.complete_payment_flow = bool(cfg.payment.enabled_default)
+
+        # 代理任务选项
+        self.use_proxy_for_tasks = False
+        self.proxy_switch_interval = DEFAULT_PROXY_SWITCH_INTERVAL
 
         # 代理配置
         self.proxy = {
@@ -192,6 +201,7 @@ for module in (
     token_batch_service,
     account_login_service,
     browser_json_service,
+    payment_service,
     us_proxy_pool,
     utils,
 ):
@@ -200,56 +210,62 @@ for module in (
 # ==========================================
 # 🧵 后台工作线程
 # ==========================================
-def _build_registration_proxy_rotation(proxy):
-    if not proxy or not proxy.get("enabled"):
-        return None
-
-    payload = us_proxy_pool.load_us_proxy_pool()
-    rotation = us_proxy_pool.ProxyRotation(
-        payload.get("proxies", []),
-        start_proxy=proxy,
-    )
-    if rotation.enabled:
-        main.print(
-            f"🔁 已启用代理自动轮换，共 {rotation.available_count} 条可用代理，"
-            f"起点: {describe_proxy(rotation.starting_proxy)}"
-        )
-        return rotation
-
-    if rotation.available_count > 0:
-        main.print("ℹ️ 当前代理不在最近一次本地代理池缓存中，批量注册将保持单代理模式")
-    else:
-        main.print("ℹ️ 当前没有可用的本地代理缓存，批量注册将保持单代理模式")
-    return None
+def _normalize_proxy_switch_interval(value, default=DEFAULT_PROXY_SWITCH_INTERVAL):
+    try:
+        interval = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(1000, interval))
 
 
-def _next_distinct_registration_proxy(proxy_rotation, current_proxy):
-    """从轮换池取一个不同于当前代理的下一个代理。"""
-    if not proxy_rotation or not proxy_rotation.enabled:
-        return None
+def _disabled_proxy():
+    return {
+        "enabled": False,
+        "type": "http",
+        "host": "",
+        "port": 8080,
+        "use_auth": False,
+        "username": "",
+        "password": "",
+    }
 
-    attempts = max(1, proxy_rotation.available_count)
-    current_label = describe_proxy(current_proxy)
-    for _ in range(attempts):
-        candidate = proxy_rotation.next_proxy()
-        if not candidate:
+
+def _build_task_proxy_plan(proxy, *, use_proxy, switch_interval):
+    """Resolve task proxy settings from the UI switch and Webshare."""
+    del proxy
+    interval = _normalize_proxy_switch_interval(switch_interval)
+    if not use_proxy:
+        return _disabled_proxy(), interval
+
+    task_proxy = payment_service.replace_webshare_static_proxy()
+    return task_proxy, interval
+
+
+class _TaskProxySelector:
+    """Select one Webshare proxy for a task and keep it until the switch interval is reached."""
+
+    def __init__(self, base_proxy, switch_interval):
+        self._base_proxy = dict(base_proxy) if base_proxy and base_proxy.get("enabled") else None
+        self._switch_interval = _normalize_proxy_switch_interval(switch_interval)
+        self._current_proxy = None
+        self._lock = threading.Lock()
+
+    def next_proxy(self, task_number):
+        if not self._base_proxy:
             return None
-        if describe_proxy(candidate) != current_label:
-            return candidate
-    return None
 
-
-def _pick_registration_start_proxy(proxy):
-    if proxy and proxy.get("enabled"):
-        return dict(proxy), False
-
-    payload = us_proxy_pool.load_us_proxy_pool()
-    for item in payload.get("proxies", []):
-        runtime_proxy = us_proxy_pool.pool_item_to_runtime_proxy(item)
-        if runtime_proxy:
-            return runtime_proxy, True
-
-    return dict(proxy) if proxy else None, False
+        with self._lock:
+            should_switch = (
+                self._current_proxy is None
+                or int(task_number) > 1
+                and (int(task_number) - 1) % self._switch_interval == 0
+            )
+            if should_switch:
+                if self._current_proxy is None:
+                    self._current_proxy = dict(self._base_proxy)
+                else:
+                    self._current_proxy = payment_service.replace_webshare_static_proxy()
+            return dict(self._current_proxy)
 
 
 def _current_email_domains():
@@ -262,7 +278,17 @@ def _current_email_domains():
     return selected or configured_domains
 
 
-def worker_thread(count, selected_providers, parallel, headless, proxy, selected_domains=None):
+def worker_thread(
+    count,
+    selected_providers,
+    parallel,
+    headless,
+    proxy,
+    selected_domains=None,
+    complete_payment_flow=False,
+    use_proxy=False,
+    proxy_switch_interval=DEFAULT_PROXY_SWITCH_INTERVAL,
+):
     state.is_running = True
     state.stop_requested = False
     state.success_count = 0
@@ -273,22 +299,21 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
     batch_id = allocate_output_batch_id()
     set_output_batch_id(batch_id)
 
-    task_proxy, auto_selected_proxy = _pick_registration_start_proxy(proxy)
-    if auto_selected_proxy and task_proxy and task_proxy.get("enabled"):
-        main.print(
-            f"🧭 未手动选择代理，任务启动时已自动切换到代理池首条: {describe_proxy(task_proxy)}"
+    try:
+        task_proxy, proxy_switch_interval = _build_task_proxy_plan(
+            proxy,
+            use_proxy=use_proxy,
+            switch_interval=proxy_switch_interval,
         )
+    except Exception as exc:
+        state.is_running = False
+        set_output_batch_id(None)
+        state.current_action = "Webshare 代理准备失败"
+        main.print(f"🛑 Webshare 代理准备失败，任务启动终止: {exc}")
+        return
 
     with state.lock:
-        state.proxy = dict(task_proxy) if task_proxy else {
-            "enabled": False,
-            "type": "http",
-            "host": "",
-            "port": 8080,
-            "use_auth": False,
-            "username": "",
-            "password": "",
-        }
+        state.proxy = dict(task_proxy) if task_proxy else _disabled_proxy()
 
     del selected_providers
     try:
@@ -303,24 +328,32 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
     if not email_domains:
         email_domains = nnai_service.get_configured_domains()
 
+    if complete_payment_flow and int(parallel) > 1:
+        main.print("ℹ️ 已启用支付流程，注册并行数强制调整为 1")
+        parallel = 1
+
     with _log_proxy_context(task_proxy):
         main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
         main.print(f"🧾 输出批次: {batch_id}")
         main.print("📬 邮箱渠道: NNAI.website")
         main.print(f"🌐 邮箱域名: {', '.join(email_domains)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
-        proxy_rotation = None
+        if complete_payment_flow:
+            main.print("💳 支付流程: 已启用")
         if task_proxy and task_proxy.get("enabled"):
             main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
-            try:
-                ensure_proxy_ready(task_proxy, purpose="批量注册任务启动前代理预检", timeout=10)
-            except Exception as exc:
-                state.is_running = False
-                set_output_batch_id(None)
-                state.current_action = "代理预检失败"
-                main.print(f"🛑 任务启动终止: {exc}")
-                return
-            proxy_rotation = _build_registration_proxy_rotation(task_proxy)
+            main.print(f"🔁 代理切换间隔: 每 {proxy_switch_interval} 个任务")
+            if not complete_payment_flow:
+                try:
+                    ensure_proxy_ready(task_proxy, purpose="批量注册任务启动前代理预检", timeout=10)
+                except Exception as exc:
+                    state.is_running = False
+                    set_output_batch_id(None)
+                    state.current_action = "代理预检失败"
+                    main.print(f"🛑 任务启动终止: {exc}")
+                    return
+        else:
+            main.print("🌐 代理: 未启用")
 
         counter_lock = threading.Lock()
         register_slot = threading.Semaphore(max(1, int(parallel)))
@@ -328,6 +361,10 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
         completed_for_rest = [0]
         group_gate = threading.Condition()
         rest_after_completed = [0]
+        proxy_selector = _TaskProxySelector(
+            task_proxy,
+            proxy_switch_interval,
+        )
 
         def monitor(driver, _step):
             if state.stop_requested:
@@ -378,13 +415,10 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                     return
                 started[0] += 1
                 idx = started[0]
-            account_proxy = dict(task_proxy) if task_proxy else None
-            if proxy_rotation:
-                rotated_proxy = proxy_rotation.next_proxy()
-                if rotated_proxy:
-                    account_proxy = rotated_proxy
-                    with state.lock:
-                        state.proxy = dict(rotated_proxy)
+            account_proxy = proxy_selector.next_proxy(idx)
+            if account_proxy and account_proxy.get("enabled"):
+                with state.lock:
+                    state.proxy = dict(account_proxy)
 
             with _log_proxy_context(account_proxy):
                 state.current_action = f"正在注册 ({idx}/{count})..."
@@ -412,27 +446,11 @@ def worker_thread(count, selected_providers, parallel, headless, proxy, selected
                                     proxy=attempt_proxy,
                                     raise_proxy_errors=True,
                                     success_callback=on_success_ready,
+                                    complete_payment_flow=complete_payment_flow,
                                 )
                             break
                         except main.ProxyEgressCheckError as proxy_exc:
-                            next_proxy = _next_distinct_registration_proxy(
-                                proxy_rotation,
-                                attempt_proxy,
-                            )
-                            if not next_proxy:
-                                raise proxy_exc
-
-                            old_label = describe_proxy(attempt_proxy)
-                            new_label = describe_proxy(next_proxy)
-                            main.print(
-                                f"🔁 代理出口检测失败，自动切换代理: {old_label} -> {new_label}"
-                            )
-                            attempt_proxy = next_proxy
-                            with state.lock:
-                                state.proxy = dict(next_proxy)
-                            state.current_action = (
-                                f"正在注册 ({idx}/{count})... [{new_label}]"
-                            )
+                            raise proxy_exc
                     with counter_lock:
                         if success:
                             state.success_count += 1
@@ -643,8 +661,29 @@ def login_worker_thread(accounts_file, headless, proxy):
             state.is_running = False
 
 
-def browser_json_worker_thread(emails, output_dir, headless, proxy):
-    with _log_proxy_context(proxy):
+def browser_json_worker_thread(
+    emails,
+    output_dir,
+    headless,
+    proxy,
+    use_proxy=False,
+    proxy_switch_interval=DEFAULT_PROXY_SWITCH_INTERVAL,
+):
+    try:
+        task_proxy, proxy_switch_interval = _build_task_proxy_plan(
+            proxy,
+            use_proxy=use_proxy,
+            switch_interval=proxy_switch_interval,
+        )
+    except Exception as exc:
+        state.is_running = False
+        state.current_action = "Webshare 代理准备失败"
+        main.print(f"🛑 Webshare 代理准备失败，浏览器 JSON 任务启动终止: {exc}")
+        return
+
+    proxy_selector = _TaskProxySelector(task_proxy, proxy_switch_interval)
+
+    with _log_proxy_context(task_proxy):
         state.is_running = True
         state.stop_requested = False
         state.success_count = 0
@@ -661,16 +700,21 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
         main.print(f"📁 输出目录: {output_dir}")
         main.print(f"🧾 勾选账号数: {len(emails)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
-        if proxy and proxy.get("enabled"):
-            main.print(f"🌐 代理: {describe_proxy(proxy)}")
+        with state.lock:
+            state.proxy = dict(task_proxy) if task_proxy else _disabled_proxy()
+        if task_proxy and task_proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
+            main.print(f"🔁 代理切换间隔: 每 {proxy_switch_interval} 个任务")
             try:
-                ensure_proxy_ready(proxy, purpose="浏览器 JSON 任务启动前代理预检", timeout=10)
+                ensure_proxy_ready(task_proxy, purpose="浏览器 JSON 任务启动前代理预检", timeout=10)
             except Exception as exc:
                 state.is_running = False
                 set_output_batch_id(None)
                 state.current_action = "代理预检失败"
                 main.print(f"🛑 浏览器 JSON 任务启动终止: {exc}")
                 return
+        else:
+            main.print("🌐 代理: 未启用")
 
         def monitor(driver, _step):
             if state.stop_requested:
@@ -692,9 +736,12 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
                 skipped=progress["skipped"],
             )
             if progress["total"] > 0:
+                proxy_label = ""
+                if progress.get("proxy"):
+                    proxy_label = f" [{describe_proxy(progress['proxy'])}]"
                 state.current_action = (
                     f"浏览器获取 JSON: {progress['completed']}/{progress['total']} "
-                    f"(成功 {progress['success']} / 失败 {progress['fail']})"
+                    f"(成功 {progress['success']} / 失败 {progress['fail']}){proxy_label}"
                 )
             if progress.get("current_email"):
                 state.current_action += f" - {progress['current_email']}"
@@ -705,7 +752,8 @@ def browser_json_worker_thread(emails, output_dir, headless, proxy):
                 accounts_file=account_files,
                 emails=emails,
                 output_dir=output_dir,
-                proxy=proxy,
+                proxy=task_proxy,
+                proxy_selector=proxy_selector.next_proxy,
                 headless=headless,
                 monitor_callback=monitor,
                 stop_requested=lambda: state.stop_requested,
@@ -788,15 +836,34 @@ def start_task():
     if state.is_running:
         return jsonify({"error": "Already running"}), 400
 
-    data = request.json
+    data = request.json or {}
     count = data.get('count', 1)
+    complete_payment_flow = bool(data.get("complete_payment_flow", state.complete_payment_flow))
+    use_proxy = bool(data.get("use_proxy", state.use_proxy_for_tasks))
+    proxy_switch_interval = _normalize_proxy_switch_interval(
+        data.get("proxy_switch_interval", state.proxy_switch_interval)
+    )
+    state.use_proxy_for_tasks = use_proxy
+    state.proxy_switch_interval = proxy_switch_interval
+    if complete_payment_flow and state.parallel_count > 1:
+        state.parallel_count = 1
 
     providers = ["nnai"]
     domains = _current_email_domains()
 
     threading.Thread(
         target=worker_thread,
-        args=(count, providers, state.parallel_count, state.headless, dict(state.proxy), domains),
+        args=(
+            count,
+            providers,
+            state.parallel_count,
+            state.headless,
+            dict(state.proxy),
+            domains,
+            complete_payment_flow,
+            use_proxy,
+            proxy_switch_interval,
+        ),
         daemon=True
     ).start()
     return jsonify({"status": "started"})
@@ -807,6 +874,9 @@ def get_settings():
         "parallel": state.parallel_count,
         "headless": state.headless,
         "proxy": state.proxy,
+        "complete_payment_flow": state.complete_payment_flow,
+        "use_proxy_for_tasks": state.use_proxy_for_tasks,
+        "proxy_switch_interval": state.proxy_switch_interval,
     })
 
 
@@ -896,10 +966,23 @@ def start_accounts_browser_json():
         return jsonify({"error": "请先勾选需要获取 JSON 的账号"}), 400
 
     output_dir = str(_resolve_request_path(data.get("output_dir", cfg.oauth.token_json_dir)))
+    use_proxy = bool(data.get("use_proxy", state.use_proxy_for_tasks))
+    proxy_switch_interval = _normalize_proxy_switch_interval(
+        data.get("proxy_switch_interval", state.proxy_switch_interval)
+    )
+    state.use_proxy_for_tasks = use_proxy
+    state.proxy_switch_interval = proxy_switch_interval
 
     threading.Thread(
         target=browser_json_worker_thread,
-        args=(normalized_emails, output_dir, state.headless, dict(state.proxy)),
+        args=(
+            normalized_emails,
+            output_dir,
+            state.headless,
+            dict(state.proxy),
+            use_proxy,
+            proxy_switch_interval,
+        ),
         daemon=True
     ).start()
     return jsonify({
@@ -910,11 +993,19 @@ def start_accounts_browser_json():
 
 @app.route('/api/settings', methods=['POST'])
 def set_settings():
-    data = request.json
+    data = request.json or {}
     if "parallel" in data:
         state.parallel_count = max(1, min(10, int(data["parallel"])))
     if "headless" in data:
         state.headless = bool(data["headless"])
+    if "complete_payment_flow" in data:
+        state.complete_payment_flow = bool(data["complete_payment_flow"])
+        if state.complete_payment_flow and state.parallel_count > 1:
+            state.parallel_count = 1
+    if "use_proxy_for_tasks" in data:
+        state.use_proxy_for_tasks = bool(data["use_proxy_for_tasks"])
+    if "proxy_switch_interval" in data:
+        state.proxy_switch_interval = _normalize_proxy_switch_interval(data["proxy_switch_interval"])
     if "proxy" in data:
         p = data["proxy"]
         state.proxy = {
@@ -926,8 +1017,45 @@ def set_settings():
             "username": str(p.get("username", "")),
             "password": str(p.get("password", "")),
         }
-    return jsonify({"status": "ok", "parallel": state.parallel_count,
-                    "headless": state.headless, "proxy": state.proxy})
+    return jsonify({
+        "status": "ok",
+        "parallel": state.parallel_count,
+        "headless": state.headless,
+        "proxy": state.proxy,
+        "complete_payment_flow": state.complete_payment_flow,
+        "use_proxy_for_tasks": state.use_proxy_for_tasks,
+        "proxy_switch_interval": state.proxy_switch_interval,
+    })
+
+
+@app.route('/api/webshare-proxy/current', methods=['POST'])
+def get_current_webshare_proxy():
+    if state.is_running:
+        return jsonify({"error": "任务运行中，暂不支持获取 Webshare 代理"}), 400
+
+    try:
+        proxy = payment_service.get_current_webshare_static_proxy()
+        state.proxy = proxy
+        main.print(f"✅ 已获取当前 Webshare 代理: {describe_proxy(state.proxy)}")
+        return jsonify({"status": "ok", "proxy": state.proxy})
+    except Exception as exc:
+        main.print(f"❌ 获取当前 Webshare 代理失败: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route('/api/webshare-proxy/replace', methods=['POST'])
+def replace_webshare_proxy():
+    if state.is_running:
+        return jsonify({"error": "任务运行中，暂不支持替换 Webshare 代理"}), 400
+
+    try:
+        proxy = payment_service.replace_webshare_static_proxy()
+        state.proxy = proxy
+        main.print(f"✅ 已替换当前 Webshare 代理: {describe_proxy(state.proxy)}")
+        return jsonify({"status": "ok", "proxy": state.proxy})
+    except Exception as exc:
+        main.print(f"❌ 替换 Webshare 代理失败: {exc}")
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route('/api/us-proxies', methods=['GET'])

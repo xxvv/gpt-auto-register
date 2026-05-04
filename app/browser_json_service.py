@@ -77,6 +77,7 @@ def process_selected_accounts(
     emails: list[str],
     output_dir: str,
     proxy: dict | None = None,
+    proxy_selector=None,
     headless: bool = False,
     monitor_callback=None,
     stop_requested=None,
@@ -107,7 +108,7 @@ def process_selected_accounts(
     skipped = 0
     total = len(records)
 
-    def report_progress(current_email: str = "", status: str = ""):
+    def report_progress(current_email: str = "", status: str = "", current_proxy=None):
         completed = success + fail + skipped
         if progress_callback:
             progress_callback(
@@ -122,6 +123,7 @@ def process_selected_accounts(
                     "remaining": max(total - completed, 0),
                     "current_email": current_email,
                     "status": status,
+                    "proxy": current_proxy,
                 }
             )
 
@@ -131,7 +133,7 @@ def process_selected_accounts(
     for email in sorted(missing):
         print(f"⚠️ 未在账号文件中找到勾选账号: {email}")
 
-    for record in records:
+    for task_index, record in enumerate(records, start=1):
         if stop_requested and stop_requested():
             break
 
@@ -139,11 +141,17 @@ def process_selected_accounts(
         account_file = record_files[email.strip().lower()]
         password = record["password"]
         print(f"🌐 浏览器获取 JSON: {email}")
+        task_proxy = proxy_selector(task_index) if callable(proxy_selector) else proxy
+        if task_proxy and task_proxy.get("enabled"):
+            print(
+                f"🧭 浏览器获取 JSON 第 {task_index}/{total} 个账号使用代理: "
+                f"{task_proxy.get('type', 'http')}://{task_proxy.get('host')}:{task_proxy.get('port')}"
+            )
 
         if not password or password.strip().upper() == "N/A":
             fail += 1
             print(f"⚠️ 跳过 {email}: 缺少账号密码")
-            report_progress(current_email=email, status="missing_password")
+            report_progress(current_email=email, status="missing_password", current_proxy=task_proxy)
             continue
 
         try:
@@ -152,7 +160,7 @@ def process_selected_accounts(
                 password=password,
                 email_provider=record["provider"] or "nnai",
                 mail_token=record["mailbox_credential"] or email,
-                proxy=proxy,
+                proxy=task_proxy,
                 headless=headless,
                 monitor_callback=monitor_callback,
             )
@@ -160,7 +168,7 @@ def process_selected_accounts(
                 email=email,
                 tokens=tokens,
                 oauth_cfg=oauth_cfg,
-                proxy=proxy,
+                proxy=task_proxy,
             )
             _append_browser_json_exports(
                 email=email,
@@ -172,16 +180,16 @@ def process_selected_accounts(
             success += 1
             processed += 1
             print(f"✅ JSON 已保存: {saved_token_path}")
-            report_progress(current_email=email, status="success")
+            report_progress(current_email=email, status="success", current_proxy=task_proxy)
         except NeedPhoneError as exc:
             fail += 1
             update_account_status_in_file(account_file, email, BROWSER_JSON_FAILED_STATUS)
             print(f"❌ 浏览器获取 JSON 失败 {email}: {exc}，已标记 {BROWSER_JSON_FAILED_STATUS}")
-            report_progress(current_email=email, status="failed_need_phone")
+            report_progress(current_email=email, status="failed_need_phone", current_proxy=task_proxy)
         except Exception as exc:
             fail += 1
             print(f"❌ 浏览器获取 JSON 失败 {email}: {exc}")
-            report_progress(current_email=email, status="failed")
+            report_progress(current_email=email, status="failed", current_proxy=task_proxy)
 
     completed = success + fail + skipped
     return {

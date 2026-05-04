@@ -2,6 +2,8 @@ import unittest
 from urllib.error import URLError
 from unittest.mock import MagicMock, patch
 
+from selenium.common.exceptions import TimeoutException
+
 from app import browser
 
 
@@ -149,6 +151,7 @@ class BrowserProxyDiagnosticsTests(unittest.TestCase):
         browser.open_chatgpt_url(driver, browser.CHATGPT_HOME_URL)
 
         driver.get.assert_called_once_with("https://chatgpt.com/")
+        driver.set_page_load_timeout.assert_called_once_with(browser.SHORT_WAIT_TIME)
 
     def test_open_chatgpt_url_recovers_target_and_retries(self):
         driver = MagicMock()
@@ -169,6 +172,28 @@ class BrowserProxyDiagnosticsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "navigation timeout"):
             browser.open_chatgpt_url(driver, browser.CHATGPT_HOME_URL, attempts=2)
+
+    def test_open_chatgpt_url_tolerates_renderer_timeout_after_reaching_chatgpt(self):
+        driver = MagicMock()
+        driver.current_url = "https://chatgpt.com/"
+        driver.get.side_effect = TimeoutException(
+            "timeout: Timed out receiving message from renderer: 9.681"
+        )
+
+        browser.open_chatgpt_url(driver, browser.CHATGPT_HOME_URL)
+
+        driver.get.assert_called_once_with("https://chatgpt.com/")
+        driver.execute_script.assert_called_once_with("window.stop();")
+
+    def test_open_chatgpt_url_keeps_timeout_fatal_before_reaching_chatgpt(self):
+        driver = MagicMock()
+        driver.current_url = "data:,"
+        driver.get.side_effect = TimeoutException(
+            "timeout: Timed out receiving message from renderer: 9.681"
+        )
+
+        with self.assertRaises(TimeoutException):
+            browser.open_chatgpt_url(driver, browser.CHATGPT_HOME_URL)
 
     def test_execute_cdp_cmd_recovers_target_and_retries(self):
         driver = MagicMock()

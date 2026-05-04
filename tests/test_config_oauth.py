@@ -21,6 +21,22 @@ class ConfigOAuthTests(unittest.TestCase):
               upload_api_url: "https://cpa.example.com/upload"
               upload_api_token: "secret-token"
 
+            payment:
+              enabled_default: true
+              webshare_api_key: "webshare-secret"
+              webshare_plan_id: "plan-123"
+              proxy_debug_mode: true
+              debug_proxy_type: "socks5"
+              debug_proxy_host: "127.0.0.1"
+              debug_proxy_port: 7890
+              debug_proxy_use_auth: true
+              debug_proxy_username: "proxy-user"
+              debug_proxy_password: "proxy-pass"
+              card_debug_mode: true
+              debug_card_key: "debug-card"
+              card_keys_file: "keys.txt"
+              card_usage_file: "usage.json"
+
             cliproxy:
               enabled: true
               api_url: "http://proxy.example.com:8317/"
@@ -58,6 +74,20 @@ class ConfigOAuthTests(unittest.TestCase):
             "https://cpa.example.com/upload",
         )
         self.assertEqual(loader.config.cpa.upload_api_token, "secret-token")
+        self.assertTrue(loader.config.payment.enabled_default)
+        self.assertEqual(loader.config.payment.webshare_api_key, "webshare-secret")
+        self.assertEqual(loader.config.payment.webshare_plan_id, "plan-123")
+        self.assertTrue(loader.config.payment.proxy_debug_mode)
+        self.assertEqual(loader.config.payment.debug_proxy_type, "socks5")
+        self.assertEqual(loader.config.payment.debug_proxy_host, "127.0.0.1")
+        self.assertEqual(loader.config.payment.debug_proxy_port, 7890)
+        self.assertTrue(loader.config.payment.debug_proxy_use_auth)
+        self.assertEqual(loader.config.payment.debug_proxy_username, "proxy-user")
+        self.assertEqual(loader.config.payment.debug_proxy_password, "proxy-pass")
+        self.assertTrue(loader.config.payment.card_debug_mode)
+        self.assertEqual(loader.config.payment.debug_card_key, "debug-card")
+        self.assertEqual(loader.config.payment.card_keys_file, "keys.txt")
+        self.assertEqual(loader.config.payment.card_usage_file, "usage.json")
         self.assertTrue(loader.config.cliproxy.enabled)
         self.assertEqual(loader.config.cliproxy.api_url, "http://proxy.example.com:8317/")
         self.assertEqual(loader.config.cliproxy.api_key, "cliproxy-secret")

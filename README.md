@@ -65,9 +65,43 @@ uv run python server.py
 
 浏览器打开 **http://localhost:8888** 即可使用。
 
-### 导出到sub2api
+### 导出到 sub2api
 
+```bash
 uv run python scripts/export_refresh_tokens.py --output data/sub2api-refresh-tokens.txt
+```
+
+### CPA 文件提取工具
+
+CPA 文件默认放在项目根目录，格式为：
+
+```text
+账户|密码|email|json数据
+```
+
+提取第 4 列 JSON 中的 `refresh_token`，输出到项目根目录的 `accounts-output.txt`：
+
+```bash
+uv run python scripts/extract_cpa_refresh_tokens.py
+```
+
+也可以手动指定输入和输出文件：
+
+```bash
+uv run python scripts/extract_cpa_refresh_tokens.py --input accounts-cpa.txt --output accounts-output.txt
+```
+
+提取第 4 列完整 JSON，并逐条保存到 `cpa/json/` 目录：
+
+```bash
+uv run python cpa/extract_json_files.py
+```
+
+也可以手动指定输入文件和 JSON 输出目录：
+
+```bash
+uv run python cpa/extract_json_files.py --input accounts-cpa.txt --output-dir cpa/json
+```
 
 ## 邮箱域名
 
@@ -77,7 +111,7 @@ uv run python scripts/export_refresh_tokens.py --output data/sub2api-refresh-tok
 
 ```yaml
 email:
-  wait_timeout: 120
+  wait_timeout: 30
   poll_interval: 3
   domains:
     - "nnai.website"

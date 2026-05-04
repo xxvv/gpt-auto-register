@@ -19,6 +19,9 @@ class ServerUsProxyApiTests(unittest.TestCase):
             "selected_email_domains": list(server.state.selected_email_domains),
             "parallel_count": server.state.parallel_count,
             "headless": server.state.headless,
+            "complete_payment_flow": server.state.complete_payment_flow,
+            "use_proxy_for_tasks": server.state.use_proxy_for_tasks,
+            "proxy_switch_interval": server.state.proxy_switch_interval,
             "logs": list(server.state.logs),
         }
         server.state.logs = []
@@ -34,6 +37,9 @@ class ServerUsProxyApiTests(unittest.TestCase):
         server.state.selected_email_domains = self.original_state["selected_email_domains"]
         server.state.parallel_count = self.original_state["parallel_count"]
         server.state.headless = self.original_state["headless"]
+        server.state.complete_payment_flow = self.original_state["complete_payment_flow"]
+        server.state.use_proxy_for_tasks = self.original_state["use_proxy_for_tasks"]
+        server.state.proxy_switch_interval = self.original_state["proxy_switch_interval"]
         server.state.logs = self.original_state["logs"]
         try:
             delattr(server._log_context, "proxy")
@@ -119,6 +125,89 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(payload["current_proxy"]["host"], "9.9.9.9")
         self.assertTrue(payload["current_proxy"]["enabled"])
 
+    @mock.patch("app.server.payment_service.get_current_webshare_static_proxy")
+    def test_get_current_webshare_proxy_updates_state(self, get_current_proxy):
+        get_current_proxy.return_value = {
+            "enabled": True,
+            "type": "socks5",
+            "host": "3.3.3.3",
+            "port": 1080,
+            "use_auth": True,
+            "username": "user",
+            "password": "pass",
+        }
+
+        response = self.client.post("/api/webshare-proxy/current")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["proxy"]["host"], "3.3.3.3")
+        self.assertEqual(server.state.proxy["host"], "3.3.3.3")
+        get_current_proxy.assert_called_once()
+
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
+    def test_replace_webshare_proxy_updates_state(self, replace_proxy):
+        replace_proxy.return_value = {
+            "enabled": True,
+            "type": "socks5",
+            "host": "4.4.4.4",
+            "port": 1080,
+            "use_auth": True,
+            "username": "user",
+            "password": "pass",
+        }
+
+        response = self.client.post("/api/webshare-proxy/replace")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["proxy"]["host"], "4.4.4.4")
+        self.assertEqual(server.state.proxy["host"], "4.4.4.4")
+        replace_proxy.assert_called_once()
+
+    @mock.patch("app.server.payment_service.get_current_webshare_static_proxy")
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
+    def test_webshare_proxy_apis_reject_when_running(self, replace_proxy, get_current_proxy):
+        server.state.is_running = True
+
+        current_response = self.client.post("/api/webshare-proxy/current")
+        replace_response = self.client.post("/api/webshare-proxy/replace")
+
+        self.assertEqual(current_response.status_code, 400)
+        self.assertEqual(replace_response.status_code, 400)
+        get_current_proxy.assert_not_called()
+        replace_proxy.assert_not_called()
+
+    def test_settings_api_reads_and_writes_complete_payment_flow(self):
+        server.state.parallel_count = 3
+
+        response = self.client.post(
+            "/api/settings",
+            json={
+                "parallel": 3,
+                "headless": True,
+                "complete_payment_flow": True,
+                "use_proxy_for_tasks": True,
+                "proxy_switch_interval": 3,
+            },
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["complete_payment_flow"])
+        self.assertEqual(payload["parallel"], 1)
+        self.assertTrue(server.state.complete_payment_flow)
+        self.assertTrue(payload["use_proxy_for_tasks"])
+        self.assertEqual(payload["proxy_switch_interval"], 3)
+
+        response = self.client.get("/api/settings")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["complete_payment_flow"])
+        self.assertTrue(payload["use_proxy_for_tasks"])
+        self.assertEqual(payload["proxy_switch_interval"], 3)
+
     @mock.patch("app.server.nnai_service.get_configured_domains")
     def test_email_domains_api_updates_selected_domains(self, get_configured_domains):
         get_configured_domains.return_value = ["nnai.website", "mail.example.com"]
@@ -147,27 +236,24 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
     @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
-    @mock.patch("app.server.us_proxy_pool.load_us_proxy_pool")
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
     @mock.patch("app.server.ensure_proxy_ready")
-    def test_worker_thread_rotates_pool_proxy_for_each_account(
+    def test_worker_thread_uses_webshare_proxy_until_switch_interval(
         self,
         ensure_ready,
-        load_pool,
+        replace_proxy,
         register_one_account,
         _random_choice,
     ):
-        load_pool.return_value = {
-            "proxies": [
-                {"host": "1.1.1.1", "port": 80},
-                {"host": "2.2.2.2", "port": 81},
-                {"host": "3.3.3.3", "port": 82},
-            ]
-        }
+        replace_proxy.side_effect = [
+            {"enabled": True, "type": "socks5", "host": "1.1.1.1", "port": 1080, "use_auth": True, "username": "u1", "password": "p1"},
+            {"enabled": True, "type": "socks5", "host": "2.2.2.2", "port": 1080, "use_auth": True, "username": "u2", "password": "p2"},
+        ]
 
         seen = []
 
         def fake_register_one_account(*, proxy=None, **kwargs):
-            seen.append(f"{proxy['host']}:{proxy['port']}")
+            seen.append(proxy["host"])
             return "user@example.com", "secret", True
 
         register_one_account.side_effect = fake_register_one_account
@@ -177,61 +263,30 @@ class ServerUsProxyApiTests(unittest.TestCase):
             selected_providers=["nnai"],
             parallel=1,
             headless=False,
-            proxy={
-                "enabled": True,
-                "type": "http",
-                "host": "2.2.2.2",
-                "port": 81,
-                "use_auth": False,
-                "username": "",
-                "password": "",
-            },
+            proxy={"enabled": False},
+            use_proxy=True,
+            proxy_switch_interval=2,
         )
 
         ensure_ready.assert_called_once()
-        self.assertEqual(
-            seen,
-            ["2.2.2.2:81", "3.3.3.3:82", "1.1.1.1:80", "2.2.2.2:81"],
-        )
+        self.assertEqual(seen, ["1.1.1.1", "1.1.1.1", "2.2.2.2", "2.2.2.2"])
+        self.assertEqual(replace_proxy.call_count, 2)
         self.assertEqual(server.state.success_count, 4)
         self.assertEqual(server.state.fail_count, 0)
 
     @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
-    @mock.patch("app.server.us_proxy_pool.load_us_proxy_pool")
-    @mock.patch("app.server.ensure_proxy_ready")
-    def test_worker_thread_auto_selects_first_pool_proxy_when_no_current_proxy(
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
+    def test_worker_thread_does_not_use_proxy_when_proxy_switch_off(
         self,
-        ensure_ready,
-        load_pool,
+        replace_proxy,
         register_one_account,
         _random_choice,
     ):
-        load_pool.return_value = {
-            "proxies": [
-                {
-                    "host": "31.59.20.176",
-                    "port": 6754,
-                    "type": "socks5",
-                    "use_auth": True,
-                    "username": "dozklkdu",
-                    "password": "1up90849fjp9",
-                },
-                {"host": "2.2.2.2", "port": 81, "type": "http"},
-            ]
-        }
-
         seen = []
 
         def fake_register_one_account(*, proxy=None, **kwargs):
-            seen.append(
-                (
-                    proxy["type"],
-                    proxy["host"],
-                    proxy["port"],
-                    proxy["username"],
-                )
-            )
+            seen.append(proxy)
             return "user@example.com", "secret", True
 
         register_one_account.side_effect = fake_register_one_account
@@ -250,33 +305,11 @@ class ServerUsProxyApiTests(unittest.TestCase):
                 "username": "",
                 "password": "",
             },
+            use_proxy=False,
         )
 
-        ensure_ready.assert_called_once_with(
-            {
-                "enabled": True,
-                "type": "socks5",
-                "host": "31.59.20.176",
-                "port": 6754,
-                "use_auth": True,
-                "username": "dozklkdu",
-                "password": "1up90849fjp9",
-            },
-            purpose="批量注册任务启动前代理预检",
-            timeout=10,
-        )
-        self.assertEqual(
-            seen,
-            [
-                ("socks5", "31.59.20.176", 6754, "dozklkdu"),
-                ("http", "2.2.2.2", 81, ""),
-                ("socks5", "31.59.20.176", 6754, "dozklkdu"),
-            ],
-        )
-        self.assertTrue(
-            any("未手动选择代理" in line for line in server.state.logs),
-            server.state.logs,
-        )
+        replace_proxy.assert_not_called()
+        self.assertEqual(seen, [None, None, None])
 
     @mock.patch("app.server.original_print")
     def test_hooked_print_prefixes_logs_with_thread_proxy(self, original_print):
@@ -300,12 +333,24 @@ class ServerUsProxyApiTests(unittest.TestCase):
     @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
     @mock.patch("app.server.ensure_proxy_ready")
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
     def test_worker_thread_account_logs_include_current_proxy(
         self,
+        replace_proxy,
         ensure_ready,
         register_one_account,
         _random_choice,
     ):
+        replace_proxy.return_value = {
+            "enabled": True,
+            "type": "socks5",
+            "host": "4.4.4.4",
+            "port": 80,
+            "use_auth": True,
+            "username": "u",
+            "password": "p",
+        }
+
         def fake_register_one_account(*, proxy=None, **kwargs):
             del proxy, kwargs
             server.main.print("账号流程测试日志")
@@ -327,12 +372,102 @@ class ServerUsProxyApiTests(unittest.TestCase):
                 "username": "",
                 "password": "",
             },
+            use_proxy=True,
         )
 
         ensure_ready.assert_called_once()
         matching_logs = [line for line in server.state.logs if "账号流程测试日志" in line]
         self.assertEqual(len(matching_logs), 1)
-        self.assertIn("[代理 http://4.4.4.4:80] 账号流程测试日志", matching_logs[0])
+        self.assertIn("[代理 socks5://4.4.4.4:80 (auth)] 账号流程测试日志", matching_logs[0])
+
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
+    @mock.patch("app.server.main.register_one_account")
+    @mock.patch("app.server.ensure_proxy_ready")
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
+    def test_worker_thread_payment_flow_replaces_webshare_proxy_per_account(
+        self,
+        replace_proxy,
+        ensure_ready,
+        register_one_account,
+        _random_choice,
+    ):
+        replace_proxy.side_effect = [
+            {"enabled": True, "type": "socks5", "host": "10.0.0.1", "port": 8080, "use_auth": True, "username": "u1", "password": "p1"},
+            {"enabled": True, "type": "socks5", "host": "10.0.0.2", "port": 8080, "use_auth": True, "username": "u2", "password": "p2"},
+        ]
+        seen = []
+
+        def fake_register_one_account(*, proxy=None, complete_payment_flow=False, **kwargs):
+            del kwargs
+            seen.append((proxy["host"], complete_payment_flow))
+            return "user@example.com", "secret", True
+
+        register_one_account.side_effect = fake_register_one_account
+
+        server.worker_thread(
+            count=2,
+            selected_providers=["nnai"],
+            parallel=3,
+            headless=False,
+            proxy={"enabled": False},
+            complete_payment_flow=True,
+            use_proxy=True,
+            proxy_switch_interval=1,
+        )
+
+        self.assertEqual(seen, [("10.0.0.1", True), ("10.0.0.2", True)])
+        self.assertEqual(replace_proxy.call_count, 2)
+        ensure_ready.assert_not_called()
+        self.assertEqual(server.state.success_count, 2)
+
+    @mock.patch("app.server.threading.Thread")
+    def test_start_task_passes_proxy_options_to_worker(self, thread_cls):
+        thread = mock.Mock()
+        thread_cls.return_value = thread
+
+        response = self.client.post(
+            "/api/start",
+            json={
+                "count": 2,
+                "use_proxy": True,
+                "proxy_switch_interval": 5,
+            },
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "started")
+        kwargs = thread_cls.call_args.kwargs
+        self.assertIs(kwargs["target"], server.worker_thread)
+        self.assertTrue(kwargs["daemon"])
+        self.assertTrue(kwargs["args"][7])
+        self.assertEqual(kwargs["args"][8], 5)
+        self.assertTrue(server.state.use_proxy_for_tasks)
+        self.assertEqual(server.state.proxy_switch_interval, 5)
+        thread.start.assert_called_once()
+
+    @mock.patch("app.server.threading.Thread")
+    def test_start_accounts_browser_json_passes_proxy_options_to_worker(self, thread_cls):
+        thread = mock.Mock()
+        thread_cls.return_value = thread
+
+        response = self.client.post(
+            "/api/accounts/browser-json/start",
+            json={
+                "emails": ["user@nnai.website"],
+                "use_proxy": True,
+                "proxy_switch_interval": 4,
+            },
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "started")
+        kwargs = thread_cls.call_args.kwargs
+        self.assertIs(kwargs["target"], server.browser_json_worker_thread)
+        self.assertTrue(kwargs["args"][4])
+        self.assertEqual(kwargs["args"][5], 4)
+        thread.start.assert_called_once()
 
     @mock.patch("app.server.time.sleep")
     @mock.patch("app.server.random.choice", return_value="nnai.website")

@@ -2,6 +2,7 @@ let isRunning = false;
 let logIndex = 0;
 let pollInterval = null;
 let selectedAccountEmails = new Set();
+let webshareProxyActionInFlight = false;
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -90,12 +91,16 @@ function updateUI(data) {
     isRunning = data.is_running;
     const btnStart = document.getElementById('btnStart');
     const btnStop = document.getElementById('btnStop');
+    const btnGetWebshareProxy = document.getElementById('btnGetWebshareProxy');
+    const btnReplaceWebshareProxy = document.getElementById('btnReplaceWebshareProxy');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
 
     if (isRunning) {
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
+        if (btnGetWebshareProxy) btnGetWebshareProxy.disabled = true;
+        if (btnReplaceWebshareProxy) btnReplaceWebshareProxy.disabled = true;
         const btnBrowserJson = document.getElementById('btnBrowserJson');
         if (btnBrowserJson) btnBrowserJson.disabled = true;
         statusDot.classList.add('running');
@@ -103,6 +108,8 @@ function updateUI(data) {
     } else {
         btnStart.classList.remove('hidden');
         btnStop.classList.add('hidden');
+        if (btnGetWebshareProxy) btnGetWebshareProxy.disabled = webshareProxyActionInFlight;
+        if (btnReplaceWebshareProxy) btnReplaceWebshareProxy.disabled = webshareProxyActionInFlight;
         const btnBrowserJson = document.getElementById('btnBrowserJson');
         if (btnBrowserJson) btnBrowserJson.disabled = false;
         statusDot.classList.remove('running');
@@ -214,20 +221,68 @@ async function loadSettings() {
         const data = await res.json();
         document.getElementById('parallelCount').value = data.parallel ?? 1;
         document.getElementById('headlessMode').checked = data.headless ?? false;
+        document.getElementById('completePaymentFlow').checked = data.complete_payment_flow ?? false;
+        const useProxy = data.use_proxy_for_tasks ?? false;
+        const proxySwitchInterval = data.proxy_switch_interval ?? 1;
+        document.getElementById('useProxyForTasks').checked = useProxy;
+        document.getElementById('proxySwitchInterval').value = proxySwitchInterval;
+        const browserJsonUseProxy = document.getElementById('browserJsonUseProxy');
+        const browserJsonProxySwitchInterval = document.getElementById('browserJsonProxySwitchInterval');
+        if (browserJsonUseProxy) browserJsonUseProxy.checked = useProxy;
+        if (browserJsonProxySwitchInterval) browserJsonProxySwitchInterval.value = proxySwitchInterval;
     } catch (e) {
         console.error("加载设置失败:", e);
     }
 }
 
+function readProxySwitchInterval(elementId = 'proxySwitchInterval') {
+    const value = parseInt(document.getElementById(elementId).value);
+    return Number.isFinite(value) && value > 0 ? Math.min(value, 1000) : 1;
+}
+
+function syncProxyTaskOptions(source = 'main') {
+    const mainUseProxy = document.getElementById('useProxyForTasks');
+    const mainInterval = document.getElementById('proxySwitchInterval');
+    const jsonUseProxy = document.getElementById('browserJsonUseProxy');
+    const jsonInterval = document.getElementById('browserJsonProxySwitchInterval');
+
+    if (source === 'browser-json' && jsonUseProxy && jsonInterval) {
+        mainUseProxy.checked = jsonUseProxy.checked;
+        mainInterval.value = readProxySwitchInterval('browserJsonProxySwitchInterval');
+    } else if (jsonUseProxy && jsonInterval) {
+        jsonUseProxy.checked = mainUseProxy.checked;
+        jsonInterval.value = readProxySwitchInterval('proxySwitchInterval');
+    }
+    saveSettings();
+}
+
 async function saveSettings() {
     const parallel = parseInt(document.getElementById('parallelCount').value) || 1;
     const headless = document.getElementById('headlessMode').checked;
+    const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
+    const useProxyForTasks = document.getElementById('useProxyForTasks').checked;
+    const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
     try {
-        await fetch('/api/settings', {
+        const res = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ parallel, headless })
+            body: JSON.stringify({
+                parallel,
+                headless,
+                complete_payment_flow: completePaymentFlow,
+                use_proxy_for_tasks: useProxyForTasks,
+                proxy_switch_interval: proxySwitchInterval
+            })
         });
+        const data = await res.json();
+        document.getElementById('parallelCount').value = data.parallel ?? parallel;
+        document.getElementById('proxySwitchInterval').value = data.proxy_switch_interval ?? proxySwitchInterval;
+        const browserJsonUseProxy = document.getElementById('browserJsonUseProxy');
+        const browserJsonProxySwitchInterval = document.getElementById('browserJsonProxySwitchInterval');
+        if (browserJsonUseProxy) browserJsonUseProxy.checked = data.use_proxy_for_tasks ?? useProxyForTasks;
+        if (browserJsonProxySwitchInterval) {
+            browserJsonProxySwitchInterval.value = data.proxy_switch_interval ?? proxySwitchInterval;
+        }
     } catch (e) {
         console.error("保存设置失败:", e);
     }
@@ -239,6 +294,9 @@ async function saveSettings() {
 
 async function startTask() {
     const count = parseInt(document.getElementById('targetCount').value) || 1;
+    const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
+    const useProxy = document.getElementById('useProxyForTasks').checked;
+    const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
 
     clearLogs();
 
@@ -246,7 +304,12 @@ async function startTask() {
         const res = await fetch('/api/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ count: count })
+            body: JSON.stringify({
+                count: count,
+                complete_payment_flow: completePaymentFlow,
+                use_proxy: useProxy,
+                proxy_switch_interval: proxySwitchInterval
+            })
         });
 
         if (!res.ok) {
@@ -265,6 +328,54 @@ async function stopTask() {
     } catch (e) {
         console.error(e);
     }
+}
+
+async function applyWebshareProxyAction(endpoint, buttonId, loadingLabel, successPrefix) {
+    const button = document.getElementById(buttonId);
+    const originalHtml = button ? button.innerHTML : '';
+    webshareProxyActionInFlight = true;
+    if (button) {
+        button.disabled = true;
+        button.textContent = loadingLabel;
+    }
+
+    try {
+        const res = await fetch(endpoint, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || 'Webshare 代理操作失败');
+            return;
+        }
+        await pollStatus();
+        alert(`${successPrefix}: ${renderCurrentProxy(data.proxy)}`);
+    } catch (e) {
+        alert(`Webshare 代理操作失败: ${e}`);
+    } finally {
+        webshareProxyActionInFlight = false;
+        if (button) {
+            button.innerHTML = originalHtml;
+            button.disabled = isRunning;
+        }
+    }
+}
+
+async function getCurrentWebshareProxy() {
+    await applyWebshareProxyAction(
+        '/api/webshare-proxy/current',
+        'btnGetWebshareProxy',
+        '获取中...',
+        '当前代理'
+    );
+}
+
+async function replaceWebshareProxy() {
+    if (!confirm('确定要替换当前 Webshare 代理吗？')) return;
+    await applyWebshareProxyAction(
+        '/api/webshare-proxy/replace',
+        'btnReplaceWebshareProxy',
+        '替换中...',
+        '已替换代理'
+    );
 }
 
 async function loadTokenImportSettings() {
@@ -642,6 +753,8 @@ function updateSelectedAccountCount() {
 
 async function startBrowserJsonTask() {
     const emails = Array.from(selectedAccountEmails);
+    const useProxy = document.getElementById('browserJsonUseProxy')?.checked ?? false;
+    const proxySwitchInterval = readProxySwitchInterval('browserJsonProxySwitchInterval');
     if (emails.length === 0) {
         alert('请先勾选需要获取 JSON 的账号');
         return;
@@ -655,7 +768,11 @@ async function startBrowserJsonTask() {
         const res = await fetch('/api/accounts/browser-json/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ emails })
+            body: JSON.stringify({
+                emails,
+                use_proxy: useProxy,
+                proxy_switch_interval: proxySwitchInterval
+            })
         });
 
         if (!res.ok) {

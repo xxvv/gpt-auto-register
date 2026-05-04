@@ -113,7 +113,7 @@ class RegistrationConfig:
 @dataclass
 class EmailConfig:
     """邮箱服务配置 (NNAI Worker)"""
-    wait_timeout: int = 120
+    wait_timeout: int = 30
     poll_interval: int = 3
     domains: list[str] = field(default_factory=lambda: list(DEFAULT_EMAIL_DOMAINS))
 
@@ -221,6 +221,32 @@ class OutlookEmailConfig:
 
 
 @dataclass
+class PaymentConfig:
+    """注册后支付流程配置"""
+    enabled_default: bool = False
+    webshare_api_key: str = ""
+    webshare_plan_id: str = ""
+    proxy_debug_mode: bool = False
+    debug_proxy_type: str = "http"
+    debug_proxy_host: str = ""
+    debug_proxy_port: int = 8080
+    debug_proxy_use_auth: bool = False
+    debug_proxy_username: str = ""
+    debug_proxy_password: str = ""
+    card_debug_mode: bool = False
+    debug_card_key: str = ""
+    card_keys_file: str = "card-keys.txt"
+    card_usage_file: str = "data/state/card_keys_usage.json"
+    request_payurl_api: str = "https://payurl.779.chat/api/request"
+    redeem_api: str = "https://cards.779.chat/web-api/redeem/submit"
+    redeem_device_id: str = "749d7aaf-67e0-4341-b5e6-0ecdf5ea2fb0"
+    http_timeout: int = 30
+    payurl_max_retries: int = 5
+    webshare_poll_interval: int = 5
+    webshare_poll_timeout: int = 180
+
+
+@dataclass
 class AppConfig:
     """应用程序完整配置"""
     registration: RegistrationConfig = field(default_factory=RegistrationConfig)
@@ -236,6 +262,7 @@ class AppConfig:
     custom2925: Custom2925Config = field(default_factory=Custom2925Config)
     gaggle: GaggleConfig = field(default_factory=GaggleConfig)
     outlookemail: OutlookEmailConfig = field(default_factory=OutlookEmailConfig)
+    payment: PaymentConfig = field(default_factory=PaymentConfig)
 
 
 # ==============================================================
@@ -452,6 +479,32 @@ class ConfigLoader:
             use_aliases=self._as_bool(os.environ.get('OUTLOOKEMAIL_USE_ALIASES', outlookemail.get('use_aliases', True))),
             allow_reuse=self._as_bool(os.environ.get('OUTLOOKEMAIL_ALLOW_REUSE', outlookemail.get('allow_reuse', False))),
             registered_file=os.environ.get('OUTLOOKEMAIL_REGISTERED_FILE', outlookemail.get('registered_file', 'data/state/outlookemail_registered.json')),
+        )
+
+        # 注册后支付流程配置
+        payment = self.raw_config.get('payment', {})
+        self.config.payment = PaymentConfig(
+            enabled_default=self._as_bool(os.environ.get('PAYMENT_ENABLED_DEFAULT', payment.get('enabled_default', False))),
+            webshare_api_key=os.environ.get('WEBSHARE_API_KEY', payment.get('webshare_api_key', '')),
+            webshare_plan_id=os.environ.get('WEBSHARE_PLAN_ID', payment.get('webshare_plan_id', '')),
+            proxy_debug_mode=self._as_bool(os.environ.get('PAYMENT_PROXY_DEBUG_MODE', payment.get('proxy_debug_mode', False))),
+            debug_proxy_type=os.environ.get('PAYMENT_DEBUG_PROXY_TYPE', payment.get('debug_proxy_type', 'http')),
+            debug_proxy_host=os.environ.get('PAYMENT_DEBUG_PROXY_HOST', payment.get('debug_proxy_host', '')),
+            debug_proxy_port=int(os.environ.get('PAYMENT_DEBUG_PROXY_PORT', payment.get('debug_proxy_port', 8080))),
+            debug_proxy_use_auth=self._as_bool(os.environ.get('PAYMENT_DEBUG_PROXY_USE_AUTH', payment.get('debug_proxy_use_auth', False))),
+            debug_proxy_username=os.environ.get('PAYMENT_DEBUG_PROXY_USERNAME', payment.get('debug_proxy_username', '')),
+            debug_proxy_password=os.environ.get('PAYMENT_DEBUG_PROXY_PASSWORD', payment.get('debug_proxy_password', '')),
+            card_debug_mode=self._as_bool(os.environ.get('PAYMENT_CARD_DEBUG_MODE', payment.get('card_debug_mode', False))),
+            debug_card_key=os.environ.get('PAYMENT_DEBUG_CARD_KEY', payment.get('debug_card_key', '')),
+            card_keys_file=os.environ.get('PAYMENT_CARD_KEYS_FILE', payment.get('card_keys_file', 'card-keys.txt')),
+            card_usage_file=os.environ.get('PAYMENT_CARD_USAGE_FILE', payment.get('card_usage_file', 'data/state/card_keys_usage.json')),
+            request_payurl_api=os.environ.get('PAYMENT_REQUEST_PAYURL_API', payment.get('request_payurl_api', 'https://payurl.779.chat/api/request')),
+            redeem_api=os.environ.get('PAYMENT_REDEEM_API', payment.get('redeem_api', 'https://cards.779.chat/web-api/redeem/submit')),
+            redeem_device_id=os.environ.get('PAYMENT_REDEEM_DEVICE_ID', payment.get('redeem_device_id', '749d7aaf-67e0-4341-b5e6-0ecdf5ea2fb0')),
+            http_timeout=int(os.environ.get('PAYMENT_HTTP_TIMEOUT', payment.get('http_timeout', 30))),
+            payurl_max_retries=int(os.environ.get('PAYMENT_PAYURL_MAX_RETRIES', payment.get('payurl_max_retries', 5))),
+            webshare_poll_interval=int(os.environ.get('WEBSHARE_POLL_INTERVAL', payment.get('webshare_poll_interval', 5))),
+            webshare_poll_timeout=int(os.environ.get('WEBSHARE_POLL_TIMEOUT', payment.get('webshare_poll_timeout', 180))),
         )
 
     @staticmethod

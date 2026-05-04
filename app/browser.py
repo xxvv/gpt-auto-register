@@ -1564,7 +1564,7 @@ def _submit_email_until_next_step(
 
         next_step = _wait_for_post_email_step(
             driver,
-            timeout=max(20, min(SHORT_WAIT_TIME, 60)),
+            timeout=max(20, min(SHORT_WAIT_TIME, 30)),
             monitor_callback=monitor_callback,
         )
         if next_step in {"password", "verification"}:
@@ -1772,7 +1772,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
         tuple: (是否成功, 是否已输入密码)
     """
     wait = WebDriverWait(driver, MAX_WAIT_TIME)
-    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 60))
+    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 30))
 
     try:
         # 1. 等待邮箱输入框出现
@@ -1935,7 +1935,7 @@ def fill_login_form(
         tuple: (是否成功进入验证码页, 是否已输入密码)
     """
     wait = WebDriverWait(driver, MAX_WAIT_TIME)
-    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 60))
+    step_wait_timeout = max(20, min(SHORT_WAIT_TIME, 30))
 
     try:
         print(f"DEBUG: 当前页面标题: {driver.title}")
@@ -2209,7 +2209,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
 
             input_mode = None
             input_elements = []
-            end_time = time.time() + 60
+            end_time = time.time() + 30
             while time.time() < end_time:
                 if check_and_handle_error(driver, monitor_callback=monitor_callback):
                     retry_result = _handle_verification_retry_transition(
