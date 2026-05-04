@@ -819,7 +819,29 @@ class BrowserCodexOAuthClient:
                     break
 
                 self._print(f"[OAuth][Selenium] 获取到验证码，准备输入: {code}")
-                if not enter_verification_code(driver, code, monitor_callback=monitor_callback):
+                code_result = enter_verification_code(
+                    driver,
+                    code,
+                    monitor_callback=monitor_callback,
+                )
+                if code_result == "retry_auth":
+                    self._print("[OAuth][Selenium] 验证码页重试后回到邮箱输入页，重新执行登录表单")
+                    form_ok, password_entered = fill_login_form(
+                        driver,
+                        email,
+                        password or "",
+                        monitor_callback=monitor_callback,
+                        success_url_predicate=self._is_oauth_callback_or_consent_url,
+                    )
+                    if not form_ok:
+                        self._raise_if_need_phone_url(driver)
+                        raise RuntimeError("Selenium 登录表单重试失败")
+                    if not password_entered:
+                        self._print("[OAuth][Selenium] 重试登录后未检测到密码输入，继续处理邮箱验证码页")
+                    self._print_driver_url(driver, "重试登录表单提交后当前地址")
+                    _report("oauth_fill_login_form_retry")
+                    continue
+                if not code_result:
                     self._print("[OAuth][Selenium] 验证码输入/提交失败，继续等待新验证码")
                     continue
                 self._print_driver_url(driver, "验证码提交后当前地址")

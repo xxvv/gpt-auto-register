@@ -59,6 +59,17 @@ class NNAIServiceTests(unittest.TestCase):
         self.assertEqual(credential, "xxvv@mail.example.com")
         self.assertIn(session_id, nnai_service._sessions)
 
+    def test_generate_local_part_includes_month_day_prefix(self):
+        fake_datetime = mock.Mock()
+        fake_datetime.now.return_value.strftime.return_value = "0504"
+        with (
+            mock.patch.object(nnai_service, "datetime", fake_datetime),
+            mock.patch.object(nnai_service.random, "choices", return_value=list("abc123")),
+        ):
+            local_part = nnai_service._generate_local_part(length=6)
+
+        self.assertEqual(local_part, "0504abc123")
+
     def test_normalize_domain_list_deduplicates_and_strips_at_prefix(self):
         self.assertEqual(
             nnai_service.normalize_domain_list(["@NNAI.website", "nnai.website", "mail.example.com"]),

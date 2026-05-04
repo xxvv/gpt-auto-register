@@ -15,6 +15,7 @@ from .config import (
 )
 from .utils import generate_random_password, save_to_txt, update_account_status
 from . import email_providers
+from . import payment_service
 from .browser import (
     CHATGPT_HOME_URL,
     create_driver,
@@ -36,6 +37,7 @@ SUCCESS_WINDOW_HOLD_SECONDS = SUCCESS_WINDOW_HOLD_MIN_SECONDS
 LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = 5
 REGISTRATION_GROUP_REST_EVERY = 4
 REGISTRATION_GROUP_REST_SECONDS = 120
+AUTH_FLOW_RETRY_LIMIT = 3
 
 
 class ProxyEgressCheckError(RuntimeError):
@@ -61,8 +63,149 @@ def _build_registered_account_info(driver, proxy=None) -> str:
     return access_token
 
 
+def _run_post_registration_payment_flow(
+    *,
+    driver,
+    email: str,
+    password: str,
+    access_token: str,
+    email_provider: str,
+    mailbox_credential: str,
+    proxy: dict | None = None,
+    headless: bool = False,
+    monitor_callback=None,
+) -> str:
+    print("💳 支付流程: step 1/4 获取 Stripe 支付链接")
+    stripe_payurl = payment_service.request_stripe_payurl(access_token)
+    print("💳 支付流程: step 2/4 获取支付卡信息")
+    card = payment_service.redeem_next_card(email=email)
+    print("💳 支付流程: step 3/4 打开 Stripe 并提交支付")
+    payment_service.complete_stripe_payment(
+        driver,
+        stripe_payurl,
+        card,
+        monitor_callback=monitor_callback,
+    )
+    print("🌐 支付流程: step 4/4 按账号管理流程获取 JSON")
+    token_path = payment_service.fetch_and_save_browser_json_for_registered_account(
+        email=email,
+        password=password,
+        email_provider=email_provider,
+        mailbox_credential=mailbox_credential,
+        output_dir=payment_service.cfg.oauth.token_json_dir,
+        proxy=proxy,
+        headless=headless,
+        monitor_callback=monitor_callback,
+    )
+    print(f"✅ 支付流程全部完成，JSON 已保存: {token_path}")
+    return str(token_path)
+
+
 def _registration_success_hold_seconds() -> int:
     return random.randint(SUCCESS_WINDOW_HOLD_MIN_SECONDS, SUCCESS_WINDOW_HOLD_MAX_SECONDS)
+
+
+def _run_signup_until_code_submitted(
+    driver,
+    email: str,
+    password: str,
+    email_provider: str,
+    mail_token: str,
+    monitor_callback=None,
+) -> bool:
+    for auth_attempt in range(1, AUTH_FLOW_RETRY_LIMIT + 1):
+        form_ok, password_entered = fill_signup_form(
+            driver, email, password, monitor_callback=monitor_callback
+        )
+        if not form_ok:
+            print("❌ 填写注册表单失败")
+            return False
+        if not password_entered:
+            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
+
+        if monitor_callback:
+            monitor_callback(driver, "fill_form")
+
+        time.sleep(5)
+        verification_code = email_providers.wait_for_verification_email(
+            email_provider, str(mail_token or "")
+        )
+        if not verification_code:
+            print("❌ 未获取到验证码，终止注册")
+            return False
+
+        code_result = enter_verification_code(
+            driver, verification_code, monitor_callback=monitor_callback
+        )
+        if code_result is True:
+            if monitor_callback:
+                monitor_callback(driver, "enter_code")
+            return True
+        if code_result == "retry_auth" and auth_attempt < AUTH_FLOW_RETRY_LIMIT:
+            print(
+                f"↩️ 验证码页重试后回到邮箱页，重新走注册输入流程（第 {auth_attempt + 1}/{AUTH_FLOW_RETRY_LIMIT} 次）"
+            )
+            continue
+
+        print("❌ 输入验证码失败")
+        return False
+
+    print("❌ 注册流程多次重试后仍未完成验证码提交")
+    return False
+
+
+def _run_login_until_code_submitted(
+    driver,
+    email: str,
+    password: str,
+    email_provider: str,
+    mail_token: str,
+    monitor_callback=None,
+) -> bool:
+    for auth_attempt in range(1, AUTH_FLOW_RETRY_LIMIT + 1):
+        form_ok, password_entered = fill_login_form(
+            driver,
+            email,
+            password,
+            monitor_callback=monitor_callback,
+        )
+        if not form_ok:
+            print("❌ 填写登录表单失败")
+            return False
+        if not password_entered:
+            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
+
+        if monitor_callback:
+            monitor_callback(driver, "login_fill_form")
+
+        verification_code = email_providers.wait_for_verification_email(
+            email_provider,
+            str(mail_token or ""),
+        )
+        if not verification_code:
+            print("❌ 未获取到验证码，终止登录")
+            return False
+
+        code_result = enter_verification_code(
+            driver,
+            verification_code,
+            monitor_callback=monitor_callback,
+        )
+        if code_result is True:
+            if monitor_callback:
+                monitor_callback(driver, "login_enter_code")
+            return True
+        if code_result == "retry_auth" and auth_attempt < AUTH_FLOW_RETRY_LIMIT:
+            print(
+                f"↩️ 验证码页重试后回到邮箱页，重新走登录输入流程（第 {auth_attempt + 1}/{AUTH_FLOW_RETRY_LIMIT} 次）"
+            )
+            continue
+
+        print("❌ 输入验证码失败")
+        return False
+
+    print("❌ 登录流程多次重试后仍未完成验证码提交")
+    return False
 
 
 def register_one_account(
@@ -73,6 +216,7 @@ def register_one_account(
     proxy=None,
     raise_proxy_errors=False,
     success_callback=None,
+    complete_payment_flow=False,
 ):
     """
     注册单个账号
@@ -191,46 +335,27 @@ def register_one_account(
         time.sleep(3)
         _report("open_page")
 
-        # 5. 填写注册表单（邮箱和密码）
-        form_ok, password_entered = fill_signup_form(
-            driver, email, password, monitor_callback=monitor_callback
-        )
-        if not form_ok:
-            print("❌ 填写注册表单失败")
-            return email, password, False
-        if not password_entered:
-            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
-        _report("fill_form")
-
-        # 6. 等待验证邮件
-        time.sleep(5)
-        safe_token = str(token or "")
-        verification_code = email_providers.wait_for_verification_email(
-            email_provider, safe_token
-        )
-
-        if not verification_code:
-            print("❌ 未获取到验证码，终止注册")
-            return email, password, False
-
-        # 7. 输入验证码
-        if not enter_verification_code(
-            driver, verification_code, monitor_callback=monitor_callback
+        # 5. 填写注册表单并完成验证码提交
+        if not _run_signup_until_code_submitted(
+            driver,
+            email,
+            password,
+            email_provider,
+            str(token or ""),
+            monitor_callback=monitor_callback,
         ):
-            print("❌ 输入验证码失败")
             return email, password, False
-        _report("enter_code")
 
-        # 8. 填写个人资料
+        # 6. 填写个人资料
         if not fill_profile_info(driver):
             print("❌ 填写个人资料失败")
             return email, password, False
         _report("fill_profile")
 
-        # 9. 页面稳定等待
+        # 7. 页面稳定等待
         time.sleep(4)
 
-        # 10. 最终校验：确认已登录
+        # 8. 最终校验：确认已登录
         if not verify_logged_in(driver):
             print("❌ 最终登录状态校验失败")
             return email, password, False
@@ -247,6 +372,41 @@ def register_one_account(
             mailbox_credential=str(temp_credential or ""),
             provider=email_provider,
         )
+
+        if complete_payment_flow:
+            try:
+                _run_post_registration_payment_flow(
+                    driver=driver,
+                    email=email,
+                    password=password,
+                    access_token=account_record_info,
+                    email_provider=email_provider,
+                    mailbox_credential=str(temp_credential or "") or email,
+                    proxy=proxy,
+                    headless=headless,
+                    monitor_callback=monitor_callback,
+                )
+                account_status = payment_service.PAYMENT_SUCCESS_STATUS
+                save_to_txt(
+                    email,
+                    password,
+                    account_status,
+                    mailbox_credential=str(temp_credential or ""),
+                    provider=email_provider,
+                )
+            except Exception as exc:
+                account_status = f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                print(f"❌ 支付流程失败: {exc}")
+                save_to_txt(
+                    email,
+                    password,
+                    account_status,
+                    mailbox_credential=str(temp_credential or ""),
+                    provider=email_provider,
+                )
+                _mark_provider_registered(account_status)
+                return email, password, False
+
         success = True
         _mark_provider_registered(account_status)
 
@@ -353,35 +513,15 @@ def login_one_account(
         time.sleep(3)
         _report("login_open_page")
 
-        form_ok, password_entered = fill_login_form(
+        if not _run_login_until_code_submitted(
             driver,
             email,
             password,
-            monitor_callback=monitor_callback,
-        )
-        if not form_ok:
-            print("❌ 填写登录表单失败")
-            return email, False
-        if not password_entered:
-            print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
-        _report("login_fill_form")
-
-        verification_code = email_providers.wait_for_verification_email(
             email_provider,
             str(mail_token or ""),
-        )
-        if not verification_code:
-            print("❌ 未获取到验证码，终止登录")
-            return email, False
-
-        if not enter_verification_code(
-            driver,
-            verification_code,
             monitor_callback=monitor_callback,
         ):
-            print("❌ 输入验证码失败")
             return email, False
-        _report("login_enter_code")
 
         time.sleep(4)
         if not click_getting_started_button(

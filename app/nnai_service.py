@@ -14,6 +14,7 @@ import string
 import threading
 import time
 import uuid
+from datetime import datetime
 from typing import Any
 
 import requests as _requests
@@ -62,7 +63,9 @@ class NNAIClient:
 
 def _generate_local_part(length: int = LOCAL_PART_LENGTH) -> str:
     alphabet = string.ascii_lowercase + string.digits
-    return "".join(random.choices(alphabet, k=length))
+    date_prefix = datetime.now().strftime("%m%d")
+    random_part = "".join(random.choices(alphabet, k=length))
+    return f"{date_prefix}{random_part}"
 
 
 def _normalize_domain(domain: str) -> str:
