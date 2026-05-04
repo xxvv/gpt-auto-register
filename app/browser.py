@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import sys
 from datetime import date
 from urllib.error import URLError
 import undetected_chromedriver as uc
@@ -824,6 +825,28 @@ chrome.webRequest.onAuthRequired.addListener(
 
 def _detect_chrome_major_version() -> int | None:
     """检测本机 Chrome 主版本，避免与 UC driver 主版本不匹配。"""
+    if sys.platform == "win32":
+        for hive_key in (
+            r"HKCU\SOFTWARE\Google\Chrome\BLBeacon",
+            r"HKLM\SOFTWARE\Google\Chrome\BLBeacon",
+            r"HKLM\SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon",
+        ):
+            try:
+                result = subprocess.run(
+                    ["reg", "query", hive_key, "/v", "version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                match = re.search(r"REG_SZ\s+(\d+)\.\d+\.\d+\.\d+", result.stdout or "")
+                if match:
+                    major = int(match.group(1))
+                    print(f"  🧩 检测到本机 Chrome 主版本: {major}")
+                    return major
+            except Exception:
+                pass
+
     candidates = [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -847,7 +870,7 @@ def _detect_chrome_major_version() -> int | None:
                 return major
         except Exception as e:
             print(f"  ⚠️ 检测 Chrome 版本失败 ({binary}): {e}")
-    print("  ℹ️ 未检测到本机 Chrome 版本，交由 undetected-chromedriver 自动匹配")
+    print("  ℹ️ 未检测到本机 Chrome 版本，交由 undetected_chromedriver 自动匹配")
     return None
 
 
