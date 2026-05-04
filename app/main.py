@@ -112,14 +112,14 @@ def _run_signup_until_code_submitted(
     email_provider: str,
     mail_token: str,
     monitor_callback=None,
-) -> bool:
+) -> tuple[bool, bool]:
     for auth_attempt in range(1, AUTH_FLOW_RETRY_LIMIT + 1):
         form_ok, password_entered = fill_signup_form(
             driver, email, password, monitor_callback=monitor_callback
         )
         if not form_ok:
             print("❌ 填写注册表单失败")
-            return False
+            return False, False
         if not password_entered:
             print("ℹ️ 未检测到密码输入，继续处理邮箱验证码页")
 
@@ -132,7 +132,7 @@ def _run_signup_until_code_submitted(
         )
         if not verification_code:
             print("❌ 未获取到验证码，终止注册")
-            return False
+            return False, False
 
         code_result = enter_verification_code(
             driver, verification_code, monitor_callback=monitor_callback
@@ -140,7 +140,12 @@ def _run_signup_until_code_submitted(
         if code_result is True:
             if monitor_callback:
                 monitor_callback(driver, "enter_code")
-            return True
+            return True, False
+        if code_result == "profile_submitted":
+            if monitor_callback:
+                monitor_callback(driver, "enter_code")
+                monitor_callback(driver, "fill_profile")
+            return True, True
         if code_result == "retry_auth" and auth_attempt < AUTH_FLOW_RETRY_LIMIT:
             print(
                 f"↩️ 验证码页重试后回到邮箱页，重新走注册输入流程（第 {auth_attempt + 1}/{AUTH_FLOW_RETRY_LIMIT} 次）"
@@ -148,10 +153,10 @@ def _run_signup_until_code_submitted(
             continue
 
         print("❌ 输入验证码失败")
-        return False
+        return False, False
 
     print("❌ 注册流程多次重试后仍未完成验证码提交")
-    return False
+    return False, False
 
 
 def _run_login_until_code_submitted(
@@ -336,21 +341,26 @@ def register_one_account(
         _report("open_page")
 
         # 5. 填写注册表单并完成验证码提交
-        if not _run_signup_until_code_submitted(
+        code_submitted, profile_submitted = _run_signup_until_code_submitted(
             driver,
             email,
             password,
             email_provider,
             str(token or ""),
             monitor_callback=monitor_callback,
-        ):
+        )
+        if not code_submitted:
             return email, password, False
 
         # 6. 填写个人资料
-        if not fill_profile_info(driver):
-            print("❌ 填写个人资料失败")
-            return email, password, False
-        _report("fill_profile")
+        if profile_submitted:
+            print("✅ 验证码页已合并提交个人资料，跳过下一页等待")
+            _report("fill_profile")
+        else:
+            if not fill_profile_info(driver):
+                print("❌ 填写个人资料失败")
+                return email, password, False
+            _report("fill_profile")
 
         # 7. 页面稳定等待
         time.sleep(4)

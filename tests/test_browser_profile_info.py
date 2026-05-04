@@ -65,6 +65,35 @@ class BrowserProfileInfoTests(unittest.TestCase):
         self.assertIs(fields["month_input"], month_input)
         self.assertIs(fields["day_input"], day_input)
 
+    def test_detect_profile_form_fields_accepts_username_with_birthday(self):
+        username_input = FakeElement()
+        year_input = FakeElement()
+        month_input = FakeElement()
+        day_input = FakeElement()
+        driver = FakeDriver(
+            {
+                (browser.By.CSS_SELECTOR, 'input[name="username"]'): [username_input],
+                (browser.By.CSS_SELECTOR, '[data-type="year"]'): [year_input],
+                (browser.By.CSS_SELECTOR, '[data-type="month"]'): [month_input],
+                (browser.By.CSS_SELECTOR, '[data-type="day"]'): [day_input],
+            }
+        )
+
+        fields = browser._detect_profile_form_fields_once(driver)
+
+        self.assertIs(fields["name_input"], username_input)
+        self.assertEqual(fields["birth_fields"]["mode"], "birthday")
+
+    def test_detect_profile_form_fields_ignores_username_without_birth_fields(self):
+        username_input = FakeElement()
+        driver = FakeDriver(
+            {
+                (browser.By.CSS_SELECTOR, 'input[name="username"]'): [username_input],
+            }
+        )
+
+        self.assertIsNone(browser._detect_profile_form_fields_once(driver))
+
     def test_calculate_age_from_birthday_uses_today_boundary(self):
         with patch.object(browser, "date", FrozenDate):
             self.assertEqual(

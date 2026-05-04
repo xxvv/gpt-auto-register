@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from app import browser
@@ -13,6 +14,9 @@ class FakeElement:
 
     def is_enabled(self):
         return True
+
+    def clear(self):
+        return None
 
 
 class FakeBodyElement:
@@ -603,6 +607,37 @@ class BrowserSignupFlowTests(unittest.TestCase):
             result = browser.enter_verification_code(driver, "123456")
 
         self.assertEqual(result, "retry_auth")
+
+    def test_enter_verification_code_fills_merged_profile_fields_before_submit(self):
+        code_input = FakeElement()
+        name_input = FakeElement()
+        age_input = FakeElement()
+        driver = StaticDriver(
+            mapping={
+                (browser.By.CSS_SELECTOR, 'input[name="code"]'): [code_input],
+                (browser.By.CSS_SELECTOR, 'input[name="username"]'): [name_input],
+                (browser.By.CSS_SELECTOR, 'input[name="age"]'): [age_input],
+            }
+        )
+        driver.page_source = ""
+
+        with patch.object(browser.time, "sleep", return_value=None), patch.object(
+            browser, "type_slowly"
+        ) as type_slowly, patch.object(
+            browser, "_fill_input_value"
+        ) as fill_input_value, patch.object(
+            browser, "click_button_with_retry", return_value=True
+        ) as click_button, patch.object(
+            browser, "generate_user_info",
+            return_value={"name": "Alice", "year": "2000", "month": "04", "day": "19"},
+        ):
+            result = browser.enter_verification_code(driver, "123456")
+
+        self.assertEqual(result, "profile_submitted")
+        type_slowly.assert_any_call(code_input, "123456", delay=0.1)
+        fill_input_value.assert_any_call(driver, name_input, "Alice")
+        fill_input_value.assert_any_call(driver, age_input, mock.ANY, delay=0.1)
+        click_button.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -1625,6 +1625,30 @@ _PROFILE_AGE_SELECTORS = [
     (By.XPATH, '//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "how old")]/following::input[1]'),
 ]
 
+_PROFILE_NAME_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="name"]'),
+    (By.CSS_SELECTOR, 'input[name="username"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="name"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="username"]'),
+    (By.CSS_SELECTOR, 'input[id="name"]'),
+    (By.CSS_SELECTOR, 'input[id="username"]'),
+    (By.CSS_SELECTOR, 'input[id*="name" i]'),
+    (By.CSS_SELECTOR, 'input[id*="username" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="name" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="username" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="full name" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="name" i]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="username" i]'),
+    (By.CSS_SELECTOR, 'input[data-testid*="name" i]'),
+    (By.CSS_SELECTOR, 'input[data-testid*="username" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="姓名"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="用户名"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="名字"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="姓名"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="用户名"]'),
+    (By.CSS_SELECTOR, 'input[aria-label*="名字"]'),
+]
+
 _PROFILE_YEAR_SELECTORS = [
     (By.CSS_SELECTOR, '[data-type="year"]'),
     (By.CSS_SELECTOR, 'input[autocomplete="bday-year"]'),
@@ -1696,6 +1720,30 @@ def _detect_profile_birth_fields_once(driver):
     return None
 
 
+def _detect_profile_form_fields_once(driver):
+    name_input = _first_visible_element(driver, _PROFILE_NAME_SELECTORS)
+    if not name_input:
+        return None
+
+    birth_fields = _detect_profile_birth_fields_once(driver)
+    if not birth_fields:
+        return None
+
+    return {"name_input": name_input, "birth_fields": birth_fields}
+
+
+def _wait_for_profile_form_fields(driver, timeout=30):
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        fields = _detect_profile_form_fields_once(driver)
+        if fields:
+            return fields
+        time.sleep(0.5)
+
+    raise RuntimeError("未找到姓名和年龄/生日输入框")
+
+
 def _wait_for_profile_birth_fields(driver, timeout=30):
     end_time = time.time() + timeout
 
@@ -1713,6 +1761,63 @@ def _calculate_age_from_birthday(year: str, month: str, day: str) -> str:
     today = date.today()
     age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
     return str(max(age, 0))
+
+
+def _fill_profile_form_fields(driver, form_fields=None):
+    user_info = generate_user_info()
+    user_name = user_info["name"]
+    birthday_year = user_info["year"]
+    birthday_month = user_info["month"]
+    birthday_day = user_info["day"]
+    age = _calculate_age_from_birthday(
+        birthday_year, birthday_month, birthday_day
+    )
+
+    if form_fields is None:
+        form_fields = _wait_for_profile_form_fields(driver, timeout=60)
+
+    print("👤 正在填写姓名/用户名...")
+    _fill_input_value(driver, form_fields["name_input"], user_name)
+    print(f"✅ 已输入姓名: {user_name}")
+    time.sleep(1)
+
+    print("🎂 正在识别年龄/生日输入方式...")
+    profile_fields = form_fields["birth_fields"]
+
+    if profile_fields["mode"] == "age":
+        print("🎯 检测到年龄输入框，改为直接输入年龄...")
+        _fill_input_value(driver, profile_fields["age_input"], age, delay=0.1)
+        print(f"✅ 已输入年龄: {age}")
+    else:
+        print("🎯 检测到生日输入框，按年月日填写...")
+        _fill_input_value(
+            driver, profile_fields["year_input"], birthday_year, delay=0.1
+        )
+        time.sleep(0.3)
+        _fill_input_value(
+            driver, profile_fields["month_input"], birthday_month, delay=0.1
+        )
+        time.sleep(0.3)
+        _fill_input_value(
+            driver, profile_fields["day_input"], birthday_day, delay=0.1
+        )
+        print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
+
+    time.sleep(1)
+
+
+def _fill_merged_profile_form_if_present(driver, timeout=3) -> bool:
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        form_fields = _detect_profile_form_fields_once(driver)
+        if form_fields:
+            print("🧩 验证码页同时检测到资料输入框，直接合并填写")
+            _fill_profile_form_fields(driver, form_fields=form_fields)
+            return True
+        time.sleep(0.3)
+
+    return False
 
 
 def _fill_input_value(driver, element, value: str, delay=0.1):
@@ -2178,7 +2283,8 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
         bool | str:
             `True` 表示验证码已成功提交；
             `False` 表示提交失败；
-            `retry_auth` 表示点击重试后已回到邮箱/密码输入流程。
+            `retry_auth` 表示点击重试后已回到邮箱/密码输入流程；
+            `profile_submitted` 表示验证码页合并资料输入框，已一并填写并提交。
     """
     try:
         code_attempts = max(1, ERROR_PAGE_MAX_RETRIES + 1)
@@ -2252,6 +2358,8 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
             print(f"✅ 已输入验证码: {code}")
             time.sleep(2)
 
+            merged_profile_filled = _fill_merged_profile_form_if_present(driver)
+
             print("🔘 点击继续按钮...")
             if not click_button_with_retry(
                 driver, 'button[type="submit"]', monitor_callback=monitor_callback
@@ -2282,6 +2390,9 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
             if retry_verification:
                 continue
 
+            if merged_profile_filled:
+                return "profile_submitted"
+
             return True
 
         print("❌ 验证码多次提交后仍未通过")
@@ -2302,61 +2413,11 @@ def fill_profile_info(driver):
     返回:
         bool: 是否成功
     """
-    wait = WebDriverWait(driver, MAX_WAIT_TIME)
-
-    # 生成随机用户信息
-    user_info = generate_user_info()
-    user_name = user_info["name"]
-    birthday_year = user_info["year"]
-    birthday_month = user_info["month"]
-    birthday_day = user_info["day"]
-    age = _calculate_age_from_birthday(
-        birthday_year, birthday_month, birthday_day
-    )
-
     try:
-        # 1. 输入姓名
-        print("👤 等待姓名输入框...")
-        name_input = WebDriverWait(driver, 60).until(
-            EC.visibility_of_element_located(
-                (By.CSS_SELECTOR, 'input[name="name"], input[autocomplete="name"]')
-            )
-        )
-        name_input.clear()
-        time.sleep(0.5)
-        type_slowly(name_input, user_name)
-        print(f"✅ 已输入姓名: {user_name}")
-        time.sleep(1)
+        _fill_profile_form_fields(driver)
 
-        # 2. 输入年龄或生日
-        print("🎂 正在识别年龄/生日输入方式...")
-        time.sleep(1)
-
-        profile_fields = _wait_for_profile_birth_fields(driver, timeout=30)
-
-        if profile_fields["mode"] == "age":
-            print("🎯 检测到年龄输入框，改为直接输入年龄...")
-            _fill_input_value(driver, profile_fields["age_input"], age, delay=0.1)
-            print(f"✅ 已输入年龄: {age}")
-        else:
-            print("🎯 检测到生日输入框，按年月日填写...")
-            _fill_input_value(
-                driver, profile_fields["year_input"], birthday_year, delay=0.1
-            )
-            time.sleep(0.3)
-            _fill_input_value(
-                driver, profile_fields["month_input"], birthday_month, delay=0.1
-            )
-            time.sleep(0.3)
-            _fill_input_value(
-                driver, profile_fields["day_input"], birthday_day, delay=0.1
-            )
-            print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
-
-        time.sleep(1)
-
-        # 3. 点击最后的继续按钮
         print("🔘 点击最终提交按钮...")
+        wait = WebDriverWait(driver, MAX_WAIT_TIME)
         continue_btn = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
         )
