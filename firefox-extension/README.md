@@ -19,5 +19,5 @@
 卡片格式：
 
 ```text
-card----年/月----cvv----phone----url----name----address,city postcode,US
+card----年/月----cvv----phone----url----name----address,city state postcode,US
 ```

@@ -2,6 +2,13 @@
   "use strict";
 
   function setNativeValue(element, value) {
+    if (element instanceof HTMLSelectElement) {
+      element.value = String(value || "");
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+
     const inputPrototype = element instanceof HTMLTextAreaElement
       ? HTMLTextAreaElement.prototype
       : HTMLInputElement.prototype;
@@ -47,6 +54,7 @@
         "#billingName": card.name,
         "#billingAddressLine1": card.address,
         "#billingLocality": card.city,
+        "#billingAdministrativeArea": card.state,
         "#billingPostalCode": card.postcode
       };
 

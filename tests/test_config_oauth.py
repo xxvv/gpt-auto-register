@@ -35,6 +35,7 @@ class ConfigOAuthTests(unittest.TestCase):
               card_debug_mode: true
               debug_card_key: "debug-card"
               card_keys_file: "keys.txt"
+              phone_keys_file: "phones.txt"
               card_usage_file: "usage.json"
 
             cliproxy:
@@ -87,6 +88,7 @@ class ConfigOAuthTests(unittest.TestCase):
         self.assertTrue(loader.config.payment.card_debug_mode)
         self.assertEqual(loader.config.payment.debug_card_key, "debug-card")
         self.assertEqual(loader.config.payment.card_keys_file, "keys.txt")
+        self.assertEqual(loader.config.payment.phone_keys_file, "phones.txt")
         self.assertEqual(loader.config.payment.card_usage_file, "usage.json")
         self.assertTrue(loader.config.cliproxy.enabled)
         self.assertEqual(loader.config.cliproxy.api_url, "http://proxy.example.com:8317/")

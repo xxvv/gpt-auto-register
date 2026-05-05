@@ -10,6 +10,10 @@ from .config import (
     TOTAL_ACCOUNTS,
     BATCH_INTERVAL_MIN,
     BATCH_INTERVAL_MAX,
+    BROWSER_ACTION_WAIT,
+    BROWSER_OPEN_PAGE_WAIT,
+    BROWSER_POST_SUBMIT_WAIT,
+    BROWSER_SUCCESS_HOLD_SECONDS,
     allocate_output_batch_id,
     set_output_batch_id,
 )
@@ -30,8 +34,7 @@ from .browser import (
     click_getting_started_button,
 )
 
-
-LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = 5
+LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = BROWSER_SUCCESS_HOLD_SECONDS
 AUTH_FLOW_RETRY_LIMIT = 3
 
 
@@ -68,19 +71,45 @@ def _run_post_registration_payment_flow(
     mailbox_credential: str,
     proxy: dict | None = None,
     headless: bool = False,
+    payment_method: str = "card",
     monitor_callback=None,
 ) -> str:
+    method = str(payment_method or "card").strip().lower()
+    if method not in {"card", "paypal"}:
+        method = "card"
+
+    if payment_service.is_payment_simulation_enabled():
+        print("🧪 支付流程模拟模式: 使用本地调试卡密，不请求 PayURL/Stripe/PayPal")
+        card = payment_service.redeem_next_card(email=email)
+        print(
+            "✅ 支付流程模拟完成 "
+            f"(卡尾号 {card.card[-4:]}, 姓名 {card.name}, 城市 {card.city})"
+        )
+        return "payment-simulation"
+
     print("💳 支付流程: step 1/4 获取 Stripe 支付链接")
     stripe_payurl = payment_service.request_stripe_payurl(access_token)
-    print("💳 支付流程: step 2/4 获取支付卡信息")
-    card = payment_service.redeem_next_card(email=email)
-    print("💳 支付流程: step 3/4 打开 Stripe 并提交支付")
-    payment_service.complete_stripe_payment(
+    print("💳 支付流程: step 2/4 打开 Stripe 并确认金额为 €0.00")
+    payment_service.open_stripe_payment_page(
         driver,
         stripe_payurl,
-        card,
         monitor_callback=monitor_callback,
     )
+    print("💳 支付流程: step 3/4 获取支付卡信息并提交支付")
+    card = payment_service.redeem_next_card(email=email)
+    if method == "paypal":
+        payment_service.fill_and_submit_paypal_payment(
+            driver,
+            card,
+            email=email,
+            monitor_callback=monitor_callback,
+        )
+    else:
+        payment_service.fill_and_submit_stripe_payment(
+            driver,
+            card,
+            monitor_callback=monitor_callback,
+        )
     print("🌐 支付流程: step 4/4 按账号管理流程获取 JSON")
     token_path = payment_service.fetch_and_save_browser_json_for_registered_account(
         email=email,
@@ -117,7 +146,7 @@ def _run_signup_until_code_submitted(
         if monitor_callback:
             monitor_callback(driver, "fill_form")
 
-        time.sleep(5)
+        time.sleep(BROWSER_POST_SUBMIT_WAIT)
         verification_code = email_providers.wait_for_verification_email(
             email_provider, str(mail_token or "")
         )
@@ -213,6 +242,7 @@ def register_one_account(
     raise_proxy_errors=False,
     success_callback=None,
     complete_payment_flow=False,
+    payment_method: str = "card",
 ):
     """
     注册单个账号
@@ -328,7 +358,7 @@ def register_one_account(
             raise RuntimeError(
                 f"打开 ChatGPT 页面失败: {e} | current_url={current_url or 'N/A'} | windows={handle_count}"
             ) from e
-        time.sleep(3)
+        time.sleep(BROWSER_OPEN_PAGE_WAIT)
         _report("open_page")
 
         # 5. 填写注册表单并完成验证码提交
@@ -354,7 +384,7 @@ def register_one_account(
             _report("fill_profile")
 
         # 7. 页面稳定等待
-        time.sleep(4)
+        time.sleep(BROWSER_POST_SUBMIT_WAIT)
 
         # 8. 最终校验：确认已登录
         if not verify_logged_in(driver):
@@ -385,6 +415,7 @@ def register_one_account(
                     mailbox_credential=str(temp_credential or "") or email,
                     proxy=proxy,
                     headless=headless,
+                    payment_method=payment_method,
                     monitor_callback=monitor_callback,
                 )
                 account_status = payment_service.PAYMENT_SUCCESS_STATUS
@@ -509,7 +540,7 @@ def login_one_account(
 
         print(f"🌐 正在打开 {CHATGPT_HOME_URL}...")
         open_chatgpt_url(driver, CHATGPT_HOME_URL)
-        time.sleep(3)
+        time.sleep(BROWSER_OPEN_PAGE_WAIT)
         _report("login_open_page")
 
         if not _run_login_until_code_submitted(
@@ -522,7 +553,7 @@ def login_one_account(
         ):
             return email, False
 
-        time.sleep(4)
+        time.sleep(BROWSER_POST_SUBMIT_WAIT)
         if not click_getting_started_button(
             driver,
             monitor_callback=monitor_callback,

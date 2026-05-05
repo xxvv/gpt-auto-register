@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Stripe Payurl Opener",
+  "version": "1.0.0",
+  "description": "Batch request Stripe payment URLs from token rows and open successful links.",
+  "permissions": [
+    "tabs",
+    "sidePanel",
+    "scripting",
+    "proxy",
+    "webRequest",
+    "webRequestAuthProvider",
+    "storage"
+  ],
+  "host_permissions": ["https://payurl.779.chat/*", "https://*/*", "http://*/*"],
+  "action": {
+    "default_title": "Stripe Payurl Opener"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

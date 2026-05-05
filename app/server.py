@@ -34,6 +34,7 @@ from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
 DEFAULT_PROXY_SWITCH_INTERVAL = 1
+DEFAULT_PAYMENT_METHOD = "card"
 
 app = Flask(__name__, static_url_path="", static_folder=str(STATIC_DIR))
 
@@ -69,6 +70,7 @@ class AppState:
 
         # 是否注册后完成支付流程
         self.complete_payment_flow = bool(cfg.payment.enabled_default)
+        self.payment_method = DEFAULT_PAYMENT_METHOD
 
         # 代理任务选项
         self.use_proxy_for_tasks = False
@@ -216,6 +218,11 @@ def _normalize_proxy_switch_interval(value, default=DEFAULT_PROXY_SWITCH_INTERVA
     return max(1, min(1000, interval))
 
 
+def _normalize_payment_method(value):
+    method = str(value or DEFAULT_PAYMENT_METHOD).strip().lower()
+    return method if method in {"card", "paypal"} else DEFAULT_PAYMENT_METHOD
+
+
 def _disabled_proxy():
     return {
         "enabled": False,
@@ -286,6 +293,7 @@ def worker_thread(
     complete_payment_flow=False,
     use_proxy=False,
     proxy_switch_interval=DEFAULT_PROXY_SWITCH_INTERVAL,
+    payment_method=DEFAULT_PAYMENT_METHOD,
 ):
     state.is_running = True
     state.stop_requested = False
@@ -329,6 +337,7 @@ def worker_thread(
     if complete_payment_flow and int(parallel) > 1:
         main.print("ℹ️ 已启用支付流程，注册并行数强制调整为 1")
         parallel = 1
+    payment_method = _normalize_payment_method(payment_method)
 
     with _log_proxy_context(task_proxy):
         main.print(f"🚀 开始批量任务，计划注册: {count} 个，并行数: {parallel}")
@@ -337,7 +346,7 @@ def worker_thread(
         main.print(f"🌐 邮箱域名: {', '.join(email_domains)}")
         main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
         if complete_payment_flow:
-            main.print("💳 支付流程: 已启用")
+            main.print(f"💳 支付流程: 已启用 ({payment_method})")
         if task_proxy and task_proxy.get("enabled"):
             main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
             main.print(f"🔁 代理切换间隔: 每 {proxy_switch_interval} 个任务")
@@ -424,6 +433,7 @@ def worker_thread(
                                     raise_proxy_errors=True,
                                     success_callback=on_success_ready,
                                     complete_payment_flow=complete_payment_flow,
+                                    payment_method=payment_method,
                                 )
                             break
                         except main.ProxyEgressCheckError as proxy_exc:
@@ -800,10 +810,14 @@ def start_task():
     data = request.json or {}
     count = data.get('count', 1)
     complete_payment_flow = bool(data.get("complete_payment_flow", state.complete_payment_flow))
+    payment_method = _normalize_payment_method(
+        data.get("payment_method", state.payment_method)
+    )
     use_proxy = bool(data.get("use_proxy", state.use_proxy_for_tasks))
     proxy_switch_interval = _normalize_proxy_switch_interval(
         data.get("proxy_switch_interval", state.proxy_switch_interval)
     )
+    state.payment_method = payment_method
     state.use_proxy_for_tasks = use_proxy
     state.proxy_switch_interval = proxy_switch_interval
     if complete_payment_flow and state.parallel_count > 1:
@@ -824,6 +838,7 @@ def start_task():
             complete_payment_flow,
             use_proxy,
             proxy_switch_interval,
+            payment_method,
         ),
         daemon=True
     ).start()
@@ -836,6 +851,7 @@ def get_settings():
         "headless": state.headless,
         "proxy": state.proxy,
         "complete_payment_flow": state.complete_payment_flow,
+        "payment_method": state.payment_method,
         "use_proxy_for_tasks": state.use_proxy_for_tasks,
         "proxy_switch_interval": state.proxy_switch_interval,
     })
@@ -963,6 +979,8 @@ def set_settings():
         state.complete_payment_flow = bool(data["complete_payment_flow"])
         if state.complete_payment_flow and state.parallel_count > 1:
             state.parallel_count = 1
+    if "payment_method" in data:
+        state.payment_method = _normalize_payment_method(data["payment_method"])
     if "use_proxy_for_tasks" in data:
         state.use_proxy_for_tasks = bool(data["use_proxy_for_tasks"])
     if "proxy_switch_interval" in data:
@@ -984,6 +1002,7 @@ def set_settings():
         "headless": state.headless,
         "proxy": state.proxy,
         "complete_payment_flow": state.complete_payment_flow,
+        "payment_method": state.payment_method,
         "use_proxy_for_tasks": state.use_proxy_for_tasks,
         "proxy_switch_interval": state.proxy_switch_interval,
     })

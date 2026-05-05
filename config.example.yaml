@@ -22,6 +22,13 @@ browser:
   max_wait_time: 600    # 全局最大等待时间
   short_wait_time: 120  # 短任务等待时间
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  poll_interval: 0.35   # 页面轮询间隔
+  action_wait: 0.8      # 输入/点击后的短等待
+  transition_wait: 2.0  # 页面切换等待
+  open_page_wait: 2.0   # 打开页面后的稳定等待
+  post_submit_wait: 2.0 # 提交后的稳定等待
+  verify_poll_interval: 1.0 # 登录态校验轮询间隔
+  success_hold_seconds: 3.0 # 登录成功后保留窗口时长
 
 # 账号密码规则
 password:
@@ -83,6 +90,7 @@ payment:
   card_debug_mode: false
   debug_card_key: ""
   card_keys_file: "card-keys.txt"
+  phone_keys_file: "phone-keys.txt"
   card_usage_file: "data/state/card_keys_usage.json"
   request_payurl_api: "https://payurl.779.chat/api/request"
   redeem_api: "https://cards.779.chat/web-api/redeem/submit"

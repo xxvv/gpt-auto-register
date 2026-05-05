@@ -51,6 +51,7 @@ def payment_cfg(**overrides):
         "card_debug_mode": False,
         "debug_card_key": "",
         "card_keys_file": "card-keys.txt",
+        "phone_keys_file": "phone-keys.txt",
         "card_usage_file": "usage.json",
         "request_payurl_api": "https://payurl.example/api/request",
         "redeem_api": "https://cards.example/web-api/redeem/submit",
@@ -65,6 +66,87 @@ def payment_cfg(**overrides):
 
 
 class PaymentServiceTests(unittest.TestCase):
+    def test_parse_paypal_phone_key(self):
+        phone_key = payment_service.parse_paypal_phone_key(
+            "+15555550123|https://sms.example/code"
+        )
+
+        self.assertEqual(phone_key.phone, "+15555550123")
+        self.assertEqual(phone_key.sms_url, "https://sms.example/code")
+        self.assertEqual(phone_key.raw, "+15555550123|https://sms.example/code")
+
+    def test_parse_paypal_phone_key_rejects_bad_format(self):
+        with self.assertRaisesRegex(ValueError, "phone-keys.txt"):
+            payment_service.parse_paypal_phone_key("+15555550123")
+
+    def test_extract_six_digit_code(self):
+        self.assertEqual(
+            payment_service.extract_six_digit_code("Your code is 123456."),
+            "123456",
+        )
+        self.assertIsNone(payment_service.extract_six_digit_code("code 12345"))
+
+    @mock.patch("app.payment_service.time.sleep", return_value=None)
+    def test_wait_for_paypal_sms_code_polls_until_code(self, _sleep):
+        session = FakeSession()
+        session.get_responses = [
+            FakeResponse({}, text="pending"),
+            FakeResponse({}, text="PayPal code 654321"),
+        ]
+
+        code = payment_service.wait_for_paypal_sms_code(
+            "https://sms.example/code",
+            session=session,
+            timeout=20,
+            poll_interval=1,
+            payment_cfg=payment_cfg(),
+        )
+
+        self.assertEqual(code, "654321")
+        self.assertEqual(len(session.get_calls), 2)
+
+    def test_reserve_next_paypal_phone_skips_successfully_used_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            keys_path = Path(tmpdir) / "phone-keys.txt"
+            usage_path = Path(tmpdir) / "paypal_phone_keys_usage.json"
+            keys_path.write_text(
+                "+15550000001|https://sms.example/1\n"
+                "+15550000002|https://sms.example/2\n",
+                encoding="utf-8",
+            )
+            usage_path.write_text(
+                '{"phones": {"+15550000001|https://sms.example/1": {"status": "failed"}}}\n',
+                encoding="utf-8",
+            )
+
+            phone_key = payment_service.reserve_next_paypal_phone(
+                email="user@example.com",
+                payment_cfg=payment_cfg(
+                    phone_keys_file=str(keys_path),
+                    card_usage_file=str(Path(tmpdir) / "card_usage.json"),
+                ),
+            )
+
+            self.assertEqual(phone_key.phone, "+15550000001")
+
+            payment_service.mark_paypal_phone_used(
+                phone_key,
+                email="user@example.com",
+                payment_cfg=payment_cfg(
+                    phone_keys_file=str(keys_path),
+                    card_usage_file=str(Path(tmpdir) / "card_usage.json"),
+                ),
+            )
+            next_phone_key = payment_service.reserve_next_paypal_phone(
+                email="user2@example.com",
+                payment_cfg=payment_cfg(
+                    phone_keys_file=str(keys_path),
+                    card_usage_file=str(Path(tmpdir) / "card_usage.json"),
+                ),
+            )
+
+            self.assertEqual(next_phone_key.phone, "+15550000002")
+
     def test_get_current_webshare_static_proxy_returns_first_proxy(self):
         session = FakeSession()
         session.get_responses = [
@@ -232,7 +314,7 @@ class PaymentServiceTests(unittest.TestCase):
 
     def test_parse_delivery_content_strict_format(self):
         card = payment_service.parse_delivery_content(
-            "4242424242424242----2028/7----123----15555555555----https://u.example----Jane Doe----123 Main St,New York 10001,US"
+            "4242424242424242----2028/7----123----15555555555----https://u.example----Jane Doe----123 Main St,New York NY 10001,US"
         )
 
         self.assertEqual(card.card, "4242424242424242")
@@ -240,7 +322,24 @@ class PaymentServiceTests(unittest.TestCase):
         self.assertEqual(card.name, "Jane Doe")
         self.assertEqual(card.address, "123 Main St")
         self.assertEqual(card.city, "New York")
+        self.assertEqual(card.state, "NY")
         self.assertEqual(card.postcode, "10001")
+
+    def test_parse_delivery_content_splits_city_state_postcode_from_right(self):
+        card = payment_service.parse_delivery_content(
+            "4859540166489798----05/30----371----+15808657390----http://a.62-us.com/api/get_sms?key=4466b42957a6823cd879a9d9aa14d748----WILLIAM SAMPSON----916 PINE ST APT 2, PORT HURON MI 48060, US"
+        )
+
+        self.assertEqual(card.address, "916 PINE ST APT 2")
+        self.assertEqual(card.city, "PORT HURON")
+        self.assertEqual(card.state, "MI")
+        self.assertEqual(card.postcode, "48060")
+
+    def test_parse_delivery_content_rejects_missing_state(self):
+        with self.assertRaisesRegex(ValueError, "city state postcode"):
+            payment_service.parse_delivery_content(
+                "4242424242424242----2028/7----123----15555555555----https://u.example----Jane Doe----123 Main St,New York 10001,US"
+            )
 
     def test_redeem_next_card_marks_usage_and_skips_used_card(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -257,7 +356,7 @@ class PaymentServiceTests(unittest.TestCase):
                     {
                         "message": "ok",
                         "data": {
-                            "deliveryContent": "4111111111111111----2029/12----987----1----https://u.example----John Smith----1 Test Rd,Austin 73301,US"
+                            "deliveryContent": "4111111111111111----2029/12----987----1----https://u.example----John Smith----1 Test Rd,Austin TX 73301,US"
                         },
                     }
                 )
@@ -273,6 +372,9 @@ class PaymentServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(card.card, "4111111111111111")
+            self.assertEqual(card.city, "Austin")
+            self.assertEqual(card.state, "TX")
+            self.assertEqual(card.postcode, "73301")
             self.assertEqual(session.post_calls[0][1]["json"]["redeemCode"], "fresh-code")
             self.assertIn('"fresh-code"', usage_path.read_text(encoding="utf-8"))
 
@@ -285,7 +387,7 @@ class PaymentServiceTests(unittest.TestCase):
                     {
                         "message": "ok",
                         "data": {
-                            "deliveryContent": "4111111111111111----2029/12----987----1----https://u.example----John Smith----1 Test Rd,Austin 73301,US"
+                            "deliveryContent": "4111111111111111----2029/12----987----1----https://u.example----John Smith----1 Test Rd,Austin TX 73301,US"
                         },
                     }
                 )
@@ -303,10 +405,76 @@ class PaymentServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(card.card, "4111111111111111")
+            self.assertEqual(card.city, "Austin")
+            self.assertEqual(card.state, "TX")
+            self.assertEqual(card.postcode, "73301")
             self.assertEqual(session.post_calls[0][1]["json"]["redeemCode"], "debug-code")
             usage_text = usage_path.read_text(encoding="utf-8")
             self.assertIn('"debug:debug-code"', usage_text)
             self.assertIn('"debug_mode": true', usage_text)
+
+    def test_redeem_next_card_debug_mode_with_delivery_content_skips_api(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usage_path = Path(tmpdir) / "usage.json"
+            session = FakeSession()
+            delivery_content = (
+                "4859540156532730----2030/2----684----+13215330841----"
+                "http://a.62-us.com/api/get_sms?key=c47b56829b79e77b6eef721d937d1e86----"
+                "LATANYA DAVIS----8970 N HAGGERTY RD APT 101,PLYMOUTH MI 48170,US"
+            )
+
+            card = payment_service.redeem_next_card(
+                email="user@example.com",
+                session=session,
+                payment_cfg=payment_cfg(
+                    card_debug_mode=True,
+                    debug_card_key=delivery_content,
+                    card_usage_file=str(usage_path),
+                ),
+            )
+
+            self.assertEqual(card.card, "4859540156532730")
+            self.assertEqual(card.expiry_input, "0230")
+            self.assertEqual(card.name, "LATANYA DAVIS")
+            self.assertEqual(card.address, "8970 N HAGGERTY RD APT 101")
+            self.assertEqual(card.city, "PLYMOUTH")
+            self.assertEqual(card.state, "MI")
+            self.assertEqual(card.postcode, "48170")
+            self.assertEqual(session.post_calls, [])
+            usage_text = usage_path.read_text(encoding="utf-8")
+            self.assertIn('"debug_mode": true', usage_text)
+            self.assertIn('"debug_delivery_content"', usage_text)
+
+    def test_is_payment_simulation_enabled_requires_full_delivery_content(self):
+        self.assertTrue(
+            payment_service.is_payment_simulation_enabled(
+                payment_cfg(
+                    card_debug_mode=True,
+                    debug_card_key=(
+                        "4859540156532730----2030/2----684----+13215330841----"
+                        "http://a.62-us.com/api/get_sms?key=key----LATANYA DAVIS----"
+                        "8970 N HAGGERTY RD APT 101,PLYMOUTH MI 48170,US"
+                    ),
+                )
+            )
+        )
+        self.assertFalse(
+            payment_service.is_payment_simulation_enabled(
+                payment_cfg(card_debug_mode=True, debug_card_key="debug-code")
+            )
+        )
+        self.assertFalse(
+            payment_service.is_payment_simulation_enabled(
+                payment_cfg(
+                    card_debug_mode=False,
+                    debug_card_key=(
+                        "4859540156532730----2030/2----684----+13215330841----"
+                        "http://a.62-us.com/api/get_sms?key=key----LATANYA DAVIS----"
+                        "8970 N HAGGERTY RD APT 101,PLYMOUTH MI 48170,US"
+                    ),
+                )
+            )
+        )
 
 
 if __name__ == "__main__":

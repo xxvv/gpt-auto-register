@@ -222,6 +222,7 @@ async function loadSettings() {
         document.getElementById('parallelCount').value = data.parallel ?? 1;
         document.getElementById('headlessMode').checked = data.headless ?? false;
         document.getElementById('completePaymentFlow').checked = data.complete_payment_flow ?? false;
+        document.getElementById('paymentMethod').value = data.payment_method ?? 'card';
         const useProxy = data.use_proxy_for_tasks ?? false;
         const proxySwitchInterval = data.proxy_switch_interval ?? 1;
         document.getElementById('useProxyForTasks').checked = useProxy;
@@ -260,6 +261,7 @@ async function saveSettings() {
     const parallel = parseInt(document.getElementById('parallelCount').value) || 1;
     const headless = document.getElementById('headlessMode').checked;
     const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
+    const paymentMethod = document.getElementById('paymentMethod').value || 'card';
     const useProxyForTasks = document.getElementById('useProxyForTasks').checked;
     const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
     try {
@@ -270,12 +272,14 @@ async function saveSettings() {
                 parallel,
                 headless,
                 complete_payment_flow: completePaymentFlow,
+                payment_method: paymentMethod,
                 use_proxy_for_tasks: useProxyForTasks,
                 proxy_switch_interval: proxySwitchInterval
             })
         });
         const data = await res.json();
         document.getElementById('parallelCount').value = data.parallel ?? parallel;
+        document.getElementById('paymentMethod').value = data.payment_method ?? paymentMethod;
         document.getElementById('proxySwitchInterval').value = data.proxy_switch_interval ?? proxySwitchInterval;
         const browserJsonUseProxy = document.getElementById('browserJsonUseProxy');
         const browserJsonProxySwitchInterval = document.getElementById('browserJsonProxySwitchInterval');
@@ -295,6 +299,7 @@ async function saveSettings() {
 async function startTask() {
     const count = parseInt(document.getElementById('targetCount').value) || 1;
     const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
+    const paymentMethod = document.getElementById('paymentMethod').value || 'card';
     const useProxy = document.getElementById('useProxyForTasks').checked;
     const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
 
@@ -307,6 +312,7 @@ async function startTask() {
             body: JSON.stringify({
                 count: count,
                 complete_payment_flow: completePaymentFlow,
+                payment_method: paymentMethod,
                 use_proxy: useProxy,
                 proxy_switch_interval: proxySwitchInterval
             })

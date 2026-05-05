@@ -20,6 +20,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
             "parallel_count": server.state.parallel_count,
             "headless": server.state.headless,
             "complete_payment_flow": server.state.complete_payment_flow,
+            "payment_method": server.state.payment_method,
             "use_proxy_for_tasks": server.state.use_proxy_for_tasks,
             "proxy_switch_interval": server.state.proxy_switch_interval,
             "logs": list(server.state.logs),
@@ -38,6 +39,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
         server.state.parallel_count = self.original_state["parallel_count"]
         server.state.headless = self.original_state["headless"]
         server.state.complete_payment_flow = self.original_state["complete_payment_flow"]
+        server.state.payment_method = self.original_state["payment_method"]
         server.state.use_proxy_for_tasks = self.original_state["use_proxy_for_tasks"]
         server.state.proxy_switch_interval = self.original_state["proxy_switch_interval"]
         server.state.logs = self.original_state["logs"]
@@ -187,6 +189,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
                 "parallel": 3,
                 "headless": True,
                 "complete_payment_flow": True,
+                "payment_method": "paypal",
                 "use_proxy_for_tasks": True,
                 "proxy_switch_interval": 3,
             },
@@ -195,8 +198,10 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["complete_payment_flow"])
+        self.assertEqual(payload["payment_method"], "paypal")
         self.assertEqual(payload["parallel"], 1)
         self.assertTrue(server.state.complete_payment_flow)
+        self.assertEqual(server.state.payment_method, "paypal")
         self.assertTrue(payload["use_proxy_for_tasks"])
         self.assertEqual(payload["proxy_switch_interval"], 3)
 
@@ -205,6 +210,7 @@ class ServerUsProxyApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["complete_payment_flow"])
+        self.assertEqual(payload["payment_method"], "paypal")
         self.assertTrue(payload["use_proxy_for_tasks"])
         self.assertEqual(payload["proxy_switch_interval"], 3)
 
@@ -397,9 +403,11 @@ class ServerUsProxyApiTests(unittest.TestCase):
         ]
         seen = []
 
-        def fake_register_one_account(*, proxy=None, complete_payment_flow=False, **kwargs):
+        def fake_register_one_account(
+            *, proxy=None, complete_payment_flow=False, payment_method="card", **kwargs
+        ):
             del kwargs
-            seen.append((proxy["host"], complete_payment_flow))
+            seen.append((proxy["host"], complete_payment_flow, payment_method))
             return "user@example.com", "secret", True
 
         register_one_account.side_effect = fake_register_one_account
@@ -411,11 +419,15 @@ class ServerUsProxyApiTests(unittest.TestCase):
             headless=False,
             proxy={"enabled": False},
             complete_payment_flow=True,
+            payment_method="paypal",
             use_proxy=True,
             proxy_switch_interval=1,
         )
 
-        self.assertEqual(seen, [("10.0.0.1", True), ("10.0.0.2", True)])
+        self.assertEqual(
+            seen,
+            [("10.0.0.1", True, "paypal"), ("10.0.0.2", True, "paypal")],
+        )
         self.assertEqual(replace_proxy.call_count, 2)
         ensure_ready.assert_not_called()
         self.assertEqual(server.state.success_count, 2)
@@ -429,6 +441,8 @@ class ServerUsProxyApiTests(unittest.TestCase):
             "/api/start",
             json={
                 "count": 2,
+                "complete_payment_flow": True,
+                "payment_method": "paypal",
                 "use_proxy": True,
                 "proxy_switch_interval": 5,
             },
@@ -442,6 +456,8 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertTrue(kwargs["daemon"])
         self.assertTrue(kwargs["args"][7])
         self.assertEqual(kwargs["args"][8], 5)
+        self.assertEqual(kwargs["args"][9], "paypal")
+        self.assertEqual(server.state.payment_method, "paypal")
         self.assertTrue(server.state.use_proxy_for_tasks)
         self.assertEqual(server.state.proxy_switch_interval, 5)
         thread.start.assert_called_once()

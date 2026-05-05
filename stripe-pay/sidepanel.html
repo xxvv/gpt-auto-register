@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Stripe Payurl Opener</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <main class="sidepanel">
+      <header class="header">
+        <h1>Stripe Payurl Opener</h1>
+      </header>
+
+      <section class="input-section" aria-label="账号数据输入">
+        <label for="accountRows">账号数据</label>
+        <textarea
+          id="accountRows"
+          spellcheck="false"
+          placeholder="账号|字段2|字段3|token|其他字段&#10;account@example.com|...|...|tok_xxx"
+        ></textarea>
+      </section>
+
+      <section class="actions" aria-label="操作">
+        <button id="startButton" type="button">开始</button>
+        <button id="injectMirrorButton" type="button">一键注入镜像</button>
+        <button id="uninjectMirrorButton" type="button" class="secondary">一键取消注入</button>
+        <button id="clickAllSubmitButtonsButton" type="button">一键点提交</button>
+        <button id="clearButton" type="button" class="secondary">清空</button>
+      </section>
+
+      <section class="proxy-section" aria-label="代理设置">
+        <label for="proxyUrl">浏览器代理</label>
+        <div class="proxy-row">
+          <input
+            id="proxyUrl"
+            type="text"
+            spellcheck="false"
+            placeholder="http://user:pass@host:port 或 socks5://user:pass@host:port"
+          >
+        </div>
+        <div class="actions compact" aria-label="代理操作">
+          <button id="setProxyButton" type="button">设置代理</button>
+          <button id="clearProxyButton" type="button" class="secondary">清理代理</button>
+        </div>
+      </section>
+
+      <section class="summary" aria-live="polite">
+        <span>总行数：<strong id="totalCount">0</strong></span>
+        <span>有效：<strong id="validCount">0</strong></span>
+        <span>成功：<strong id="successCount">0</strong></span>
+        <span>失败：<strong id="failureCount">0</strong></span>
+        <span>格式错误：<strong id="formatErrorCount">0</strong></span>
+      </section>
+
+      <section class="log-section" aria-label="状态日志">
+        <div id="statusLog" class="status-log" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

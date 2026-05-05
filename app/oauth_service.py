@@ -35,7 +35,14 @@ except ImportError:
     import requests as curl_requests
     HAS_CURL_CFFI = False
 
-from .config import EMAIL_WAIT_TIMEOUT, PROJECT_ROOT, cfg
+from .config import (
+    EMAIL_WAIT_TIMEOUT,
+    PROJECT_ROOT,
+    BROWSER_ACTION_WAIT,
+    BROWSER_OPEN_PAGE_WAIT,
+    BROWSER_POST_SUBMIT_WAIT,
+    cfg,
+)
 from .utils import build_requests_proxies, ensure_proxy_ready
 
 _print_lock = threading.Lock()
@@ -593,7 +600,7 @@ class BrowserCodexOAuthClient:
         email: str,
         tried_codes: set[str],
         timeout_seconds: float,
-        interval_seconds: float = 5,
+        interval_seconds: float = 3,
     ) -> str | None:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
@@ -702,14 +709,14 @@ class BrowserCodexOAuthClient:
                 button = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((by, selector))
                 )
-                self._print("[OAuth][Selenium] 准备点击继续/确认按钮，等待 1.5s")
-                time.sleep(1.5)
+                self._print("[OAuth][Selenium] 准备点击继续/确认按钮")
+                time.sleep(BROWSER_ACTION_WAIT)
                 try:
                     ActionChains(driver).move_to_element(button).click().perform()
                 except Exception:
                     driver.execute_script("arguments[0].click();", button)
                 self._print("[OAuth][Selenium] 已点击继续/确认按钮")
-                time.sleep(3)
+                time.sleep(BROWSER_POST_SUBMIT_WAIT)
                 self._print_driver_url(driver, "点击后当前地址")
                 return True
             except Exception:
@@ -762,7 +769,7 @@ class BrowserCodexOAuthClient:
                 _report("oauth_proxy_ip_check")
 
             open_chatgpt_url(driver, authorize_url)
-            time.sleep(3)
+            time.sleep(BROWSER_OPEN_PAGE_WAIT)
             self._print_driver_url(driver, "授权页打开后当前地址")
             _report("oauth_open_authorize_url")
 
@@ -871,7 +878,7 @@ class BrowserCodexOAuthClient:
                             self._print_driver_url(driver, "页面 URL 已包含 callback 参数")
                             return result
                         self._raise_if_need_phone_url(driver)
-                    time.sleep(1)
+                    time.sleep(BROWSER_ACTION_WAIT)
 
             raise RuntimeError("等待 OAuth callback 超时")
         finally:
@@ -925,7 +932,7 @@ class BrowserCodexOAuthClient:
                 if attempt >= max_attempts:
                     raise RuntimeError("邮箱验证页持续显示已验证，重新进行 OAuth 后仍未拿到 callback")
                 self._print(f"[OAuth][Selenium] 重新开始 OAuth 流程（第 {attempt + 1}/{max_attempts} 次）")
-                time.sleep(2)
+                time.sleep(BROWSER_ACTION_WAIT)
                 continue
             finally:
                 callback_server.stop()
@@ -1346,7 +1353,7 @@ class CodexOAuthClient:
                 codes = email_providers.list_verification_codes(email_provider, mail_token)
                 candidate_codes = [code for code in codes if code and code not in tried_codes]
                 if not candidate_codes:
-                    time.sleep(2)
+                    time.sleep(BROWSER_ACTION_WAIT)
                     continue
 
                 self._print(f"[OAuth] 收到 {len(candidate_codes)} 个待尝试 OTP")
@@ -1421,7 +1428,7 @@ def poll_oauth_otp_code(email_provider: str, mail_token: str, timeout: int = 120
         fresh_codes = [code for code in codes if code and code not in tried_codes]
         if fresh_codes:
             return fresh_codes[0]
-        time.sleep(2)
+        time.sleep(BROWSER_ACTION_WAIT)
     return None
 
 

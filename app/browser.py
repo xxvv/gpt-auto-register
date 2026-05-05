@@ -30,6 +30,11 @@ from .config import (
     SHORT_WAIT_TIME,
     ERROR_PAGE_MAX_RETRIES,
     BUTTON_CLICK_MAX_RETRIES,
+    BROWSER_ACTION_WAIT,
+    BROWSER_POLL_INTERVAL,
+    BROWSER_POST_SUBMIT_WAIT,
+    BROWSER_TRANSITION_WAIT,
+    BROWSER_VERIFY_POLL_INTERVAL,
 )
 from .utils import (
     OPENAI_PROXY_TARGET_URLS,
@@ -212,10 +217,10 @@ def _wait_for_post_email_step(driver, timeout: int = 10, monitor_callback=None) 
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="post_email_step_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     if verification_hits:
@@ -260,10 +265,10 @@ def _wait_for_auth_step_after_retry(
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="auth_step_after_retry_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     print("❌ 重试后未识别到邮箱、密码或验证码页面")
@@ -293,10 +298,10 @@ def _wait_for_visible_password_input(driver, timeout: int = 30, monitor_callback
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="password_input_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     raise RuntimeError("未找到密码输入框")
@@ -322,10 +327,10 @@ def _wait_for_password_input_or_verification(
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="password_or_verification_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     return "unknown", None
@@ -380,10 +385,10 @@ def _wait_for_password_submit_result(
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="password_submit_result_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     print("❌ 密码提交后未进入邮箱验证码页")
@@ -413,7 +418,7 @@ def _click_signup_or_login_entry(driver) -> bool:
         if target_btn and target_btn.is_displayed():
             driver.execute_script("arguments[0].click();", target_btn)
             print("  ✅ 已点击入口按钮")
-            time.sleep(3)
+            time.sleep(BROWSER_TRANSITION_WAIT)
             return True
     except Exception as e:
         print(f"  ⚠️ 检查入口按钮时出错 (非致命): {e}")
@@ -446,7 +451,7 @@ def _click_login_entry(driver) -> bool:
                     continue
                 driver.execute_script("arguments[0].click();", element)
                 print("  ✅ 已点击登录按钮")
-                time.sleep(3)
+                time.sleep(BROWSER_TRANSITION_WAIT)
                 return True
             except Exception:
                 continue
@@ -475,7 +480,7 @@ def _wait_for_signup_email_input(
             failure_count = 0
             _sleep_with_heartbeat(
                 driver,
-                random.randint(5, 8),
+                random.randint(3, 5),
                 monitor_callback=monitor_callback,
                 step_name="signup_email_input_refresh_wait",
             )
@@ -483,7 +488,7 @@ def _wait_for_signup_email_input(
         else:
             _sleep_with_heartbeat(
                 driver,
-                1,
+                max(BROWSER_ACTION_WAIT, BROWSER_POLL_INTERVAL),
                 monitor_callback=monitor_callback,
                 step_name="signup_email_input_wait",
             )
@@ -511,7 +516,7 @@ def _wait_for_login_email_input(
             failure_count = 0
             _sleep_with_heartbeat(
                 driver,
-                random.randint(5, 8),
+                random.randint(3, 5),
                 monitor_callback=monitor_callback,
                 step_name="login_email_input_refresh_wait",
             )
@@ -519,7 +524,7 @@ def _wait_for_login_email_input(
         else:
             _sleep_with_heartbeat(
                 driver,
-                1,
+                max(BROWSER_ACTION_WAIT, BROWSER_POLL_INTERVAL),
                 monitor_callback=monitor_callback,
                 step_name="login_email_input_wait",
             )
@@ -682,7 +687,7 @@ def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
         try:
             print(f"🌐 浏览器访问地址: {url}")
             try:
-                driver.set_page_load_timeout(max(int(SHORT_WAIT_TIME), 30))
+                driver.set_page_load_timeout(SHORT_WAIT_TIME)
             except Exception:
                 pass
             driver.get(url)
@@ -1384,7 +1389,7 @@ def check_and_handle_error_status(driver, max_retries=None, monitor_callback=Non
                         f"⚠️ 检测到错误页面，正在重试（第 {attempt + 1}/{max_retries} 次）..."
                     )
                     driver.execute_script("arguments[0].click();", retry_btn)
-                    wait_time = 5 + (attempt * 2)
+                    wait_time = 3 + attempt
                     print(f"  等待 {wait_time} 秒后继续...")
                     _sleep_with_heartbeat(
                         driver,
@@ -1397,7 +1402,7 @@ def check_and_handle_error_status(driver, max_retries=None, monitor_callback=Non
                 except Exception:
                     _sleep_with_heartbeat(
                         driver,
-                        2,
+                        1.5,
                         monitor_callback=monitor_callback,
                         step_name="error_retry_backoff",
                     )
@@ -1451,7 +1456,7 @@ def click_button_with_retry(driver, selector, max_retries=None, monitor_callback
             print(f"  第 {attempt + 1} 次点击失败，正在重试...")
             _sleep_with_heartbeat(
                 driver,
-                2,
+                1.2,
                 monitor_callback=monitor_callback,
                 step_name="button_retry_backoff",
             )
@@ -1488,9 +1493,9 @@ def _fill_input_with_verification(
         except Exception:
             pass
 
-        time.sleep(0.3)
+        time.sleep(0.2)
         type_slowly(element, expected)
-        time.sleep(0.3)
+        time.sleep(0.2)
 
         actual_value = str(element.get_attribute("value") or "")
         if actual_value == expected:
@@ -1541,7 +1546,7 @@ def _submit_email_until_next_step(
 
         _sleep_with_heartbeat(
             driver,
-            1,
+            BROWSER_ACTION_WAIT,
             monitor_callback=monitor_callback,
             step_name=f"{submit_wait_step_name}_before_click",
         )
@@ -1557,7 +1562,7 @@ def _submit_email_until_next_step(
         print("✅ 已点击继续")
         _sleep_with_heartbeat(
             driver,
-            1.5,
+            BROWSER_POST_SUBMIT_WAIT,
             monitor_callback=monitor_callback,
             step_name=submit_wait_step_name,
         )
@@ -1587,7 +1592,7 @@ def _wait_for_email_verification_page(driver, timeout: int = 30, monitor_callbac
         while check_and_handle_error(driver, monitor_callback=monitor_callback):
             _sleep_with_heartbeat(
                 driver,
-                2,
+                1.2,
                 monitor_callback=monitor_callback,
                 step_name="verification_page_error_recheck_wait",
             )
@@ -1602,10 +1607,10 @@ def _wait_for_email_verification_page(driver, timeout: int = 30, monitor_callbac
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="verification_page_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     print("❌ 密码提交后未进入邮箱验证码页")
@@ -1739,7 +1744,7 @@ def _wait_for_profile_form_fields(driver, timeout=30):
         fields = _detect_profile_form_fields_once(driver)
         if fields:
             return fields
-        time.sleep(0.5)
+        time.sleep(BROWSER_POLL_INTERVAL)
 
     raise RuntimeError("未找到姓名和年龄/生日输入框")
 
@@ -1751,7 +1756,7 @@ def _wait_for_profile_birth_fields(driver, timeout=30):
         fields = _detect_profile_birth_fields_once(driver)
         if fields:
             return fields
-        time.sleep(0.5)
+        time.sleep(BROWSER_POLL_INTERVAL)
 
     raise RuntimeError("未找到年龄输入框或生日输入框")
 
@@ -1779,7 +1784,7 @@ def _fill_profile_form_fields(driver, form_fields=None):
     print("👤 正在填写姓名/用户名...")
     _fill_input_value(driver, form_fields["name_input"], user_name)
     print(f"✅ 已输入姓名: {user_name}")
-    time.sleep(1)
+    time.sleep(BROWSER_ACTION_WAIT)
 
     print("🎂 正在识别年龄/生日输入方式...")
     profile_fields = form_fields["birth_fields"]
@@ -1793,17 +1798,17 @@ def _fill_profile_form_fields(driver, form_fields=None):
         _fill_input_value(
             driver, profile_fields["year_input"], birthday_year, delay=0.1
         )
-        time.sleep(0.3)
+        time.sleep(0.2)
         _fill_input_value(
             driver, profile_fields["month_input"], birthday_month, delay=0.1
         )
-        time.sleep(0.3)
+        time.sleep(0.2)
         _fill_input_value(
             driver, profile_fields["day_input"], birthday_day, delay=0.1
         )
         print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
 
-    time.sleep(1)
+    time.sleep(BROWSER_ACTION_WAIT)
 
 
 def _fill_merged_profile_form_if_present(driver, timeout=3) -> bool:
@@ -1815,7 +1820,7 @@ def _fill_merged_profile_form_if_present(driver, timeout=3) -> bool:
             print("🧩 验证码页同时检测到资料输入框，直接合并填写")
             _fill_profile_form_fields(driver, form_fields=form_fields)
             return True
-        time.sleep(0.3)
+        time.sleep(0.2)
 
     return False
 
@@ -1824,14 +1829,14 @@ def _fill_input_value(driver, element, value: str, delay=0.1):
     driver.execute_script(
         "arguments[0].scrollIntoView({block: 'center'});", element
     )
-    time.sleep(0.3)
+    time.sleep(0.2)
 
     try:
         ActionChains(driver).move_to_element(element).click().perform()
     except Exception:
         driver.execute_script("arguments[0].click();", element)
 
-    time.sleep(0.2)
+    time.sleep(0.1)
 
     try:
         element.clear()
@@ -1843,7 +1848,7 @@ def _fill_input_value(driver, element, value: str, delay=0.1):
             continue
         try:
             element.send_keys(Keys.chord(shortcut, "a"))
-            time.sleep(0.05)
+            time.sleep(0.03)
             element.send_keys(Keys.BACKSPACE)
         except Exception:
             continue
@@ -1892,11 +1897,11 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             or "请稍候" in driver.title
         ):
             print("⚠️ 检测到 Cloudflare 验证页面...")
-            time.sleep(10)
+            time.sleep(6)
             if "Just a moment" in driver.title or "请稍候" in driver.title:
                 print("  🔄 尝试刷新页面以突破验证...")
                 driver.refresh()
-                time.sleep(10)
+                time.sleep(6)
 
             try:
                 frames = driver.find_elements(By.TAG_NAME, "iframe")
@@ -1910,7 +1915,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
                         if checkbox:
                             print("  🖱️ 尝试点击验证框...")
                             driver.execute_script("arguments[0].click();", checkbox[0])
-                            time.sleep(5)
+                            time.sleep(3)
                         driver.switch_to.default_content()
                     except Exception:
                         driver.switch_to.default_content()
@@ -1971,7 +1976,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             password_entered = True
             _sleep_with_heartbeat(
                 driver,
-                1.5,
+                BROWSER_POST_SUBMIT_WAIT,
                 monitor_callback=monitor_callback,
                 step_name="signup_password_filled_wait",
             )
@@ -1986,7 +1991,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
 
             _sleep_with_heartbeat(
                 driver,
-                3,
+                BROWSER_POST_SUBMIT_WAIT,
                 monitor_callback=monitor_callback,
                 step_name="signup_password_submit_wait",
             )
@@ -2053,10 +2058,10 @@ def fill_login_form(
             or "请稍候" in driver.title
         ):
             print("⚠️ 检测到 Cloudflare 验证页面，等待后继续...")
-            time.sleep(10)
+            time.sleep(6)
             if "Just a moment" in driver.title or "请稍候" in driver.title:
                 driver.refresh()
-                time.sleep(10)
+                time.sleep(6)
 
         print("📧 等待登录邮箱输入框...")
         next_step = _submit_email_until_next_step(
@@ -2120,7 +2125,7 @@ def fill_login_form(
 
             _sleep_with_heartbeat(
                 driver,
-                3,
+                BROWSER_POST_SUBMIT_WAIT,
                 monitor_callback=monitor_callback,
                 step_name="login_password_submit_wait",
             )
@@ -2183,7 +2188,7 @@ def click_getting_started_button(driver, timeout: int = 30, monitor_callback=Non
                     if button.is_displayed() and button.is_enabled():
                         driver.execute_script("arguments[0].click();", button)
                         print("✅ 已点击“好的，开始吧”按钮")
-                        time.sleep(2)
+                        time.sleep(BROWSER_ACTION_WAIT)
                         return True
                 except Exception:
                     continue
@@ -2192,10 +2197,10 @@ def click_getting_started_button(driver, timeout: int = 30, monitor_callback=Non
 
         _sleep_with_heartbeat(
             driver,
-            0.5,
+            BROWSER_POLL_INTERVAL,
             monitor_callback=monitor_callback,
             step_name="getting_started_button_wait",
-            interval=0.5,
+            interval=BROWSER_POLL_INTERVAL,
         )
 
     if verify_logged_in(driver, timeout=10):
@@ -2308,7 +2313,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                     break
                 _sleep_with_heartbeat(
                     driver,
-                    2,
+                    1.2,
                     monitor_callback=monitor_callback,
                     step_name="code_error_recheck_wait",
                 )
@@ -2332,7 +2337,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                 input_mode, input_elements = _find_verification_inputs(driver, code)
                 if input_elements:
                     break
-                time.sleep(0.5)
+                time.sleep(BROWSER_POLL_INTERVAL)
 
             if not input_elements:
                 continue
@@ -2340,7 +2345,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
             if input_mode == "single":
                 code_input = input_elements[0]
                 code_input.clear()
-                time.sleep(0.5)
+                time.sleep(0.2)
                 type_slowly(code_input, code, delay=0.1)
             else:
                 for idx, digit in enumerate(code):
@@ -2352,11 +2357,11 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                     except Exception:
                         pass
                     box.click()
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     box.send_keys(digit)
 
             print(f"✅ 已输入验证码: {code}")
-            time.sleep(2)
+            time.sleep(BROWSER_ACTION_WAIT)
 
             merged_profile_filled = _fill_merged_profile_form_if_present(driver)
 
@@ -2368,7 +2373,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                 return False
             print("✅ 已点击继续")
 
-            time.sleep(3)
+            time.sleep(BROWSER_POST_SUBMIT_WAIT)
             retry_verification = False
             while check_and_handle_error(driver, monitor_callback=monitor_callback):
                 retry_result = _handle_verification_retry_transition(
@@ -2382,7 +2387,7 @@ def enter_verification_code(driver, code: str, monitor_callback=None):
                     break
                 _sleep_with_heartbeat(
                     driver,
-                    2,
+                    1.2,
                     monitor_callback=monitor_callback,
                     step_name="code_submit_error_recheck_wait",
                 )
@@ -2447,7 +2452,7 @@ def _dismiss_onboarding(driver):
                     if btn.is_displayed():
                         driver.execute_script("arguments[0].click();", btn)
                         print("  📌 点击了 onboarding 按钮")
-                        time.sleep(2)
+                        time.sleep(BROWSER_ACTION_WAIT)
                         return True
             except Exception:
                 continue
@@ -2469,7 +2474,7 @@ def _dismiss_onboarding(driver):
                 if btn.is_displayed():
                     driver.execute_script("arguments[0].click();", btn)
                     print("  📌 点击了 onboarding/引导按钮")
-                    time.sleep(2)
+                    time.sleep(BROWSER_ACTION_WAIT)
                     return True
         except Exception:
             pass
@@ -2507,7 +2512,7 @@ def verify_logged_in(driver, timeout=90):
 
             # 若仍处于认证路径，继续等待跳转
             if any(key in current_url for key in ["/auth", "login", "signup"]):
-                time.sleep(2)
+                time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
                 continue
 
             # 出现核心已登录元素即可判定成功
@@ -2526,7 +2531,7 @@ def verify_logged_in(driver, timeout=90):
             ]
 
             if any(marker in page_source for marker in blocked_markers):
-                time.sleep(2)
+                time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
                 continue
 
             # 尝试关闭 onboarding 弹窗
@@ -2540,7 +2545,7 @@ def verify_logged_in(driver, timeout=90):
         except Exception as e:
             print(f"  登录状态检查中断: {e}")
 
-        time.sleep(2)
+        time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
 
     print("❌ 登录状态验证失败：超时仍未确认登录")
     return False
@@ -2561,7 +2566,7 @@ def fetch_current_access_token(driver, timeout=30):
 
     if "chatgpt.com" not in current_url.lower():
         open_chatgpt_url(driver, CHATGPT_HOME_URL)
-        time.sleep(2)
+        time.sleep(BROWSER_ACTION_WAIT)
 
     try:
         driver.set_script_timeout(timeout)

@@ -26,6 +26,7 @@ PAYMENT_SUCCESS_STATUS = "已注册/支付成功"
 PAYMENT_FAILED_STATUS = "支付失败"
 
 _card_usage_lock = threading.Lock()
+_phone_usage_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -39,12 +40,20 @@ class PaymentCard:
     name: str
     address: str
     city: str
+    state: str
     postcode: str
     country: str
 
     @property
     def expiry_input(self) -> str:
         return f"{self.month.zfill(2)}{self.year[-2:]}"
+
+
+@dataclass(frozen=True)
+class PayPalPhoneKey:
+    phone: str
+    sms_url: str
+    raw: str
 
 
 def _resolve_project_path(path_value: str | os.PathLike) -> Path:
@@ -61,7 +70,9 @@ def _utc_now_iso() -> str:
 def _auth_headers(api_key: str) -> dict[str, str]:
     key = str(api_key or "").strip()
     if not key:
-        raise RuntimeError("缺少 Webshare API Key，请配置 payment.webshare_api_key 或 WEBSHARE_API_KEY")
+        raise RuntimeError(
+            "缺少 Webshare API Key，请配置 payment.webshare_api_key 或 WEBSHARE_API_KEY"
+        )
     return {
         "Authorization": f"Token {key}",
         "Content-Type": "application/json",
@@ -72,7 +83,9 @@ def _request_json(resp) -> dict[str, Any]:
     try:
         data = resp.json()
     except Exception as exc:
-        raise RuntimeError(f"接口返回不是 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
+        raise RuntimeError(
+            f"接口返回不是 JSON: HTTP {resp.status_code} {resp.text[:300]}"
+        ) from exc
     if not isinstance(data, dict):
         raise RuntimeError("接口 JSON 顶层格式异常")
     return data
@@ -146,7 +159,9 @@ def _debug_proxy_to_runtime_proxy(payment_cfg) -> dict[str, Any]:
     if port <= 0:
         raise RuntimeError("代理调试模式 debug_proxy_port 必须大于 0")
 
-    proxy_type = str(getattr(payment_cfg, "debug_proxy_type", "http") or "http").strip().lower()
+    proxy_type = (
+        str(getattr(payment_cfg, "debug_proxy_type", "http") or "http").strip().lower()
+    )
     if proxy_type not in {"http", "socks5"}:
         proxy_type = "http"
 
@@ -221,7 +236,9 @@ def replace_webshare_static_proxy(session=None, payment_cfg=None) -> dict[str, A
     payment_cfg = payment_cfg or cfg.payment
     if getattr(payment_cfg, "proxy_debug_mode", False):
         proxy = _debug_proxy_to_runtime_proxy(payment_cfg)
-        print(f"🧪 Webshare 代理调试模式已启用，跳过接口调用，使用固定代理: {describe_proxy(proxy)}")
+        print(
+            f"🧪 Webshare 代理调试模式已启用，跳过接口调用，使用固定代理: {describe_proxy(proxy)}"
+        )
         return proxy
 
     client = session or requests
@@ -274,7 +291,9 @@ def replace_webshare_static_proxy(session=None, payment_cfg=None) -> dict[str, A
         last_status = _replacement_status(detail_payload)
         print(f"🧭 Webshare: 替换任务 {replacement_id} 状态 {last_status or 'unknown'}")
     else:
-        raise RuntimeError(f"Webshare 代理替换超时: last_status={last_status or 'unknown'}")
+        raise RuntimeError(
+            f"Webshare 代理替换超时: last_status={last_status or 'unknown'}"
+        )
 
     print("🧭 Webshare: 替换完成，重新获取代理列表")
     refreshed_items = fetch_webshare_proxy_list(session=client, payment_cfg=payment_cfg)
@@ -312,7 +331,9 @@ def request_stripe_payurl(access_token: str, session=None, payment_cfg=None) -> 
         print(f"⚠️ 获取 Stripe 支付链接失败，第 {attempt} 次: {last_error}")
         if attempt < int(payment_cfg.payurl_max_retries):
             time.sleep(2)
-    raise RuntimeError(f"获取 Stripe 支付链接失败，已重试 {payment_cfg.payurl_max_retries} 次: {last_error}")
+    raise RuntimeError(
+        f"获取 Stripe 支付链接失败，已重试 {payment_cfg.payurl_max_retries} 次: {last_error}"
+    )
 
 
 def _load_card_usage(path: Path) -> dict[str, Any]:
@@ -331,7 +352,104 @@ def _load_card_usage(path: Path) -> dict[str, Any]:
 
 def _write_card_usage(path: Path, usage: dict[str, Any]) -> None:
     os.makedirs(path.parent, exist_ok=True)
-    path.write_text(json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _load_phone_usage(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"phones": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"phones": {}}
+    if not isinstance(data, dict):
+        return {"phones": {}}
+    if not isinstance(data.get("phones"), dict):
+        data["phones"] = {}
+    return data
+
+
+def _write_phone_usage(path: Path, usage: dict[str, Any]) -> None:
+    os.makedirs(path.parent, exist_ok=True)
+    path.write_text(
+        json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _phone_usage_path(payment_cfg) -> Path:
+    usage_path = _resolve_project_path(payment_cfg.card_usage_file)
+    return usage_path.with_name("paypal_phone_keys_usage.json")
+
+
+def _looks_like_delivery_content(value: str) -> bool:
+    parts = [part.strip() for part in str(value or "").strip().split("----")]
+    return len(parts) == 7
+
+
+def is_payment_simulation_enabled(payment_cfg=None) -> bool:
+    payment_cfg = payment_cfg or cfg.payment
+    return bool(getattr(payment_cfg, "card_debug_mode", False)) and _looks_like_delivery_content(
+        str(getattr(payment_cfg, "debug_card_key", "") or "")
+    )
+
+
+def parse_paypal_phone_key(line: str) -> PayPalPhoneKey:
+    raw = str(line or "").strip()
+    parts = [part.strip() for part in raw.split("|", 1)]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("phone-keys.txt 格式错误，必须是 +1手机号|收码地址")
+    return PayPalPhoneKey(phone=parts[0], sms_url=parts[1], raw=raw)
+
+
+def reserve_next_paypal_phone(email: str = "", payment_cfg=None) -> PayPalPhoneKey:
+    payment_cfg = payment_cfg or cfg.payment
+    keys_path = _resolve_project_path(
+        getattr(payment_cfg, "phone_keys_file", "phone-keys.txt")
+    )
+    usage_path = _phone_usage_path(payment_cfg)
+    print(f"☎️ PayPal 手机号: 正在读取 {keys_path}")
+    if not keys_path.exists():
+        raise FileNotFoundError(f"手机号文件不存在: {keys_path}")
+
+    with _phone_usage_lock:
+        usage = _load_phone_usage(usage_path)
+        used = usage["phones"]
+        for line in keys_path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            phone_key = parse_paypal_phone_key(raw)
+            entry = used.get(phone_key.raw) or {}
+            if entry.get("status") == "ok":
+                continue
+            print(f"☎️ PayPal 手机号: 已选择 {phone_key.phone}")
+            return phone_key
+
+    raise RuntimeError("没有可用的 PayPal 手机号")
+
+
+def mark_paypal_phone_used(
+    phone_key: PayPalPhoneKey,
+    *,
+    email: str = "",
+    detail: str = "",
+    payment_cfg=None,
+) -> None:
+    payment_cfg = payment_cfg or cfg.payment
+    usage_path = _phone_usage_path(payment_cfg)
+    with _phone_usage_lock:
+        usage = _load_phone_usage(usage_path)
+        usage["phones"][phone_key.raw] = {
+            "status": "ok",
+            "updated_at": _utc_now_iso(),
+            "email": email,
+            "phone": phone_key.phone,
+            "detail": str(detail or "")[:1000],
+        }
+        _write_phone_usage(usage_path, usage)
+    print("☎️ PayPal 手机号: 已标记成功使用")
 
 
 def reserve_next_card_key(email: str = "", payment_cfg=None) -> str:
@@ -381,7 +499,14 @@ def reserve_next_card_key(email: str = "", payment_cfg=None) -> str:
     raise RuntimeError("没有可用的未调用卡密")
 
 
-def update_card_usage(redeem_code: str, *, status: str, email: str = "", detail: str = "", payment_cfg=None) -> None:
+def update_card_usage(
+    redeem_code: str,
+    *,
+    status: str,
+    email: str = "",
+    detail: str = "",
+    payment_cfg=None,
+) -> None:
     payment_cfg = payment_cfg or cfg.payment
     usage_path = _resolve_project_path(payment_cfg.card_usage_file)
     usage_key = (
@@ -412,7 +537,9 @@ def parse_delivery_content(content: str) -> PaymentCard:
     text = str(content or "").strip()
     parts = [part.strip() for part in text.split("----")]
     if len(parts) != 7:
-        raise ValueError("deliveryContent 格式错误，必须是 card----年/月----cvv----phone----url----name----address,city postcode,US")
+        raise ValueError(
+            "deliveryContent 格式错误，必须是 card----年/月----cvv----phone----url----name----address,city state postcode,US"
+        )
 
     card_number, expiry, cvv, phone, url, name, address_blob = parts
     expiry_parts = [part.strip() for part in expiry.split("/", 1)]
@@ -423,13 +550,28 @@ def parse_delivery_content(content: str) -> PaymentCard:
     address_fields = [part.strip() for part in address_blob.rsplit(",", 2)]
     if len(address_fields) != 3:
         raise ValueError("deliveryContent 地址格式错误")
-    street, city_postcode, country = address_fields
+    street, city_state_postcode, country = address_fields
 
-    match = re.match(r"^(?P<city>.+)\s+(?P<postcode>[A-Za-z0-9][A-Za-z0-9-]*)$", city_postcode)
-    if not match:
-        raise ValueError("deliveryContent city postcode 格式错误")
+    city_state_postcode_parts = city_state_postcode.rsplit(None, 2)
+    if len(city_state_postcode_parts) != 3:
+        raise ValueError("deliveryContent city state postcode 格式错误")
+    city, state, postcode = [part.strip() for part in city_state_postcode_parts]
+    if len(state) != 2 or not state.isalpha():
+        raise ValueError("deliveryContent city state postcode 格式错误")
 
-    if not all([card_number, year, month, cvv, name, street, match.group("city"), match.group("postcode")]):
+    if not all(
+        [
+            card_number,
+            year,
+            month,
+            cvv,
+            name,
+            street,
+            city,
+            state,
+            postcode,
+        ]
+    ):
         raise ValueError("deliveryContent 存在空字段")
 
     card = PaymentCard(
@@ -441,8 +583,9 @@ def parse_delivery_content(content: str) -> PaymentCard:
         url=url,
         name=name,
         address=street,
-        city=match.group("city").strip(),
-        postcode=match.group("postcode").strip(),
+        city=city,
+        state=state,
+        postcode=postcode,
         country=country,
     )
     print(
@@ -456,6 +599,32 @@ def redeem_next_card(email: str = "", session=None, payment_cfg=None) -> Payment
     payment_cfg = payment_cfg or cfg.payment
     client = session or requests
     redeem_code = reserve_next_card_key(email=email, payment_cfg=payment_cfg)
+    if getattr(payment_cfg, "card_debug_mode", False) and _looks_like_delivery_content(
+        redeem_code
+    ):
+        try:
+            print("🧪 卡密调试模式已启用，使用本地 deliveryContent，跳过兑换接口")
+            card = parse_delivery_content(redeem_code)
+            update_card_usage(
+                redeem_code,
+                status="ok",
+                email=email,
+                detail="debug_delivery_content",
+                payment_cfg=payment_cfg,
+            )
+            print("✅ 卡密: 已从调试卡密内容获取支付卡信息")
+            return card
+        except Exception as exc:
+            update_card_usage(
+                redeem_code,
+                status="failed",
+                email=email,
+                detail=str(exc),
+                payment_cfg=payment_cfg,
+            )
+            print(f"❌ 卡密: 调试卡密内容解析失败: {exc}")
+            raise
+
     try:
         print("🎟️ 卡密: 正在调用兑换接口")
         resp = client.post(
@@ -468,7 +637,9 @@ def redeem_next_card(email: str = "", session=None, payment_cfg=None) -> Payment
         )
         data = _request_json(resp)
         if resp.status_code >= 400 or data.get("message") != "ok":
-            raise RuntimeError(f"卡密兑换失败: HTTP {resp.status_code}: {str(data)[:500]}")
+            raise RuntimeError(
+                f"卡密兑换失败: HTTP {resp.status_code}: {str(data)[:500]}"
+            )
         print("🎟️ 卡密: 兑换接口返回 ok")
         payload = data.get("data") or {}
         if not isinstance(payload, dict):
@@ -500,14 +671,18 @@ def _wait_visible(driver, by, selector: str, timeout: int = 30):
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.ui import WebDriverWait
 
-    return WebDriverWait(driver, timeout).until(EC.visibility_of_element_located((by, selector)))
+    return WebDriverWait(driver, timeout).until(
+        EC.visibility_of_element_located((by, selector))
+    )
 
 
 def _click_when_clickable(driver, by, selector: str, timeout: int = 30):
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.ui import WebDriverWait
 
-    element = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, selector)))
+    element = WebDriverWait(driver, timeout).until(
+        EC.element_to_be_clickable((by, selector))
+    )
     try:
         element.click()
     except Exception:
@@ -515,7 +690,74 @@ def _click_when_clickable(driver, by, selector: str, timeout: int = 30):
     return element
 
 
+def _wait_present(driver, by, selector: str, timeout: int = 30):
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    return WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((by, selector))
+    )
+
+
+def _wait_url_startswith(driver, prefix: str, timeout: int = 60) -> str:
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    normalized_prefix = str(prefix or "")
+
+    def _matches(current_driver):
+        current_url = str(getattr(current_driver, "current_url", "") or "")
+        return current_url if current_url.startswith(normalized_prefix) else False
+
+    current_url = WebDriverWait(driver, timeout).until(_matches)
+    print(f"🌐 PayPal: 已进入 {current_url}")
+    return current_url
+
+
+def _handle_stripe_react_aria_top_layer(driver) -> bool:
+    from selenium.common.exceptions import TimeoutException
+    from selenium.webdriver.common.by import By
+
+    print("💳 Stripe: 等待 React Aria 顶层弹层最多 30 秒")
+    try:
+        _wait_present(
+            driver,
+            By.CSS_SELECTOR,
+            "div[data-react-aria-top-layer], .div[data-react-aria-top-layer]",
+            timeout=30,
+        )
+    except TimeoutException:
+        print("💳 Stripe: 未检测到 React Aria 顶层弹层，继续后续流程")
+        return False
+
+    print("💳 Stripe: 检测到 React Aria 顶层弹层，等待 #anchor-td")
+    try:
+        _wait_present(driver, By.CSS_SELECTOR, "#anchor-td", timeout=30)
+    except TimeoutException:
+        print("💳 Stripe: 未等到 #anchor-td，继续后续流程")
+        return False
+
+    driver.execute_script("document.querySelector('#anchor-td').click()")
+    print("💳 Stripe: 已点击 #anchor-td")
+    return True
+
+
 def _clear_and_type(element, value: str) -> None:
+    if str(element.tag_name or "").lower() == "select":
+        from selenium.webdriver.support.ui import Select
+
+        select = Select(element)
+        text_value = str(value or "")
+        try:
+            select.select_by_value(text_value)
+            return
+        except Exception:
+            pass
+        try:
+            select.select_by_visible_text(text_value)
+            return
+        except Exception:
+            pass
+
     try:
         element.clear()
     except Exception:
@@ -523,22 +765,107 @@ def _clear_and_type(element, value: str) -> None:
     element.send_keys(str(value or ""))
 
 
-def complete_stripe_payment(driver, stripe_payurl: str, card: PaymentCard, monitor_callback=None) -> bool:
+def _split_cardholder_name(name: str) -> tuple[str, str]:
+    parts = [part for part in str(name or "").strip().split() if part]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    return parts[0], parts[-1]
+
+
+def extract_six_digit_code(text: str) -> str | None:
+    match = re.search(r"\b(\d{6})\b", str(text or ""))
+    return match.group(1) if match else None
+
+
+def wait_for_paypal_sms_code(
+    sms_url: str,
+    *,
+    session=None,
+    timeout: int = 180,
+    poll_interval: int = 5,
+    payment_cfg=None,
+) -> str:
+    payment_cfg = payment_cfg or cfg.payment
+    client = session or requests
+    deadline = time.time() + max(1, int(timeout))
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            resp = client.get(
+                sms_url,
+                timeout=getattr(payment_cfg, "http_timeout", 30),
+            )
+            text = str(getattr(resp, "text", "") or "")
+            code = extract_six_digit_code(text)
+            if code:
+                print("☎️ PayPal 短信: 已匹配 6 位验证码")
+                return code
+            last_error = "未匹配到 6 位验证码"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(max(1, int(poll_interval)))
+
+    raise RuntimeError(f"PayPal 短信验证码超时: {last_error or 'N/A'}")
+
+
+def _try_fill_paypal_sms_code(driver, code: str) -> bool:
     from selenium.webdriver.common.by import By
 
-    print(f"💳 打开 Stripe 支付页面: {stripe_payurl}")
-    driver.get(stripe_payurl)
-    if monitor_callback:
-        monitor_callback(driver, "stripe_open")
+    selectors = [
+        "#otpCode",
+        "#verificationCode",
+        "#securityCode",
+        'input[name="otpCode"]',
+        'input[name="verificationCode"]',
+        'input[autocomplete="one-time-code"]',
+    ]
+    for selector in selectors:
+        try:
+            element = driver.find_element(By.CSS_SELECTOR, selector)
+        except Exception:
+            continue
+        _clear_and_type(element, code)
+        print(f"☎️ PayPal 短信: 已填写验证码 {selector}")
+        return True
+    print("☎️ PayPal 短信: 未找到验证码输入框，继续提交")
+    return False
+
+
+def verify_stripe_zero_amount(driver) -> str:
+    from selenium.webdriver.common.by import By
 
     amount = _wait_visible(driver, By.CSS_SELECTOR, ".CurrencyAmount", timeout=45)
     amount_text = " ".join((amount.text or "").split())
     print(f"💳 Stripe: 页面金额 {amount_text or 'N/A'}")
     if amount_text != "€0.00":
         raise RuntimeError(f"Stripe 金额不是 €0.00: {amount_text or 'N/A'}")
+    return amount_text
+
+
+def open_stripe_payment_page(driver, stripe_payurl: str, monitor_callback=None) -> str:
+    print(f"💳 打开 Stripe 支付页面: {stripe_payurl}")
+    driver.get(stripe_payurl)
+    if monitor_callback:
+        monitor_callback(driver, "stripe_open")
+
+    return verify_stripe_zero_amount(driver)
+
+
+def fill_and_submit_stripe_payment(
+    driver, card: PaymentCard, monitor_callback=None
+) -> bool:
+    from selenium.webdriver.common.by import By
 
     print("💳 Stripe: 点击 Pay with card")
-    _click_when_clickable(driver, By.CSS_SELECTOR, '[aria-label="Pay with card"]', timeout=30)
+    driver.execute_script(
+        "document.querySelector('[aria-label=\"Pay with card\"]').click()"
+    )
+    print("💳 Stripe: 点击 Checkout Secondary 按钮")
+    driver.execute_script(
+        "document.querySelector('.Button-textCheckoutSecondary').click()"
+    )
     if monitor_callback:
         monitor_callback(driver, "stripe_pay_with_card")
 
@@ -560,13 +887,16 @@ def complete_stripe_payment(driver, stripe_payurl: str, card: PaymentCard, monit
         "#billingName": card.name,
         "#billingAddressLine1": card.address,
         "#billingLocality": card.city,
+        "#billingAdministrativeArea": card.state,
         "#billingPostalCode": card.postcode,
     }
     for selector, value in fields.items():
         print(f"💳 Stripe: 填写 {selector}")
-        _clear_and_type(_wait_visible(driver, By.CSS_SELECTOR, selector, timeout=30), value)
+        _clear_and_type(
+            _wait_visible(driver, By.CSS_SELECTOR, selector, timeout=30), value
+        )
 
-    terms = _wait_visible(driver, By.CSS_SELECTOR, "#termsOfServiceConsentCheckbox", timeout=30)
+    terms = driver.find_element(By.CSS_SELECTOR, "#termsOfServiceConsentCheckbox")
     if not terms.is_selected():
         driver.execute_script("arguments[0].click();", terms)
         print("💳 Stripe: 已勾选服务条款")
@@ -578,19 +908,126 @@ def complete_stripe_payment(driver, stripe_payurl: str, card: PaymentCard, monit
 
     time.sleep(2)
     print("💳 Stripe: 点击提交按钮")
-    _click_when_clickable(driver, By.CSS_SELECTOR, "button.SubmitButton.SubmitButton--incomplete", timeout=30)
+    _click_when_clickable(
+        driver,
+        By.CSS_SELECTOR,
+        "button.SubmitButton.SubmitButton--incomplete",
+        timeout=30,
+    )
+    _handle_stripe_react_aria_top_layer(driver)
     time.sleep(3)
 
     card_number = driver.find_element(By.CSS_SELECTOR, "#cardNumber")
     class_name = str(card_number.get_attribute("class") or "").strip()
     print(f"💳 Stripe: 提交后卡号输入框 class={class_name or 'N/A'}")
-    if class_name == "CheckoutInput CheckoutInput--invalid CheckoutInput--tabularnums Input":
+    if (
+        class_name
+        == "CheckoutInput CheckoutInput--invalid CheckoutInput--tabularnums Input"
+    ):
         raise RuntimeError("Stripe 卡号输入框标记为 invalid")
 
     if monitor_callback:
         monitor_callback(driver, "stripe_payment_submitted")
     print("✅ Stripe 支付流程已提交")
     return True
+
+
+def fill_and_submit_paypal_payment(
+    driver,
+    card: PaymentCard,
+    *,
+    email: str,
+    monitor_callback=None,
+    payment_cfg=None,
+) -> bool:
+    from selenium.webdriver.common.by import By
+
+    payment_cfg = payment_cfg or cfg.payment
+    phone_key = reserve_next_paypal_phone(email=email, payment_cfg=payment_cfg)
+
+    print("💳 Stripe: 点击 Pay with PayPal")
+    driver.execute_script(
+        "document.querySelector('[aria-label=\"Pay with PayPal\"]').click()"
+    )
+    if monitor_callback:
+        monitor_callback(driver, "stripe_pay_with_paypal")
+
+    print("💳 Stripe: 点击 PayPal 提交按钮")
+    _click_when_clickable(driver, By.CSS_SELECTOR, 'button[type="submit"]', timeout=30)
+    _wait_url_startswith(
+        driver,
+        "https://www.paypal.com/agreements/approve",
+        timeout=90,
+    )
+    if monitor_callback:
+        monitor_callback(driver, "paypal_approve")
+
+    print("🌐 PayPal: 输入注册邮箱并创建账号")
+    _clear_and_type(_wait_visible(driver, By.CSS_SELECTOR, "#email", timeout=45), email)
+    _click_when_clickable(driver, By.CSS_SELECTOR, "#createAccount", timeout=30)
+    _wait_url_startswith(
+        driver,
+        "https://www.paypal.com/checkoutweb/signup",
+        timeout=90,
+    )
+    if monitor_callback:
+        monitor_callback(driver, "paypal_signup")
+
+    fields = {
+        "#phone": phone_key.phone,
+        "#cardNumber": card.card,
+        "#cardExpiry": card.expiry_input,
+        "#cardCvv": card.cvv,
+        "#password": "Bb9388271",
+        "#billingCity": card.city,
+        "#billingPostalCode": card.postcode,
+        "#billingLine1": card.address,
+    }
+    first_name, last_name = _split_cardholder_name(card.name)
+    fields["#firstName"] = first_name
+    fields["#lastName"] = last_name
+
+    for selector, value in fields.items():
+        print(f"🌐 PayPal: 填写 {selector}")
+        _clear_and_type(
+            _wait_visible(driver, By.CSS_SELECTOR, selector, timeout=45),
+            value,
+        )
+
+    print("🌐 PayPal: 设置账单州")
+    _clear_and_type(
+        _wait_visible(driver, By.CSS_SELECTOR, "#billingState", timeout=45),
+        card.state,
+    )
+
+    print("☎️ PayPal: 等待短信验证码")
+    sms_code = wait_for_paypal_sms_code(phone_key.sms_url, payment_cfg=payment_cfg)
+    _try_fill_paypal_sms_code(driver, sms_code)
+
+    if monitor_callback:
+        monitor_callback(driver, "paypal_form_filled")
+
+    print("🌐 PayPal: 点击最终提交按钮")
+    _click_when_clickable(driver, By.CSS_SELECTOR, 'button[type="submit"]', timeout=45)
+    mark_paypal_phone_used(
+        phone_key,
+        email=email,
+        detail="paypal_signup_submitted",
+        payment_cfg=payment_cfg,
+    )
+    if monitor_callback:
+        monitor_callback(driver, "paypal_payment_submitted")
+    print("✅ PayPal 支付流程已提交")
+    return True
+
+
+def complete_stripe_payment(
+    driver, stripe_payurl: str, card: PaymentCard, monitor_callback=None
+) -> bool:
+    open_stripe_payment_page(driver, stripe_payurl, monitor_callback=monitor_callback)
+    return fill_and_submit_stripe_payment(
+        driver, card, monitor_callback=monitor_callback
+    )
 
 
 def fetch_and_save_browser_json_for_registered_account(

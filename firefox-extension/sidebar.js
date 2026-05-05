@@ -376,7 +376,7 @@
     const text = String(rawInput || "").trim();
     const parts = text.split("----").map((part) => part.trim());
     if (parts.length !== 7) {
-      throw new Error("卡片格式错误，必须是 card----年/月----cvv----phone----url----name----address,city postcode,US");
+      throw new Error("卡片格式错误，必须是 card----年/月----cvv----phone----url----name----address,city state postcode,US");
     }
 
     const [card, expiry, cvv, phone, url, name, addressBlob] = parts;
@@ -388,12 +388,18 @@
     const addressParts = addressBlob.rsplit ? addressBlob.rsplit(",", 2) : rsplit(addressBlob, ",", 2);
     const normalizedAddressParts = addressParts.map((part) => part.trim());
     if (normalizedAddressParts.length !== 3) {
-      throw new Error("地址格式错误，必须是 address,city postcode,US");
+      throw new Error("地址格式错误，必须是 address,city state postcode,US");
     }
-    const [address, cityPostcode, country] = normalizedAddressParts;
-    const cityPostcodeMatch = cityPostcode.match(/^(.+)\s+([A-Za-z0-9][A-Za-z0-9-]*)$/);
-    if (!cityPostcodeMatch) {
-      throw new Error("city postcode 格式错误");
+    const [address, cityStatePostcode, country] = normalizedAddressParts;
+    const cityStatePostcodeParts = cityStatePostcode.split(/\s+/);
+    if (cityStatePostcodeParts.length < 3) {
+      throw new Error("city state postcode 格式错误");
+    }
+    const postcode = cityStatePostcodeParts.pop().trim();
+    const state = cityStatePostcodeParts.pop().trim();
+    const city = cityStatePostcodeParts.join(" ").trim();
+    if (!/^[A-Za-z]{2}$/.test(state)) {
+      throw new Error("city state postcode 格式错误");
     }
 
     const parsed = {
@@ -405,13 +411,14 @@
       url,
       name,
       address,
-      city: cityPostcodeMatch[1].trim(),
-      postcode: cityPostcodeMatch[2].trim(),
+      city,
+      state,
+      postcode,
       country,
       expiryInput: `${String(month).padStart(2, "0")}${String(year).slice(-2)}`
     };
 
-    const required = ["card", "year", "month", "cvv", "name", "address", "city", "postcode"];
+    const required = ["card", "year", "month", "cvv", "name", "address", "city", "state", "postcode"];
     const missing = required.filter((key) => !String(parsed[key] || "").trim());
     if (missing.length) {
       throw new Error(`卡片字段为空：${missing.join(", ")}`);
@@ -449,7 +456,7 @@
       ["有效期", parsed.expiryInput],
       ["CVV", parsed.cvv],
       ["姓名", parsed.name],
-      ["地址", `${parsed.address}, ${parsed.city} ${parsed.postcode}, ${parsed.country}`]
+      ["地址", `${parsed.address}, ${parsed.city} ${parsed.state} ${parsed.postcode}, ${parsed.country}`]
     ].forEach(([label, value]) => {
       const row = document.createElement("div");
       row.className = "preview-row";
