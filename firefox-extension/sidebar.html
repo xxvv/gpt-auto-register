@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT Helper</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <h1>GPT Helper</h1>
+        <p id="currentTabText">等待页面状态</p>
+      </div>
+      <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+    </header>
+
+    <section class="tool-section" aria-labelledby="emailTitle">
+      <div class="section-header">
+        <h2 id="emailTitle">邮箱</h2>
+        <button id="generateEmailsButton" class="primary-button" type="button">生成</button>
+      </div>
+      <div id="emailList" class="email-list" role="list"></div>
+      <div class="section-actions">
+        <button id="copyEmailButton" class="secondary-button" type="button">复制邮箱</button>
+        <button id="fetchCodeButton" class="secondary-button" type="button">获取验证码</button>
+      </div>
+      <output id="codeOutput" class="result-output" aria-live="polite"></output>
+    </section>
+
+    <section class="tool-section" aria-labelledby="payUrlTitle">
+      <div class="section-header">
+        <h2 id="payUrlTitle">PayURL</h2>
+        <button id="fetchPayUrlButton" class="primary-button" type="button">获取并打开</button>
+      </div>
+      <output id="payUrlOutput" class="result-output" aria-live="polite"></output>
+    </section>
+
+    <section class="tool-section" aria-labelledby="cardTitle">
+      <div class="section-header">
+        <h2 id="cardTitle">卡片</h2>
+        <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
+      </div>
+      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----年/月----cvv----phone----url----name----address,city postcode,US"></textarea>
+      <div id="cardPreview" class="card-preview" aria-live="polite"></div>
+      <output id="fillOutput" class="result-output" aria-live="polite"></output>
+    </section>
+  </main>
+
+  <script src="sidebar.js"></script>
+</body>
+</html>

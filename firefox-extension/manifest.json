@@ -1,0 +1,27 @@
+{
+  "manifest_version": 2,
+  "name": "GPT Auto Register Helper",
+  "version": "1.0.0",
+  "description": "Firefox sidebar helper for email codes, PayURL, and Stripe form filling.",
+  "sidebar_action": {
+    "default_title": "GPT Helper",
+    "default_panel": "sidebar.html"
+  },
+  "permissions": [
+    "activeTab",
+    "clipboardWrite",
+    "storage",
+    "tabs",
+    "https://chatgpt.com/*",
+    "https://getemail.nnai.website/*",
+    "https://payurl.779.chat/*",
+    "https://checkout.stripe.com/*",
+    "https://*.stripe.com/*"
+  ],
+  "applications": {
+    "gecko": {
+      "id": "gpt-auto-register-helper@example.local",
+      "strict_min_version": "109.0"
+    }
+  }
+}
