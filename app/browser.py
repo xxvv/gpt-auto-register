@@ -1564,7 +1564,7 @@ def _submit_email_until_next_step(
 
         next_step = _wait_for_post_email_step(
             driver,
-            timeout=max(20, min(SHORT_WAIT_TIME, 30)),
+            timeout=5,
             monitor_callback=monitor_callback,
         )
         if next_step in {"password", "verification"}:
