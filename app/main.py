@@ -31,12 +31,7 @@ from .browser import (
 )
 
 
-SUCCESS_WINDOW_HOLD_MIN_SECONDS = 10
-SUCCESS_WINDOW_HOLD_MAX_SECONDS = 10
-SUCCESS_WINDOW_HOLD_SECONDS = SUCCESS_WINDOW_HOLD_MIN_SECONDS
 LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = 5
-REGISTRATION_GROUP_REST_EVERY = 4
-REGISTRATION_GROUP_REST_SECONDS = 120
 AUTH_FLOW_RETRY_LIMIT = 3
 
 
@@ -99,10 +94,6 @@ def _run_post_registration_payment_flow(
     )
     print(f"✅ 支付流程全部完成，JSON 已保存: {token_path}")
     return str(token_path)
-
-
-def _registration_success_hold_seconds() -> int:
-    return random.randint(SUCCESS_WINDOW_HOLD_MIN_SECONDS, SUCCESS_WINDOW_HOLD_MAX_SECONDS)
 
 
 def _run_signup_until_code_submitted(
@@ -228,7 +219,7 @@ def register_one_account(
     :param monitor_callback: 回调函数 func(driver, step_name)，用于截图和中断检查
     :param email_provider: 临时邮箱提供商 ID（当前固定为 nnai）
     :param email_domain: NNAI 邮箱域名；为空时由服务配置随机选择
-    :param success_callback: 注册成功且 accessToken 已保存、保留窗口结束后调用，用于上层调度下个任务
+    :param success_callback: 注册成功且 accessToken 已保存后调用，用于上层调度下个任务
 
     返回:
         tuple: (邮箱, 密码, 是否成功)
@@ -428,9 +419,7 @@ def register_one_account(
         print("=" * 50)
 
         _report("registered")
-        hold_seconds = _registration_success_hold_seconds()
-        print(f"⏳ accessToken 已保存，保留浏览器窗口 {hold_seconds} 秒后继续下一个任务...")
-        time.sleep(hold_seconds)
+        print("⚡ accessToken 已保存，立即继续下一个任务")
         _notify_success_ready()
 
     except InterruptedError:
@@ -618,16 +607,7 @@ def run_batch(selected_providers=None):
             print(f"   ❌ 失败: {fail_count}")
             print("-" * 40)
 
-            if (
-                (i + 1) % REGISTRATION_GROUP_REST_EVERY == 0
-                and i < TOTAL_ACCOUNTS - 1
-            ):
-                print(
-                    f"\n⏸️ 已处理 {i + 1} 个账号，休息 "
-                    f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
-                )
-                time.sleep(REGISTRATION_GROUP_REST_SECONDS)
-            elif i < TOTAL_ACCOUNTS - 1:
+            if i < TOTAL_ACCOUNTS - 1:
                 wait_time = random.randint(BATCH_INTERVAL_MIN, BATCH_INTERVAL_MAX)
                 print(f"\n⏳ 等待 {wait_time} 秒后继续下一个注册...")
                 time.sleep(wait_time)

@@ -469,14 +469,12 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(kwargs["args"][5], 4)
         thread.start.assert_called_once()
 
-    @mock.patch("app.server.time.sleep")
     @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
-    def test_worker_thread_rests_after_every_four_completed_accounts(
+    def test_worker_thread_continues_after_every_four_completed_accounts(
         self,
         register_one_account,
         _random_choice,
-        sleep,
     ):
         def fake_register_one_account(**kwargs):
             del kwargs
@@ -500,10 +498,9 @@ class ServerUsProxyApiTests(unittest.TestCase):
             },
         )
 
-        sleep.assert_called_once_with(server.REGISTRATION_GROUP_REST_SECONDS)
         self.assertEqual(server.state.success_count, 5)
-        self.assertTrue(
-            any("已处理 4 个账号，休息 120 秒" in line for line in server.state.logs),
+        self.assertFalse(
+            any("休息 120 秒" in line for line in server.state.logs),
             server.state.logs,
         )
 

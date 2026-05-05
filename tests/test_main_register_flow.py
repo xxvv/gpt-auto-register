@@ -19,7 +19,6 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fetch_current_access_token.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
-    @mock.patch("app.main._registration_success_hold_seconds", return_value=27)
     @mock.patch(
         "app.main._build_registered_account_info",
         return_value="session-access-token",
@@ -56,7 +55,6 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fill_profile_info,
         verify_logged_in,
         build_account_info,
-        success_hold_seconds,
         save_to_txt,
     ):
         driver = mock.Mock()
@@ -74,11 +72,10 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
             save_to_txt.call_args_list[-1].args[2],
             "session-access-token",
         )
-        self.assertIn(
-            mock.call(27),
+        self.assertNotIn(
+            mock.call(10),
             sleep.call_args_list,
         )
-        success_hold_seconds.assert_called_once_with()
         build_account_info.assert_called_once_with(driver, proxy=None)
         driver.quit.assert_called_once()
 
@@ -223,7 +220,6 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         driver.quit.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")
-    @mock.patch("app.main._registration_success_hold_seconds", return_value=24)
     @mock.patch(
         "app.main._build_registered_account_info",
         return_value="session-access-token",
@@ -260,7 +256,6 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         fill_profile_info,
         verify_logged_in,
         build_account_info,
-        success_hold_seconds,
         save_to_txt,
     ):
         driver = mock.Mock()
@@ -273,12 +268,9 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         def fake_success_callback(email, password, account_record_info):
             events.append(("callback", email, password, account_record_info))
 
-        def fake_sleep(seconds):
-            events.append(("sleep", seconds))
-
         save_to_txt.side_effect = fake_save_to_txt
 
-        with mock.patch("app.main.time.sleep", side_effect=fake_sleep) as sleep:
+        with mock.patch("app.main.time.sleep", return_value=None) as sleep:
             email, password, success = main.register_one_account(
                 email_provider="nnai",
                 success_callback=fake_success_callback,
@@ -288,10 +280,9 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         self.assertEqual(password, "Secret123!")
         self.assertTrue(success)
         self.assertEqual(
-            events[-3:],
+            events[-2:],
             [
                 ("save", "user@example.com", "session-access-token"),
-                ("sleep", 24),
                 (
                     "callback",
                     "user@example.com",
@@ -300,11 +291,7 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
                 ),
             ],
         )
-        self.assertIn(
-            mock.call(24),
-            sleep.call_args_list,
-        )
-        success_hold_seconds.assert_called_once_with()
+        self.assertNotIn(mock.call(10), sleep.call_args_list)
         driver.quit.assert_called_once()
 
     @mock.patch("app.main.save_to_txt")

@@ -33,8 +33,6 @@ from .config import (
 from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
-REGISTRATION_GROUP_REST_EVERY = 4
-REGISTRATION_GROUP_REST_SECONDS = 120
 DEFAULT_PROXY_SWITCH_INTERVAL = 1
 
 app = Flask(__name__, static_url_path="", static_folder=str(STATIC_DIR))
@@ -358,9 +356,6 @@ def worker_thread(
         counter_lock = threading.Lock()
         register_slot = threading.Semaphore(max(1, int(parallel)))
         started = [0]
-        completed_for_rest = [0]
-        group_gate = threading.Condition()
-        rest_after_completed = [0]
         proxy_selector = _TaskProxySelector(
             task_proxy,
             proxy_switch_interval,
@@ -391,28 +386,10 @@ def worker_thread(
                 release_slot()
                 return
 
-            with group_gate:
-                while (
-                    rest_after_completed[0]
-                    and completed_for_rest[0] >= rest_after_completed[0]
-                    and not state.stop_requested
-                ):
-                    state.current_action = (
-                        f"已处理 {rest_after_completed[0]} 个账号，休息 "
-                        f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
-                    )
-                    main.print(
-                        f"⏸️ 已处理 {rest_after_completed[0]} 个账号，休息 "
-                        f"{REGISTRATION_GROUP_REST_SECONDS} 秒后继续..."
-                    )
-                    rest_after_completed[0] = 0
-                    group_gate.release()
-                    time.sleep(REGISTRATION_GROUP_REST_SECONDS)
-                    group_gate.acquire()
-                    group_gate.notify_all()
-                if state.stop_requested:
-                    release_slot()
-                    return
+            if state.stop_requested:
+                release_slot()
+                return
+            with counter_lock:
                 started[0] += 1
                 idx = started[0]
             account_proxy = proxy_selector.next_proxy(idx)
@@ -460,14 +437,6 @@ def worker_thread(
                             completed=state.success_count + state.fail_count,
                             processed=state.success_count,
                         )
-                    with group_gate:
-                        completed_for_rest[0] += 1
-                        if (
-                            completed_for_rest[0] % REGISTRATION_GROUP_REST_EVERY == 0
-                            and completed_for_rest[0] < count
-                        ):
-                            rest_after_completed[0] = completed_for_rest[0]
-                        group_gate.notify_all()
                 except InterruptedError:
                     main.print("🛑 任务已中断")
                 except Exception as e:
@@ -477,14 +446,6 @@ def worker_thread(
                             completed=state.success_count + state.fail_count,
                             processed=state.success_count,
                         )
-                    with group_gate:
-                        completed_for_rest[0] += 1
-                        if (
-                            completed_for_rest[0] % REGISTRATION_GROUP_REST_EVERY == 0
-                            and completed_for_rest[0] < count
-                        ):
-                            rest_after_completed[0] = completed_for_rest[0]
-                        group_gate.notify_all()
                     main.print(f"❌ 异常: {str(e)}")
                 finally:
                     release_slot()
