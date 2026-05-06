@@ -1038,6 +1038,16 @@ def replace_webshare_proxy():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route('/api/proxy/clear', methods=['POST'])
+def clear_proxy():
+    if state.is_running:
+        return jsonify({"error": "任务运行中，暂不支持清除代理"}), 400
+
+    state.proxy = _disabled_proxy()
+    main.print("✅ 已清除当前代理")
+    return jsonify({"status": "ok", "proxy": state.proxy})
+
+
 @app.route('/api/us-proxies', methods=['GET'])
 def get_us_proxies():
     payload = us_proxy_pool.load_us_proxy_pool()

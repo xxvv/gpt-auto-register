@@ -18,7 +18,9 @@
 
   const CODE_API = "https://getemail.nnai.website/api/code";
   const PAYURL_API = "https://payurl.779.chat/api/request";
+  const LOCAL_API_BASE = "http://127.0.0.1:8888";
   const STORAGE_KEY = "gptAutoRegisterSidebarState";
+  const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
 
@@ -29,7 +31,15 @@
     emailList: document.getElementById("emailList"),
     copyEmailButton: document.getElementById("copyEmailButton"),
     fetchCodeButton: document.getElementById("fetchCodeButton"),
+    copyCodeButton: document.getElementById("copyCodeButton"),
     codeOutput: document.getElementById("codeOutput"),
+    refreshProxyButton: document.getElementById("refreshProxyButton"),
+    proxyStatus: document.getElementById("proxyStatus"),
+    getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
+    setProxyButton: document.getElementById("setProxyButton"),
+    replaceProxyButton: document.getElementById("replaceProxyButton"),
+    clearProxyButton: document.getElementById("clearProxyButton"),
+    proxyOutput: document.getElementById("proxyOutput"),
     fetchPayUrlButton: document.getElementById("fetchPayUrlButton"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
@@ -41,6 +51,8 @@
   const state = {
     emails: [],
     selectedEmail: "",
+    lastCode: "",
+    currentProxy: null,
     currentTab: null,
     busy: new Set()
   };
@@ -52,6 +64,7 @@
     await restoreState();
     await refreshCurrentTab();
     renderEmails();
+    renderProxyStatus();
     renderCardPreview();
   }
 
@@ -60,6 +73,12 @@
     elements.generateEmailsButton.addEventListener("click", generateEmails);
     elements.copyEmailButton.addEventListener("click", copySelectedEmail);
     elements.fetchCodeButton.addEventListener("click", fetchVerificationCode);
+    elements.copyCodeButton.addEventListener("click", copyLastCode);
+    elements.refreshProxyButton.addEventListener("click", refreshProxyStatus);
+    elements.getWebshareProxyButton.addEventListener("click", getCurrentWebshareProxy);
+    elements.setProxyButton.addEventListener("click", setCurrentProxy);
+    elements.replaceProxyButton.addEventListener("click", replaceWebshareProxy);
+    elements.clearProxyButton.addEventListener("click", clearProxy);
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
     elements.fillCardButton.addEventListener("click", fillCardInCurrentTab);
     elements.cardInput.addEventListener("input", () => {
@@ -74,6 +93,8 @@
       const data = saved && saved[STORAGE_KEY] ? saved[STORAGE_KEY] : {};
       state.emails = Array.isArray(data.emails) ? data.emails.filter(Boolean) : [];
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
+      state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
+      state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
     } catch (error) {
       showOutput(elements.codeOutput, "error", `读取本地状态失败：${formatError(error)}`);
@@ -93,6 +114,8 @@
         [STORAGE_KEY]: {
           emails: state.emails,
           selectedEmail: state.selectedEmail,
+          lastCode: state.lastCode,
+          currentProxy: state.currentProxy,
           cardInput: elements.cardInput.value
         }
       });
@@ -215,6 +238,8 @@
           const data = await readJsonResponse(response, "验证码接口");
           const code = String(data.code || "").trim();
           if (response.ok && code) {
+            state.lastCode = code;
+            await persistState();
             showOutput(elements.codeOutput, "success", formatCodeResult(data, code));
             return;
           }
@@ -232,6 +257,204 @@
     } finally {
       setBusy("code", false);
     }
+  }
+
+  async function copyLastCode() {
+    const code = String(state.lastCode || "").trim();
+    if (!code) {
+      showOutput(elements.codeOutput, "error", "请先获取验证码");
+      return;
+    }
+    try {
+      await writeClipboard(code);
+      showOutput(elements.codeOutput, "success", `已复制验证码：${code}`);
+    } catch (error) {
+      showOutput(elements.codeOutput, "error", `复制验证码失败：${formatError(error)}`);
+    }
+  }
+
+  async function refreshProxyStatus() {
+    setBusy("proxy", true);
+    showOutput(elements.proxyOutput, "info", "正在读取本地代理设置");
+    try {
+      const settings = await requestLocalApi("/api/settings", { method: "GET" });
+      state.currentProxy = isRuntimeProxy(settings.proxy) ? settings.proxy : null;
+      renderProxyStatus();
+      await persistState();
+      showOutput(elements.proxyOutput, "success", `当前任务代理：${formatProxy(state.currentProxy)}`);
+    } catch (error) {
+      showOutput(elements.proxyOutput, "error", `读取代理状态失败：${formatError(error)}`);
+      renderProxyStatus();
+    } finally {
+      setBusy("proxy", false);
+    }
+  }
+
+  async function getCurrentWebshareProxy() {
+    await fetchAndApplyProxy({
+      busyLabel: "正在获取当前 Webshare 代理",
+      endpoint: "/api/webshare-proxy/current",
+      successPrefix: "已获取并设置 Firefox 代理"
+    });
+  }
+
+  async function replaceWebshareProxy() {
+    await fetchAndApplyProxy({
+      busyLabel: "正在替换 Webshare 代理",
+      endpoint: "/api/webshare-proxy/replace",
+      successPrefix: "已替换并设置 Firefox 代理"
+    });
+  }
+
+  async function fetchAndApplyProxy({ busyLabel, endpoint, successPrefix }) {
+    setBusy("proxy", true);
+    showOutput(elements.proxyOutput, "info", busyLabel);
+    try {
+      const data = await requestLocalApi(endpoint, { method: "POST" });
+      const proxy = requireRuntimeProxy(data.proxy);
+      await applyFirefoxProxy(proxy);
+      state.currentProxy = proxy;
+      renderProxyStatus();
+      await persistState();
+      showOutput(elements.proxyOutput, "success", `${successPrefix}：${formatProxy(proxy)}`);
+    } catch (error) {
+      showOutput(elements.proxyOutput, "error", `${busyLabel}失败：${formatError(error)}`);
+    } finally {
+      setBusy("proxy", false);
+    }
+  }
+
+  async function setCurrentProxy() {
+    if (!isRuntimeProxy(state.currentProxy)) {
+      await refreshProxyStatus();
+    }
+    if (!isRuntimeProxy(state.currentProxy)) {
+      showOutput(elements.proxyOutput, "error", "没有可设置的代理，请先获取当前 Webshare 代理");
+      return;
+    }
+
+    setBusy("proxy", true);
+    showOutput(elements.proxyOutput, "info", "正在设置 Firefox 代理");
+    try {
+      await applyFirefoxProxy(state.currentProxy);
+      renderProxyStatus();
+      showOutput(elements.proxyOutput, "success", `已设置 Firefox 代理：${formatProxy(state.currentProxy)}`);
+    } catch (error) {
+      showOutput(elements.proxyOutput, "error", `设置代理失败：${formatError(error)}`);
+    } finally {
+      setBusy("proxy", false);
+    }
+  }
+
+  async function clearProxy() {
+    setBusy("proxy", true);
+    showOutput(elements.proxyOutput, "info", "正在清除 Firefox 与本地任务代理");
+    try {
+      await ext.proxy.settings.clear({});
+      await ext.storage.local.remove(PROXY_AUTH_KEY);
+      let localClearError = "";
+      try {
+        await requestLocalApi("/api/proxy/clear", { method: "POST" });
+      } catch (error) {
+        localClearError = formatError(error);
+        console.warn("Failed to clear local task proxy", error);
+      }
+      state.currentProxy = null;
+      renderProxyStatus();
+      await persistState();
+      const message = localClearError
+        ? `已清除 Firefox 代理；本地任务代理清除失败：${localClearError}`
+        : "已清除 Firefox 与本地任务代理";
+      showOutput(elements.proxyOutput, localClearError ? "info" : "success", message);
+    } catch (error) {
+      showOutput(elements.proxyOutput, "error", `清除代理失败：${formatError(error)}`);
+    } finally {
+      setBusy("proxy", false);
+    }
+  }
+
+  async function applyFirefoxProxy(proxy) {
+    const runtimeProxy = requireRuntimeProxy(proxy);
+    const proxyType = String(runtimeProxy.type || "http").toLowerCase();
+    if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
+      throw new Error(`Firefox 不支持的代理类型：${runtimeProxy.type}`);
+    }
+
+    await ext.storage.local.set({
+      [PROXY_AUTH_KEY]: {
+        enabled: Boolean(runtimeProxy.use_auth && runtimeProxy.username),
+        host: runtimeProxy.host,
+        port: runtimeProxy.port,
+        username: runtimeProxy.username || "",
+        password: runtimeProxy.password || ""
+      }
+    });
+
+    const settingsValue = {
+      proxyType: "manual",
+      http: runtimeProxy.host,
+      httpProxyPort: runtimeProxy.port,
+      ssl: runtimeProxy.host,
+      sslProxyPort: runtimeProxy.port,
+      passthrough: "localhost, 127.0.0.1, ::1"
+    };
+
+    if (proxyType === "socks" || proxyType === "socks4" || proxyType === "socks5") {
+      settingsValue.socks = runtimeProxy.host;
+      settingsValue.socksProxyPort = runtimeProxy.port;
+      settingsValue.socksVersion = proxyType === "socks4" ? 4 : 5;
+      delete settingsValue.http;
+      delete settingsValue.httpProxyPort;
+      delete settingsValue.ssl;
+      delete settingsValue.sslProxyPort;
+    }
+
+    await ext.proxy.settings.set({ value: settingsValue, scope: "regular" });
+  }
+
+  async function requestLocalApi(path, options = {}) {
+    const response = await fetch(`${LOCAL_API_BASE}${path}`, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {})
+      },
+      ...options
+    });
+    const data = await readJsonResponse(response, "本地服务");
+    if (!response.ok) {
+      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  function requireRuntimeProxy(proxy) {
+    if (!isRuntimeProxy(proxy)) {
+      throw new Error("代理数据缺少 host/port");
+    }
+    return proxy;
+  }
+
+  function isRuntimeProxy(proxy) {
+    if (!proxy || !proxy.enabled) {
+      return false;
+    }
+    const host = String(proxy.host || "").trim();
+    const port = Number(proxy.port || 0);
+    return Boolean(host && port > 0);
+  }
+
+  function renderProxyStatus() {
+    elements.proxyStatus.textContent = formatProxy(state.currentProxy);
+  }
+
+  function formatProxy(proxy) {
+    if (!isRuntimeProxy(proxy)) {
+      return "未启用";
+    }
+    const type = String(proxy.type || "http").toLowerCase();
+    const auth = proxy.use_auth && proxy.username ? ` (auth: ${proxy.username})` : "";
+    return `${type}://${proxy.host}:${proxy.port}${auth}`;
   }
 
   async function fetchPayUrl() {
@@ -539,6 +762,12 @@
     }
 
     elements.fetchCodeButton.disabled = state.busy.has("code");
+    elements.copyCodeButton.disabled = state.busy.has("code");
+    elements.refreshProxyButton.disabled = state.busy.has("proxy");
+    elements.getWebshareProxyButton.disabled = state.busy.has("proxy");
+    elements.setProxyButton.disabled = state.busy.has("proxy");
+    elements.replaceProxyButton.disabled = state.busy.has("proxy");
+    elements.clearProxyButton.disabled = state.busy.has("proxy");
     elements.fetchPayUrlButton.disabled = state.busy.has("payurl");
     elements.fillCardButton.disabled = state.busy.has("fill");
   }

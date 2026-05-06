@@ -180,6 +180,32 @@ class ServerUsProxyApiTests(unittest.TestCase):
         get_current_proxy.assert_not_called()
         replace_proxy.assert_not_called()
 
+    def test_clear_proxy_disables_current_proxy(self):
+        server.state.proxy = {
+            "enabled": True,
+            "type": "socks5",
+            "host": "5.5.5.5",
+            "port": 1080,
+            "use_auth": True,
+            "username": "user",
+            "password": "pass",
+        }
+
+        response = self.client.post("/api/proxy/clear")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["proxy"]["enabled"])
+        self.assertFalse(server.state.proxy["enabled"])
+        self.assertEqual(server.state.proxy["host"], "")
+
+    def test_clear_proxy_rejects_when_running(self):
+        server.state.is_running = True
+
+        response = self.client.post("/api/proxy/clear")
+
+        self.assertEqual(response.status_code, 400)
+
     def test_settings_api_reads_and_writes_complete_payment_flow(self):
         server.state.parallel_count = 3
 

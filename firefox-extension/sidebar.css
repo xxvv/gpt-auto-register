@@ -113,6 +113,7 @@ textarea:focus-visible,
 
 .primary-button,
 .secondary-button,
+.danger-button,
 .icon-button {
   min-height: 34px;
   border-radius: 7px;
@@ -121,6 +122,7 @@ textarea:focus-visible,
 
 .primary-button:active,
 .secondary-button:active,
+.danger-button:active,
 .icon-button:active {
   transform: translateY(1px);
 }
@@ -146,6 +148,18 @@ textarea:focus-visible,
 
 .secondary-button:hover:not(:disabled) {
   background: var(--secondary-hover);
+}
+
+.danger-button {
+  flex: 1 1 0;
+  padding: 0 10px;
+  background: var(--danger);
+  color: #ffffff;
+  font-weight: 620;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: #8f1d15;
 }
 
 .icon-button {
@@ -197,6 +211,21 @@ textarea:focus-visible,
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   color: #26364f;
+}
+
+.proxy-actions {
+  gap: 8px;
+}
+
+.proxy-status {
+  padding: 8px;
+  background: #f4f7f2;
+  border: 1px solid #d6e2d0;
+  border-radius: 7px;
+  color: #233423;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .card-input {

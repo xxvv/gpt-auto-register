@@ -2,16 +2,25 @@
   "manifest_version": 2,
   "name": "GPT Auto Register Helper",
   "version": "1.0.0",
-  "description": "Firefox sidebar helper for email codes, PayURL, and Stripe form filling.",
+  "description": "Firefox sidebar helper for email codes, Firefox proxy control, PayURL, and Stripe form filling.",
   "sidebar_action": {
     "default_title": "GPT Helper",
     "default_panel": "sidebar.html"
   },
+  "background": {
+    "scripts": ["background.js"]
+  },
   "permissions": [
     "activeTab",
     "clipboardWrite",
+    "proxy",
     "storage",
     "tabs",
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>",
+    "http://127.0.0.1:8888/*",
+    "http://localhost:8888/*",
     "https://chatgpt.com/*",
     "https://getemail.nnai.website/*",
     "https://payurl.779.chat/*",
