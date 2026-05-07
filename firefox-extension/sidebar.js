@@ -18,9 +18,11 @@
 
   const CODE_API = "https://getemail.nnai.website/api/code";
   const PAYURL_API = "https://payurl.779.chat/api/request";
-  const LOCAL_API_BASE = "http://127.0.0.1:8888";
+  const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
+  const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const STORAGE_KEY = "gptAutoRegisterSidebarState";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
@@ -47,12 +49,17 @@
     fetchCodeButton: document.getElementById("fetchCodeButton"),
     copyCodeButton: document.getElementById("copyCodeButton"),
     codeOutput: document.getElementById("codeOutput"),
+    phoneKeyInput: document.getElementById("phoneKeyInput"),
+    phonePreview: document.getElementById("phonePreview"),
+    copyPhoneButton: document.getElementById("copyPhoneButton"),
+    fetchPhoneCodeButton: document.getElementById("fetchPhoneCodeButton"),
+    copyPhoneCodeButton: document.getElementById("copyPhoneCodeButton"),
+    phoneCodeOutput: document.getElementById("phoneCodeOutput"),
     refreshProxyButton: document.getElementById("refreshProxyButton"),
     proxyStatus: document.getElementById("proxyStatus"),
-    manualProxyInput: document.getElementById("manualProxyInput"),
+    webshareApiKeyInput: document.getElementById("webshareApiKeyInput"),
     getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
     setProxyButton: document.getElementById("setProxyButton"),
-    applyManualProxyButton: document.getElementById("applyManualProxyButton"),
     replaceProxyButton: document.getElementById("replaceProxyButton"),
     clearProxyButton: document.getElementById("clearProxyButton"),
     proxyOutput: document.getElementById("proxyOutput"),
@@ -62,6 +69,8 @@
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
     fillCardButton: document.getElementById("fillCardButton"),
     cardPreview: document.getElementById("cardPreview"),
+    removeElementSelectorInput: document.getElementById("removeElementSelectorInput"),
+    removeElementButton: document.getElementById("removeElementButton"),
     fillSettingsPanel: document.getElementById("fillSettingsPanel"),
     phoneSelectorInput: document.getElementById("phoneSelectorInput"),
     cardNumberSelectorInput: document.getElementById("cardNumberSelectorInput"),
@@ -83,23 +92,30 @@
     emails: [],
     selectedEmail: "",
     lastCode: "",
+    phoneKeyInput: "",
+    phoneKey: null,
+    lastPhoneCode: "",
     currentProxy: null,
-    manualProxyText: "",
+    webshareApiKey: "",
+    removeElementSelector: "",
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
     currentTab: null,
     busy: new Set()
   };
+  let usZip3StateRangesPromise = null;
 
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
     bindEvents();
+    await ensureUsZip3StateRanges();
     await restoreState();
     await refreshCurrentTab();
     renderEmails();
+    renderPhonePreview();
     renderProxyStatus();
-    renderCardPreview();
+    await renderCardPreview();
   }
 
   function bindEvents() {
@@ -108,18 +124,27 @@
     elements.copyEmailButton.addEventListener("click", copySelectedEmail);
     elements.fetchCodeButton.addEventListener("click", fetchVerificationCode);
     elements.copyCodeButton.addEventListener("click", copyLastCode);
+    elements.phoneKeyInput.addEventListener("input", handlePhoneKeyInput);
+    elements.copyPhoneButton.addEventListener("click", copyPhoneNumber);
+    elements.fetchPhoneCodeButton.addEventListener("click", fetchPhoneVerificationCode);
+    elements.copyPhoneCodeButton.addEventListener("click", copyLastPhoneCode);
     elements.refreshProxyButton.addEventListener("click", refreshProxyStatus);
     elements.getWebshareProxyButton.addEventListener("click", getCurrentWebshareProxy);
     elements.setProxyButton.addEventListener("click", setCurrentProxy);
-    elements.applyManualProxyButton.addEventListener("click", applyManualProxy);
     elements.replaceProxyButton.addEventListener("click", replaceWebshareProxy);
     elements.clearProxyButton.addEventListener("click", clearProxy);
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
     elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
     elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
     elements.fillCardButton.addEventListener("click", fillCardInCurrentTab);
-    elements.manualProxyInput.addEventListener("input", () => {
-      state.manualProxyText = elements.manualProxyInput.value;
+    elements.removeElementButton.addEventListener("click", removeElementInCurrentTab);
+    elements.cardPreview.addEventListener("click", handleCardPreviewCopy);
+    elements.webshareApiKeyInput.addEventListener("input", () => {
+      state.webshareApiKey = elements.webshareApiKeyInput.value;
+      persistState();
+    });
+    elements.removeElementSelectorInput.addEventListener("input", () => {
+      state.removeElementSelector = String(elements.removeElementSelectorInput.value || "").trim();
       persistState();
     });
     elements.cardInput.addEventListener("input", () => {
@@ -136,12 +161,18 @@
       state.emails = Array.isArray(data.emails) ? data.emails.filter(Boolean) : [];
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
       state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
+      state.phoneKeyInput = typeof data.phoneKeyInput === "string" ? data.phoneKeyInput : "";
+      state.lastPhoneCode = typeof data.lastPhoneCode === "string" ? data.lastPhoneCode : "";
       state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
-      state.manualProxyText = typeof data.manualProxyText === "string" ? data.manualProxyText : "";
+      state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
+      state.removeElementSelector = typeof data.removeElementSelector === "string" ? data.removeElementSelector : "";
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
-      elements.manualProxyInput.value = state.manualProxyText;
+      elements.phoneKeyInput.value = state.phoneKeyInput;
+      elements.webshareApiKeyInput.value = state.webshareApiKey;
+      elements.removeElementSelectorInput.value = state.removeElementSelector;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
+      state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
       renderFillSettings();
     } catch (error) {
       showOutput(elements.codeOutput, "error", `读取本地状态失败：${formatError(error)}`);
@@ -162,8 +193,11 @@
           emails: state.emails,
           selectedEmail: state.selectedEmail,
           lastCode: state.lastCode,
+          phoneKeyInput: state.phoneKeyInput,
+          lastPhoneCode: state.lastPhoneCode,
           currentProxy: state.currentProxy,
-          manualProxyText: state.manualProxyText,
+          webshareApiKey: state.webshareApiKey,
+          removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
           fillSettingsExpanded: state.fillSettingsExpanded
@@ -323,15 +357,123 @@
     }
   }
 
+  function handlePhoneKeyInput() {
+    state.phoneKeyInput = String(elements.phoneKeyInput.value || "").trim();
+    state.lastPhoneCode = "";
+    try {
+      state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
+      renderPhonePreview();
+      if (state.phoneKeyInput && state.phoneKey) {
+        showOutput(
+          elements.phoneCodeOutput,
+          "success",
+          `已识别手机：${state.phoneKey.phone}\n短信地址：${state.phoneKey.smsUrl}`
+        );
+      } else {
+        elements.phoneCodeOutput.textContent = "";
+        elements.phoneCodeOutput.className = "result-output";
+      }
+    } catch (error) {
+      state.phoneKey = null;
+      renderPhonePreview();
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+    }
+    persistState();
+  }
+
+  async function copyPhoneNumber() {
+    let phoneKey;
+    try {
+      phoneKey = requirePhoneKey();
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+      return;
+    }
+
+    try {
+      await writeClipboard(phoneKey.phone);
+      showOutput(elements.phoneCodeOutput, "success", `已复制手机：${phoneKey.phone}`);
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", `复制手机失败：${formatError(error)}`);
+    }
+  }
+
+  async function fetchPhoneVerificationCode() {
+    let phoneKey;
+    try {
+      phoneKey = requirePhoneKey();
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+      return;
+    }
+
+    setBusy("phoneCode", true);
+    showOutput(elements.phoneCodeOutput, "info", `正在获取短信验证码：${phoneKey.phone}`);
+
+    let lastError = "";
+    try {
+      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetch(phoneKey.smsUrl, {
+            method: "GET",
+            cache: "no-store",
+            headers: { Accept: "text/plain,application/json,text/html,*/*" }
+          });
+          const body = await response.text();
+          const code = extractSixDigitCode(body);
+          if (response.ok && code) {
+            state.lastPhoneCode = code;
+            await persistState();
+            showOutput(
+              elements.phoneCodeOutput,
+              "success",
+              `短信验证码：${code}\n手机：${phoneKey.phone}\n来源：${phoneKey.smsUrl}`
+            );
+            return;
+          }
+          lastError = response.ok
+            ? "响应里没有匹配到 6 位验证码"
+            : `HTTP ${response.status} ${body.slice(0, 120)}`;
+        } catch (error) {
+          lastError = formatError(error);
+        }
+
+        if (attempt < POLL_ATTEMPTS) {
+          showOutput(elements.phoneCodeOutput, "info", `第 ${attempt}/${POLL_ATTEMPTS} 次未取到短信码，继续轮询`);
+          await delay(POLL_DELAY_MS);
+        }
+      }
+      showOutput(
+        elements.phoneCodeOutput,
+        "error",
+        `获取短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次：${lastError || "没有匹配到 6 位验证码"}`
+      );
+    } finally {
+      setBusy("phoneCode", false);
+    }
+  }
+
+  async function copyLastPhoneCode() {
+    const code = String(state.lastPhoneCode || "").trim();
+    if (!code) {
+      showOutput(elements.phoneCodeOutput, "error", "请先获取短信验证码");
+      return;
+    }
+    try {
+      await writeClipboard(code);
+      showOutput(elements.phoneCodeOutput, "success", `已复制短信验证码：${code}`);
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", `复制短信验证码失败：${formatError(error)}`);
+    }
+  }
+
   async function refreshProxyStatus() {
     setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在读取本地代理设置");
+    showOutput(elements.proxyOutput, "info", "正在读取 Firefox 代理状态");
     try {
-      const settings = await requestLocalApi("/api/settings", { method: "GET" });
-      state.currentProxy = isRuntimeProxy(settings.proxy) ? settings.proxy : null;
       renderProxyStatus();
       await persistState();
-      showOutput(elements.proxyOutput, "success", `当前任务代理：${formatProxy(state.currentProxy)}`);
+      showOutput(elements.proxyOutput, "success", `当前 Firefox 代理：${formatProxy(state.currentProxy)}`);
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `读取代理状态失败：${formatError(error)}`);
       renderProxyStatus();
@@ -343,7 +485,7 @@
   async function getCurrentWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在获取当前 Webshare 代理",
-      endpoint: "/api/webshare-proxy/current?prefer_http=1",
+      action: "current",
       successPrefix: "已获取并设置 Firefox 代理"
     });
   }
@@ -351,22 +493,28 @@
   async function replaceWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在替换 Webshare 代理",
-      endpoint: "/api/webshare-proxy/replace?prefer_http=1",
+      action: "replace",
       successPrefix: "已替换并设置 Firefox 代理"
     });
   }
 
-  async function fetchAndApplyProxy({ busyLabel, endpoint, successPrefix }) {
+  async function fetchAndApplyProxy({ busyLabel, action, successPrefix }) {
+    const webshareApiKey = requireWebshareApiKey();
     setBusy("proxy", true);
     showOutput(elements.proxyOutput, "info", busyLabel);
     try {
-      const data = await requestLocalApi(endpoint, { method: "POST" });
-      const proxy = requireRuntimeProxy(data.proxy);
+      const proxy = action === "replace"
+        ? await replaceWebshareProxyDirect(webshareApiKey)
+        : await getCurrentWebshareProxyDirect(webshareApiKey);
       await applyFirefoxProxy(proxy);
       state.currentProxy = proxy;
       renderProxyStatus();
       await persistState();
-      showOutput(elements.proxyOutput, "success", `${successPrefix}：${formatProxy(proxy)}`);
+      showOutput(
+        elements.proxyOutput,
+        "success",
+        `${successPrefix}：${formatProxy(proxy)}\n用户名: ${proxy.username || "-"}\n密码: ${proxy.password || "-"}`
+      );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `${busyLabel}失败：${formatError(error)}`);
     } finally {
@@ -388,7 +536,11 @@
     try {
       await applyFirefoxProxy(state.currentProxy);
       renderProxyStatus();
-      showOutput(elements.proxyOutput, "success", `已设置 Firefox 代理：${formatProxy(state.currentProxy)}`);
+      showOutput(
+        elements.proxyOutput,
+        "success",
+        `已设置 Firefox 代理：${formatProxy(state.currentProxy)}\n用户名: ${state.currentProxy.username || "-"}\n密码: ${state.currentProxy.password || "-"}`
+      );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `设置代理失败：${formatError(error)}`);
     } finally {
@@ -396,54 +548,16 @@
     }
   }
 
-  async function applyManualProxy() {
-    const raw = String(elements.manualProxyInput.value || "").trim();
-    if (!raw) {
-      showOutput(elements.proxyOutput, "error", "请先输入代理链接");
-      return;
-    }
-
-    setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在解析并应用手动代理");
-    try {
-      const proxy = parseManualProxy(raw);
-      await applyFirefoxProxy(proxy);
-      await requestLocalApi("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({ proxy })
-      });
-      state.currentProxy = proxy;
-      state.manualProxyText = raw;
-      renderProxyStatus();
-      await persistState();
-      showOutput(elements.proxyOutput, "success", `已应用手动代理：${formatProxy(proxy)}`);
-    } catch (error) {
-      showOutput(elements.proxyOutput, "error", `应用手动代理失败：${formatError(error)}`);
-    } finally {
-      setBusy("proxy", false);
-    }
-  }
-
   async function clearProxy() {
     setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在清除 Firefox 与本地任务代理");
+    showOutput(elements.proxyOutput, "info", "正在清除 Firefox 代理");
     try {
       await ext.proxy.settings.clear({});
       await ext.storage.local.remove(PROXY_AUTH_KEY);
-      let localClearError = "";
-      try {
-        await requestLocalApi("/api/proxy/clear", { method: "POST" });
-      } catch (error) {
-        localClearError = formatError(error);
-        console.warn("Failed to clear local task proxy", error);
-      }
       state.currentProxy = null;
       renderProxyStatus();
       await persistState();
-      const message = localClearError
-        ? `已清除 Firefox 代理；本地任务代理清除失败：${localClearError}`
-        : "已清除 Firefox 与本地任务代理";
-      showOutput(elements.proxyOutput, localClearError ? "info" : "success", message);
+      showOutput(elements.proxyOutput, "success", "已清除 Firefox 代理");
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `清除代理失败：${formatError(error)}`);
     } finally {
@@ -490,22 +604,6 @@
     await ext.proxy.settings.set({ value: settingsValue, scope: "regular" });
   }
 
-  async function requestLocalApi(path, options = {}) {
-    const response = await fetch(`${LOCAL_API_BASE}${path}`, {
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {})
-      },
-      ...options
-    });
-    const data = await readJsonResponse(response, "本地服务");
-    if (!response.ok) {
-      throw new Error(data.error || data.message || `HTTP ${response.status}`);
-    }
-    return data;
-  }
-
   function requireRuntimeProxy(proxy) {
     if (!isRuntimeProxy(proxy)) {
       throw new Error("代理数据缺少 host/port");
@@ -523,7 +621,21 @@
   }
 
   function renderProxyStatus() {
-    elements.proxyStatus.textContent = formatProxy(state.currentProxy);
+    const proxy = state.currentProxy;
+    if (!isRuntimeProxy(proxy)) {
+      elements.proxyStatus.textContent = "未启用";
+      return;
+    }
+
+    const lines = [
+      `类型: ${String(proxy.type || "http").toLowerCase()}`,
+      `地址: ${proxy.host}`,
+      `端口: ${proxy.port}`,
+      `用户名: ${proxy.username || "-"}`,
+      `密码: ${proxy.password || "-"}`,
+      `鉴权: ${proxy.use_auth && proxy.username ? "已启用" : "未启用"}`
+    ];
+    elements.proxyStatus.textContent = lines.join("\n");
   }
 
   function formatProxy(proxy) {
@@ -535,38 +647,157 @@
     return `${type}://${proxy.host}:${proxy.port}${auth}`;
   }
 
-  function parseManualProxy(raw) {
-    let parsed;
-    try {
-      parsed = new URL(raw);
-    } catch (error) {
-      throw new Error("代理格式无效，请使用 http://username:password@host:port");
+  function requireWebshareApiKey() {
+    const apiKey = String(elements.webshareApiKeyInput.value || "").trim();
+    if (!apiKey) {
+      throw new Error("请先输入 Webshare API Key");
+    }
+    state.webshareApiKey = apiKey;
+    return apiKey;
+  }
+
+  async function getCurrentWebshareProxyDirect(apiKey) {
+    const items = await fetchWebshareProxyList(apiKey);
+    const proxy = mapWebshareItemToProxy(items[0], { preferHttp: true });
+    return requireRuntimeProxy(proxy);
+  }
+
+  async function replaceWebshareProxyDirect(apiKey) {
+    const currentItems = await fetchWebshareProxyList(apiKey);
+    const currentProxy = mapWebshareItemToProxy(currentItems[0], { preferHttp: true });
+    const response = await fetch(WEBSHARE_REPLACE_API, {
+      method: "POST",
+      headers: buildWebshareHeaders(apiKey),
+      body: JSON.stringify({
+        to_replace: { type: "ip_address", ip_addresses: [currentProxy.host] },
+        replace_with: [{ type: "country", country_code: "US", count: 1 }],
+        dry_run: false
+      })
+    });
+    const payload = await readJsonResponse(response, "Webshare 替换接口");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
     }
 
-    const protocol = String(parsed.protocol || "").replace(/:$/, "").toLowerCase();
-    if (!["http", "https", "socks", "socks4", "socks5"].includes(protocol)) {
-      throw new Error(`不支持的代理协议：${protocol || "unknown"}`);
+    const replacementId = String(
+      payload.id ||
+      payload.uuid ||
+      payload.replacement_id ||
+      ((payload.data || {}).id) ||
+      ((payload.data || {}).uuid) ||
+      ((payload.data || {}).replacement_id) ||
+      ""
+    ).trim();
+    if (!replacementId) {
+      throw new Error("Webshare 替换响应缺少任务 ID");
     }
 
-    const host = String(parsed.hostname || "").trim();
-    const port = Number(parsed.port || 0);
-    if (!host || port <= 0) {
-      throw new Error("代理缺少有效的 host 或 port");
+    const deadline = Date.now() + 30000;
+    let lastStatus = normalizeWebshareStatus(payload);
+    while (Date.now() < deadline) {
+      if (isWebshareTerminalSuccess(lastStatus)) {
+        break;
+      }
+      if (isWebshareTerminalFailure(lastStatus)) {
+        throw new Error(`Webshare 代理替换失败: status=${lastStatus || "unknown"}`);
+      }
+
+      await delay(1200);
+      const detailResponse = await fetch(`${WEBSHARE_REPLACE_API}${replacementId}/`, {
+        method: "GET",
+        headers: buildWebshareHeaders(apiKey)
+      });
+      const detailPayload = await readJsonResponse(detailResponse, "Webshare 替换查询接口");
+      if (!detailResponse.ok) {
+        throw new Error(detailPayload.detail || detailPayload.error || detailPayload.message || `HTTP ${detailResponse.status}`);
+      }
+      lastStatus = normalizeWebshareStatus(detailPayload);
     }
 
-    const username = decodeURIComponent(parsed.username || "");
-    const password = decodeURIComponent(parsed.password || "");
-    const useAuth = Boolean(username);
+    if (!isWebshareTerminalSuccess(lastStatus)) {
+      throw new Error(`Webshare 代理替换超时: status=${lastStatus || "unknown"}`);
+    }
 
+    return getCurrentWebshareProxyDirect(apiKey);
+  }
+
+  async function fetchWebshareProxyList(apiKey) {
+    const response = await fetch(`${WEBSHARE_LIST_API}?mode=direct&page=1&page_size=25`, {
+      method: "GET",
+      headers: buildWebshareHeaders(apiKey),
+      cache: "no-store"
+    });
+    const payload = await readJsonResponse(response, "Webshare 代理列表");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
+    }
+    const items = extractWebshareItems(payload);
+    if (!items.length) {
+      throw new Error("Webshare 代理列表为空");
+    }
+    return items;
+  }
+
+  function buildWebshareHeaders(apiKey) {
+    return {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Token ${apiKey}`
+    };
+  }
+
+  function extractWebshareItems(payload) {
+    let rawItems = payload && payload.results;
+    if (rawItems === undefined || rawItems === null) {
+      rawItems = (payload && (payload.items || payload.data)) || [];
+    }
+    if (rawItems && typeof rawItems === "object" && !Array.isArray(rawItems)) {
+      rawItems = rawItems.results || rawItems.items || [];
+    }
+    return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
+  }
+
+  function mapWebshareItemToProxy(item, { preferHttp = false } = {}) {
+    if (!item || typeof item !== "object") {
+      throw new Error("Webshare 代理数据无效");
+    }
+    const host = String(item.proxy_address || item.host || item.ip || item.ip_address || "").trim();
+    if (!host) {
+      throw new Error("Webshare 代理缺少 host");
+    }
+    const portValue = preferHttp
+      ? item.port || item.http_port || item.proxy_port || item.socks5_port || 0
+      : item.socks5_port || item.port || item.proxy_port || item.http_port || 0;
+    const port = Number(portValue || 0);
+    if (!port || port <= 0) {
+      throw new Error("Webshare 代理缺少有效端口");
+    }
+    const username = String(item.username || item.user || "");
+    const password = String(item.password || "");
     return {
       enabled: true,
-      type: protocol,
+      type: preferHttp ? "http" : "socks5",
       host,
       port,
-      use_auth: useAuth,
-      username: useAuth ? username : "",
-      password: useAuth ? password : ""
+      use_auth: Boolean(username),
+      username: username || "",
+      password: username ? password : ""
     };
+  }
+
+  function normalizeWebshareStatus(payload) {
+    return String(
+      (payload && (payload.state || payload.status)) ||
+      ((payload && payload.data && (payload.data.state || payload.data.status)) || "")
+    ).trim().toLowerCase();
+  }
+
+  function isWebshareTerminalSuccess(status) {
+    return ["completed", "complete", "succeeded", "success", "done"].includes(String(status || "").toLowerCase());
+  }
+
+  function isWebshareTerminalFailure(status) {
+    return ["failed", "failure", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
   }
 
   async function fetchPayUrl() {
@@ -670,14 +901,14 @@
   async function fillCardInCurrentTab() {
     let card;
     try {
-      card = parseCardInput(elements.cardInput.value);
+      card = await parseCardInput(elements.cardInput.value);
     } catch (error) {
       showOutput(elements.fillOutput, "error", formatError(error));
-      renderCardPreview(null);
+      await renderCardPreview(null);
       return;
     }
 
-    renderCardPreview(card);
+    await renderCardPreview(card);
     setBusy("fill", true);
     showOutput(elements.fillOutput, "info", "正在填充当前支付页面");
 
@@ -690,6 +921,7 @@
       });
       const payload = {
         card,
+        phone: getFillPhoneNumber(card),
         settings: state.fillSettings
       };
       const code = `window.__gptAutoRegisterFillForm && window.__gptAutoRegisterFillForm(${JSON.stringify(payload)})`;
@@ -711,52 +943,77 @@
     }
   }
 
-  function parseCardInput(rawInput) {
+  async function removeElementInCurrentTab() {
+    const selector = String(elements.removeElementSelectorInput.value || "").trim();
+    if (!selector) {
+      showOutput(elements.fillOutput, "error", "请先输入要删除的 selector");
+      return;
+    }
+
+    state.removeElementSelector = selector;
+    setBusy("removeElement", true);
+    showOutput(elements.fillOutput, "info", `正在删除元素：${selector}`);
+
+    try {
+      const tab = await requireCurrentTab();
+      await ext.tabs.executeScript(tab.id, {
+        file: "content-script.js",
+        allFrames: true,
+        runAt: "document_idle"
+      });
+      const code = `window.__gptAutoRegisterRemoveElement && window.__gptAutoRegisterRemoveElement(${JSON.stringify({ selector })})`;
+      const results = await ext.tabs.executeScript(tab.id, {
+        code,
+        allFrames: true,
+        runAt: "document_idle"
+      });
+      const summary = summarizeRemoveElementResults(results, selector);
+      if (!summary.success) {
+        throw new Error(summary.message);
+      }
+      await persistState();
+      showOutput(elements.fillOutput, "success", summary.message);
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `删除失败：${formatError(error)}`);
+    } finally {
+      setBusy("removeElement", false);
+    }
+  }
+
+  async function parseCardInput(rawInput) {
     const text = String(rawInput || "").trim();
     const parts = text.split("----").map((part) => part.trim());
-    if (parts.length !== 7) {
-      throw new Error("卡片格式错误，必须是 card----年/月----cvv----phone----url----name----address,city state postcode,US");
+    if (parts.length !== 6 && parts.length !== 7) {
+      throw new Error("卡片格式错误，必须是 card----年/月----cvv----url----name----address,city postcode,US");
     }
 
-    const [card, expiry, cvv, phone, url, name, addressBlob] = parts;
-    const expiryParts = expiry.split("/", 2).map((part) => part.trim());
-    if (expiryParts.length !== 2 || !expiryParts[0] || !expiryParts[1]) {
-      throw new Error("年/月格式错误");
-    }
-    const [year, month] = expiryParts;
-    const addressParts = addressBlob.rsplit ? addressBlob.rsplit(",", 2) : rsplit(addressBlob, ",", 2);
-    const normalizedAddressParts = addressParts.map((part) => part.trim());
-    if (normalizedAddressParts.length !== 3) {
-      throw new Error("地址格式错误，必须是 address,city state postcode,US");
-    }
-    const [address, cityStatePostcode, country] = normalizedAddressParts;
-    const cityStatePostcodeParts = cityStatePostcode.split(/\s+/);
-    if (cityStatePostcodeParts.length < 3) {
-      throw new Error("city state postcode 格式错误");
-    }
-    const postcode = cityStatePostcodeParts.pop().trim();
-    const state = cityStatePostcodeParts.pop().trim();
-    const city = cityStatePostcodeParts.join(" ").trim();
-    if (!/^[A-Za-z]{2}$/.test(state)) {
-      throw new Error("city state postcode 格式错误");
-    }
+    const hasEmbeddedPhone = parts.length === 7;
+    const [card, expiry, cvv] = parts;
+    const phone = hasEmbeddedPhone ? parts[3] : "";
+    const url = hasEmbeddedPhone ? parts[4] : parts[3];
+    const name = hasEmbeddedPhone ? parts[5] : parts[4];
+    const addressBlob = hasEmbeddedPhone ? parts[6] : parts[5];
+    const normalizedCard = String(card || "").replace(/\s+/g, "");
+    const expiryInfo = parseExpiry(expiry);
+    const addressInfo = await parseAddressBlob(addressBlob);
 
     const parsed = {
-      card,
-      year,
-      month,
+      card: normalizedCard,
+      year: expiryInfo.year,
+      month: expiryInfo.month,
       cvv,
       phone: normalizeUsPhone(phone),
       url,
       name,
       firstName: extractFirstName(name),
       lastName: extractLastName(name),
-      address,
-      city,
-      state,
-      postcode,
-      country,
-      expiryInput: `${String(month).padStart(2, "0")}${String(year).slice(-2)}`
+      address: addressInfo.address,
+      city: addressInfo.city,
+      state: addressInfo.state,
+      postcode: addressInfo.postcode,
+      country: addressInfo.country,
+      expiryDisplay: expiryInfo.display,
+      expiryInput: expiryInfo.input
     };
 
     const required = ["card", "year", "month", "cvv", "name", "address", "city", "state", "postcode"];
@@ -776,11 +1033,11 @@
     return [head].concat(parts.slice(parts.length - limit));
   }
 
-  function renderCardPreview(card) {
+  async function renderCardPreview(card) {
     let parsed = card;
     if (!parsed) {
       try {
-        parsed = elements.cardInput.value.trim() ? parseCardInput(elements.cardInput.value) : null;
+        parsed = elements.cardInput.value.trim() ? await parseCardInput(elements.cardInput.value) : null;
       } catch (error) {
         parsed = null;
       }
@@ -793,12 +1050,70 @@
     }
 
     [
-      ["卡号", maskCard(parsed.card)],
-      ["有效期", parsed.expiryInput],
+      ["卡号", parsed.card],
+      ["有效期", parsed.expiryDisplay],
       ["CVV", parsed.cvv],
-      ["手机", parsed.phone],
-      ["姓名", parsed.name],
-      ["地址", `${parsed.address}, ${parsed.city} ${parsed.state} ${parsed.postcode}, ${parsed.country}`]
+      ["First Name", parsed.firstName],
+      ["Last Name", parsed.lastName],
+      ["Address", parsed.address],
+      ["City", parsed.city],
+      ["State", parsed.state],
+      ["Postcode", parsed.postcode],
+      ["Country", parsed.country]
+    ].forEach(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "preview-row";
+      const labelNode = document.createElement("span");
+      labelNode.className = "preview-label";
+      labelNode.textContent = label;
+      const valueNode = document.createElement("span");
+      valueNode.className = "preview-value";
+      valueNode.textContent = value;
+      const copyButton = document.createElement("button");
+      copyButton.className = "preview-copy-button";
+      copyButton.type = "button";
+      copyButton.textContent = "复制";
+      copyButton.dataset.copyLabel = label;
+      copyButton.dataset.copyValue = String(value || "");
+      copyButton.disabled = !String(value || "").trim();
+      row.append(labelNode, valueNode, copyButton);
+      elements.cardPreview.append(row);
+    });
+  }
+
+  async function handleCardPreviewCopy(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest(".preview-copy-button");
+    if (!button) {
+      return;
+    }
+    const value = String(button.dataset.copyValue || "");
+    const label = String(button.dataset.copyLabel || "字段");
+    if (!value.trim()) {
+      return;
+    }
+    try {
+      await writeClipboard(value);
+      showOutput(elements.fillOutput, "success", `已复制${label}：${value}`);
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `复制${label}失败：${formatError(error)}`);
+    }
+  }
+
+  function renderPhonePreview() {
+    const phoneKey = state.phoneKey;
+    elements.phonePreview.textContent = "";
+    elements.phonePreview.classList.toggle("visible", Boolean(phoneKey));
+    if (!phoneKey) {
+      return;
+    }
+
+    [
+      ["手机", phoneKey.phone],
+      ["短信地址", phoneKey.smsUrl]
     ].forEach(([label, value]) => {
       const row = document.createElement("div");
       row.className = "preview-row";
@@ -809,7 +1124,7 @@
       valueNode.className = "preview-value";
       valueNode.textContent = value;
       row.append(labelNode, valueNode);
-      elements.cardPreview.append(row);
+      elements.phonePreview.append(row);
     });
   }
 
@@ -914,8 +1229,220 @@
     if (normalized.startsWith("+1")) {
       normalized = normalized.slice(2).trim();
     }
-    normalized = normalized.replace(/^[\s()-]+/, "");
+    normalized = normalized.replace(/\D+/g, "");
     return normalized;
+  }
+
+  function getFillPhoneNumber(card) {
+    if (state.phoneKey && state.phoneKey.phone) {
+      return state.phoneKey.phone;
+    }
+
+    const rawPhoneInput = String(elements.phoneKeyInput.value || "").trim();
+    if (rawPhoneInput) {
+      try {
+        const phoneKey = parsePhoneKeyInput(rawPhoneInput, { allowEmpty: true });
+        if (phoneKey && phoneKey.phone) {
+          state.phoneKey = phoneKey;
+          state.phoneKeyInput = phoneKey.raw;
+          renderPhonePreview();
+          return phoneKey.phone;
+        }
+      } catch (error) {
+        console.warn("Failed to parse phone key for fill", error);
+      }
+    }
+
+    return normalizeUsPhone(card && card.phone ? card.phone : "");
+  }
+
+  function parseExpiry(rawExpiry) {
+    const parts = String(rawExpiry || "").split("/", 2).map((part) => part.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error("年/月格式错误");
+    }
+
+    const [left, right] = parts;
+    let year = "";
+    let month = "";
+
+    if (/^\d{4}$/.test(left) && /^\d{1,2}$/.test(right)) {
+      year = left;
+      month = right;
+    } else if (/^\d{1,2}$/.test(left) && /^\d{2,4}$/.test(right)) {
+      month = left;
+      year = right.length === 2 ? `20${right}` : right;
+    } else {
+      throw new Error("年/月格式错误");
+    }
+
+    const monthNumber = Number(month);
+    if (!Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+      throw new Error("月份格式错误");
+    }
+
+    const yearDigits = String(year).replace(/\D+/g, "");
+    if (yearDigits.length !== 4) {
+      throw new Error("年份格式错误");
+    }
+
+    const shortYear = yearDigits.slice(-2);
+    return {
+      year: yearDigits,
+      month: String(monthNumber),
+      display: `${monthNumber}/${shortYear}`,
+      input: `${String(monthNumber).padStart(2, "0")}${shortYear}`
+    };
+  }
+
+  async function parseAddressBlob(addressBlob) {
+    const addressParts = addressBlob.rsplit ? addressBlob.rsplit(",", 2) : rsplit(addressBlob, ",", 2);
+    const normalizedAddressParts = addressParts.map((part) => part.trim());
+    if (normalizedAddressParts.length !== 3) {
+      throw new Error("地址格式错误，必须是 address,city state postcode,US");
+    }
+
+    const [address, cityStatePostcode, country] = normalizedAddressParts;
+    const normalizedCityBlob = String(cityStatePostcode || "").replace(/\s+/g, " ").trim();
+    const withStateMatch = normalizedCityBlob.match(
+      /^(?<city>.+?)\s+(?<state>[A-Za-z]{2})\s+(?<postcode>\d{5}(?:-\d{4})?)$/
+    );
+    const withoutStateMatch = normalizedCityBlob.match(
+      /^(?<city>.+?)\s+(?<postcode>\d{5}(?:-\d{4})?)$/
+    );
+
+    if (withStateMatch && withStateMatch.groups) {
+      return {
+        address,
+        city: String(withStateMatch.groups.city || "").trim(),
+        state: String(withStateMatch.groups.state || "").trim().toUpperCase(),
+        postcode: normalizeUsPostcode(withStateMatch.groups.postcode),
+        country: normalizeCountry(country)
+      };
+    }
+
+    if (withoutStateMatch && withoutStateMatch.groups) {
+      const postcode = normalizeUsPostcode(withoutStateMatch.groups.postcode);
+      return {
+        address,
+        city: String(withoutStateMatch.groups.city || "").trim(),
+        state: await lookupUsStateFromPostcode(postcode),
+        postcode,
+        country: normalizeCountry(country)
+      };
+    }
+
+    throw new Error("city state postcode 格式错误");
+  }
+
+  function normalizeCountry(country) {
+    return String(country || "").trim().toUpperCase();
+  }
+
+  function normalizeUsPostcode(postcode) {
+    const normalized = String(postcode || "").trim();
+    const matched = normalized.match(/^(\d{5})(?:-\d{4})?$/);
+    if (!matched) {
+      throw new Error(`无效的美国邮编：${postcode}`);
+    }
+    return matched[1];
+  }
+
+  async function lookupUsStateFromPostcode(postcode) {
+    const zip5 = normalizeUsPostcode(postcode);
+    const prefix = Number(zip5.slice(0, 3));
+    const ranges = await ensureUsZip3StateRanges();
+    const matched = ranges.find((item) => prefix >= item.start && prefix <= item.end);
+    if (!matched) {
+      throw new Error(`无法根据美国邮编匹配州：${postcode}`);
+    }
+    return matched.state;
+  }
+
+  async function ensureUsZip3StateRanges() {
+    if (!usZip3StateRangesPromise) {
+      usZip3StateRangesPromise = fetch(ext.runtime.getURL(US_ZIP3_STATE_RANGES_PATH), {
+        cache: "no-store"
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const payload = await response.json();
+          if (!Array.isArray(payload) || !payload.length) {
+            throw new Error("empty_ranges");
+          }
+          return payload
+            .map((item) => ({
+              start: Number(item && item.start),
+              end: Number(item && item.end),
+              state: String((item && item.state) || "").trim().toUpperCase()
+            }))
+            .filter((item) => Number.isInteger(item.start) && Number.isInteger(item.end) && item.state);
+        })
+        .catch((error) => {
+          usZip3StateRangesPromise = null;
+          throw new Error(`读取美国邮编映射失败：${formatError(error)}`);
+        });
+    }
+    return usZip3StateRangesPromise;
+  }
+
+  function parsePhoneKeyInput(rawInput, options = {}) {
+    const allowEmpty = Boolean(options.allowEmpty);
+    const text = String(rawInput || "").trim();
+    if (!text) {
+      if (allowEmpty) {
+        return null;
+      }
+      throw new Error("请先输入手机区");
+    }
+
+    const parts = text.split("|");
+    if (parts.length !== 2) {
+      throw new Error("手机区格式错误，必须是 +14484490908|http://a.62-us.com/api/get_sms?key=...");
+    }
+
+    const rawPhone = String(parts[0] || "").trim();
+    const smsUrl = String(parts[1] || "").trim();
+    if (!rawPhone || !smsUrl) {
+      throw new Error("手机区格式错误，手机号和短信地址都不能为空");
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(smsUrl);
+    } catch (error) {
+      throw new Error("短信地址不是有效 URL");
+    }
+    if (!/^https?:$/i.test(parsedUrl.protocol)) {
+      throw new Error("短信地址只支持 http 或 https");
+    }
+
+    const phone = normalizeUsPhone(rawPhone);
+    if (!/^\d{10,15}$/.test(phone)) {
+      throw new Error("手机号格式不正确");
+    }
+
+    return {
+      raw: text,
+      rawPhone,
+      phone,
+      smsUrl: parsedUrl.toString()
+    };
+  }
+
+  function requirePhoneKey() {
+    const phoneKey = state.phoneKey || parsePhoneKeyInput(elements.phoneKeyInput.value);
+    state.phoneKey = phoneKey;
+    state.phoneKeyInput = phoneKey.raw;
+    renderPhonePreview();
+    return phoneKey;
+  }
+
+  function extractSixDigitCode(text) {
+    const match = String(text || "").match(/(?:^|\D)(\d{6})(?!\d)/);
+    return match ? match[1] : "";
   }
 
   function extractFirstName(name) {
@@ -972,6 +1499,32 @@
     };
   }
 
+  function summarizeRemoveElementResults(results, selector) {
+    const validResults = (Array.isArray(results) ? results : [results]).filter(Boolean);
+    const errors = validResults
+      .filter((result) => result && result.error)
+      .map((result) => result.error);
+    if (errors.length) {
+      return {
+        success: false,
+        message: errors[0]
+      };
+    }
+
+    const removedCount = validResults.filter((result) => result && result.removed).length;
+    if (!removedCount) {
+      return {
+        success: false,
+        message: `没有找到元素：${selector}`
+      };
+    }
+
+    return {
+      success: true,
+      message: `已删除 ${removedCount} 个匹配元素：${selector}`
+    };
+  }
+
   function getSelectedEmail() {
     return state.selectedEmail || state.emails[0] || "";
   }
@@ -985,6 +1538,9 @@
 
     elements.fetchCodeButton.disabled = state.busy.has("code");
     elements.copyCodeButton.disabled = state.busy.has("code");
+    elements.copyPhoneButton.disabled = state.busy.has("phoneCode");
+    elements.fetchPhoneCodeButton.disabled = state.busy.has("phoneCode");
+    elements.copyPhoneCodeButton.disabled = state.busy.has("phoneCode");
     elements.refreshProxyButton.disabled = state.busy.has("proxy");
     elements.getWebshareProxyButton.disabled = state.busy.has("proxy");
     elements.setProxyButton.disabled = state.busy.has("proxy");
@@ -992,6 +1548,7 @@
     elements.clearProxyButton.disabled = state.busy.has("proxy");
     elements.fetchPayUrlButton.disabled = state.busy.has("payurl");
     elements.fillCardButton.disabled = state.busy.has("fill");
+    elements.removeElementButton.disabled = state.busy.has("removeElement");
   }
 
   function showOutput(element, type, message) {

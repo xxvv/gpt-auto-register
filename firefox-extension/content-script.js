@@ -33,6 +33,15 @@
     return true;
   }
 
+  function removeSelector(selector) {
+    const element = document.querySelector(selector);
+    if (!element) {
+      return { removed: false, selector };
+    }
+    element.remove();
+    return { removed: true, selector };
+  }
+
   function checkSelector(selector) {
     const element = document.querySelector(selector);
     if (!element) {
@@ -45,9 +54,9 @@
     return true;
   }
 
-  function buildFieldMap(card, settings) {
+  function buildFieldMap(card, settings, phone) {
     return {
-      [settings.phoneSelector]: card.phone,
+      [settings.phoneSelector]: phone,
       [settings.cardNumberSelector]: card.card,
       [settings.cardExpirySelector]: card.expiryInput,
       [settings.cardCvvSelector]: card.cvv,
@@ -65,7 +74,8 @@
     try {
       const card = payload && payload.card ? payload.card : {};
       const settings = payload && payload.settings ? payload.settings : {};
-      const fields = buildFieldMap(card, settings);
+      const phone = String((payload && payload.phone) || card.phone || "").trim();
+      const fields = buildFieldMap(card, settings, phone);
 
       const missing = [];
       let filled = 0;
@@ -93,6 +103,34 @@
         filled: 0,
         checked: 0,
         missing: [],
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  };
+
+  window.__gptAutoRegisterRemoveElement = function removeElement(payload) {
+    try {
+      const selector = String((payload && payload.selector) || "").trim();
+      if (!selector) {
+        return {
+          ok: false,
+          removed: false,
+          selector: "",
+          error: "selector 不能为空"
+        };
+      }
+      const result = removeSelector(selector);
+      return {
+        ok: result.removed,
+        removed: result.removed,
+        selector: result.selector,
+        error: result.removed ? "" : ""
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        removed: false,
+        selector: String((payload && payload.selector) || "").trim(),
         error: error && error.message ? error.message : String(error)
       };
     }

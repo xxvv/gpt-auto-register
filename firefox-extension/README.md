@@ -13,8 +13,7 @@
 
 - 点击 `生成` 会为内置 10 个域名生成同一随机前缀的邮箱。
 - 选中邮箱后点击 `获取验证码`，会轮询 `https://getemail.nnai.website/api/code` 最多 3 次；取到后可点 `复制验证码`。
-- 在代理分组中点击 `获取当前` 或 `替换代理`，会调用本机 `http://127.0.0.1:8888` 的 Webshare 接口，并优先取适合 Firefox 的 HTTP 鉴权代理，再设置到 Firefox。`设置代理` 会重新应用当前缓存代理，`清除代理` 会清除 Firefox 代理和后端当前任务代理。
-- 也可以在 `手动代理` 输入框直接粘贴 `http://username:password@host:port`，点击 `应用手动代理` 后会同时写入 Firefox 代理和本地任务代理，不依赖 Firefox 自己弹用户名密码框。
+- 在代理分组先输入 `Webshare API Key`，再点击 `获取当前` 或 `替换代理`，扩展会直接调用 Webshare 官方接口，并优先取适合 Firefox 的 HTTP 鉴权代理，再设置到 Firefox。`设置代理` 会重新应用当前缓存代理，`清除代理` 只会清除 Firefox 当前代理。
 - 在已登录的 `https://chatgpt.com` 标签页点击 `获取并打开`，会读取 session accessToken，调用 `https://payurl.779.chat/api/request`，并打开返回的 Stripe 链接。
 - 在 Stripe 支付页输入卡片文本后点击 `输出/填充`，会填入页面里的卡号、有效期、CVV、账单姓名和地址，并勾选服务条款。
 

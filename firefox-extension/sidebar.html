@@ -30,25 +30,44 @@
       <output id="codeOutput" class="result-output" aria-live="polite"></output>
     </section>
 
+    <section class="tool-section" aria-labelledby="phoneTitle">
+      <div class="section-header">
+        <h2 id="phoneTitle">手机</h2>
+      </div>
+      <label class="field-label" for="phoneKeyInput">手机区</label>
+      <input
+        id="phoneKeyInput"
+        class="text-input"
+        type="text"
+        spellcheck="false"
+        placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=31129bd848ebf521d4743c0dc537c12a"
+      >
+      <div id="phonePreview" class="phone-preview" aria-live="polite"></div>
+      <div class="section-actions">
+        <button id="copyPhoneButton" class="secondary-button" type="button">复制手机</button>
+        <button id="fetchPhoneCodeButton" class="secondary-button" type="button">获取短信</button>
+        <button id="copyPhoneCodeButton" class="secondary-button" type="button">复制短信码</button>
+      </div>
+      <output id="phoneCodeOutput" class="result-output" aria-live="polite"></output>
+    </section>
+
     <section class="tool-section" aria-labelledby="proxyTitle">
       <div class="section-header">
         <h2 id="proxyTitle">代理</h2>
         <button id="refreshProxyButton" class="icon-button" type="button" title="刷新代理状态" aria-label="刷新代理状态">↻</button>
       </div>
       <div id="proxyStatus" class="proxy-status">读取代理状态中</div>
-      <label class="field-label" for="manualProxyInput">手动代理</label>
-      <textarea
-        id="manualProxyInput"
-        class="proxy-input"
+      <label class="field-label" for="webshareApiKeyInput">Webshare Key</label>
+      <input
+        id="webshareApiKeyInput"
+        class="text-input"
+        type="password"
         spellcheck="false"
-        placeholder="http://username:password@host:port"
-      ></textarea>
+        placeholder="输入 Webshare API Key"
+      >
       <div class="section-actions proxy-actions">
         <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
         <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
-      </div>
-      <div class="section-actions proxy-actions">
-        <button id="applyManualProxyButton" class="secondary-button" type="button">应用手动代理</button>
       </div>
       <div class="section-actions proxy-actions">
         <button id="replaceProxyButton" class="secondary-button" type="button">替换代理</button>
@@ -79,10 +98,21 @@
           <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
         </div>
       </div>
-      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----年/月----cvv----phone----url----name----address,city state postcode,US"></textarea>
+      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----2030/2----cvv----url----name----address,city postcode,US"></textarea>
       <div id="cardPreview" class="card-preview" aria-live="polite"></div>
+      <label class="field-label" for="removeElementSelectorInput">删除元素 selector</label>
+      <div class="selector-action">
+        <input
+          id="removeElementSelectorInput"
+          class="text-input"
+          type="text"
+          spellcheck="false"
+          placeholder=".cookie-banner"
+        >
+        <button id="removeElementButton" class="danger-button selector-action-button" type="button">删除元素</button>
+      </div>
       <section id="fillSettingsPanel" class="fill-settings" hidden aria-label="填充设置">
-        <p class="settings-hint">默认按当前页面这些字段 ID 填充，手机号会自动去掉前缀 +1。</p>
+        <p class="settings-hint">默认按当前页面这些字段 ID 填充，手机号优先取上面的手机区，并自动去掉前缀 +1。</p>
         <div class="settings-grid">
           <label class="settings-field" for="phoneSelectorInput">
             <span>手机号</span>
