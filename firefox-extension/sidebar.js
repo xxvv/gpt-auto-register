@@ -591,23 +591,21 @@
       }
     });
 
+    const proxyAddress = `${runtimeProxy.host}:${runtimeProxy.port}`;
     const settingsValue = {
       proxyType: "manual",
-      http: runtimeProxy.host,
-      httpProxyPort: runtimeProxy.port,
-      ssl: runtimeProxy.host,
-      sslProxyPort: runtimeProxy.port,
       passthrough: "localhost, 127.0.0.1, ::1"
     };
 
-    if (proxyType === "socks" || proxyType === "socks4" || proxyType === "socks5") {
-      settingsValue.socks = runtimeProxy.host;
-      settingsValue.socksProxyPort = runtimeProxy.port;
+    if (proxyType === "http") {
+      settingsValue.http = proxyAddress;
+      settingsValue.httpProxyAll = true;
+    } else if (proxyType === "https") {
+      settingsValue.ssl = proxyAddress;
+    } else {
+      settingsValue.socks = proxyAddress;
       settingsValue.socksVersion = proxyType === "socks4" ? 4 : 5;
-      delete settingsValue.http;
-      delete settingsValue.httpProxyPort;
-      delete settingsValue.ssl;
-      delete settingsValue.sslProxyPort;
+      settingsValue.proxyDNS = proxyType !== "socks4";
     }
 
     await ext.proxy.settings.set({ value: settingsValue, scope: "regular" });
