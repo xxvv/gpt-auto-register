@@ -658,13 +658,13 @@
 
   async function getCurrentWebshareProxyDirect(apiKey) {
     const items = await fetchWebshareProxyList(apiKey);
-    const proxy = mapWebshareItemToProxy(items[0], { preferHttp: true });
+    const proxy = mapWebshareItemToProxy(items[0]);
     return requireRuntimeProxy(proxy);
   }
 
   async function replaceWebshareProxyDirect(apiKey) {
     const currentItems = await fetchWebshareProxyList(apiKey);
-    const currentProxy = mapWebshareItemToProxy(currentItems[0], { preferHttp: true });
+    const currentProxy = mapWebshareItemToProxy(currentItems[0]);
     const response = await fetch(WEBSHARE_REPLACE_API, {
       method: "POST",
       headers: buildWebshareHeaders(apiKey),
@@ -757,7 +757,7 @@
     return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
   }
 
-  function mapWebshareItemToProxy(item, { preferHttp = false } = {}) {
+  function mapWebshareItemToProxy(item) {
     if (!item || typeof item !== "object") {
       throw new Error("Webshare 代理数据无效");
     }
@@ -765,18 +765,16 @@
     if (!host) {
       throw new Error("Webshare 代理缺少 host");
     }
-    const portValue = preferHttp
-      ? item.port || item.http_port || item.proxy_port || item.socks5_port || 0
-      : item.socks5_port || item.port || item.proxy_port || item.http_port || 0;
+    const portValue = item.socks5_port || 0;
     const port = Number(portValue || 0);
     if (!port || port <= 0) {
-      throw new Error("Webshare 代理缺少有效端口");
+      throw new Error("Webshare 代理缺少有效的 socks5_port");
     }
     const username = String(item.username || item.user || "");
     const password = String(item.password || "");
     return {
       enabled: true,
-      type: preferHttp ? "http" : "socks5",
+      type: "socks5",
       host,
       port,
       use_auth: Boolean(username),
