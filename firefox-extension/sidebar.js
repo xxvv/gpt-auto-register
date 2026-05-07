@@ -630,19 +630,58 @@
   function renderProxyStatus() {
     const proxy = state.currentProxy;
     if (!isRuntimeProxy(proxy)) {
+      elements.proxyStatus.classList.add("empty");
       elements.proxyStatus.textContent = "未启用";
       return;
     }
 
-    const lines = [
-      `类型: ${String(proxy.type || "http").toLowerCase()}`,
-      `地址: ${proxy.host}`,
-      `端口: ${proxy.port}`,
-      `用户名: ${proxy.username || "-"}`,
-      `密码: ${proxy.password || "-"}`,
-      "鉴权: 手动输入"
+    elements.proxyStatus.classList.remove("empty");
+    elements.proxyStatus.textContent = "";
+
+    const rows = [
+      { label: "类型", value: String(proxy.type || "http").toLowerCase() },
+      { label: "地址", value: proxy.host },
+      { label: "端口", value: String(proxy.port || "") },
+      { label: "城市", value: String(proxy.city_name || proxy.city || "-") },
+      { label: "国家", value: String(proxy.country_code || proxy.country || "-").toUpperCase() },
+      { label: "用户名", value: proxy.username || "-", copyValue: proxy.username || "" },
+      { label: "密码", value: proxy.password || "-", copyValue: proxy.password || "" },
+      { label: "鉴权", value: "手动输入" }
     ];
-    elements.proxyStatus.textContent = lines.join("\n");
+
+    rows.forEach(({ label, value, copyValue }) => {
+      const row = document.createElement("div");
+      row.className = "preview-row";
+
+      const labelNode = document.createElement("span");
+      labelNode.className = "preview-label";
+      labelNode.textContent = label;
+
+      const valueNode = document.createElement("span");
+      valueNode.className = "preview-value";
+      valueNode.textContent = value;
+
+      row.append(labelNode, valueNode);
+
+      if (copyValue !== undefined) {
+        const copyButton = document.createElement("button");
+        copyButton.className = "preview-copy-button";
+        copyButton.type = "button";
+        copyButton.textContent = "复制";
+        copyButton.disabled = !String(copyValue || "").trim();
+        copyButton.addEventListener("click", async () => {
+          try {
+            await writeClipboard(copyValue);
+            showOutput(elements.proxyOutput, "success", `已复制${label}：${copyValue}`);
+          } catch (error) {
+            showOutput(elements.proxyOutput, "error", `复制${label}失败：${formatError(error)}`);
+          }
+        });
+        row.append(copyButton);
+      }
+
+      elements.proxyStatus.append(row);
+    });
   }
 
   function formatProxy(proxy) {
@@ -784,6 +823,8 @@
       type: normalizeProxyProtocol(protocol),
       host,
       port,
+      city_name: String(item.city_name || item.city || ""),
+      country_code: String(item.country_code || item.country || "").toUpperCase(),
       use_auth: Boolean(username),
       username: username || "",
       password: username ? password : ""

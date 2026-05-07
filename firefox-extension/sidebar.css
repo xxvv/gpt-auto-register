@@ -235,13 +235,18 @@ input:focus-visible,
 }
 
 .proxy-status {
+  display: grid;
+  gap: 8px;
   padding: 8px;
   background: #f4f7f2;
   border: 1px solid #d6e2d0;
   border-radius: 7px;
   color: #233423;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
+}
+
+.proxy-status.empty {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   overflow-wrap: anywhere;
 }
 
