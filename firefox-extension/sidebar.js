@@ -574,7 +574,7 @@
 
     await ext.storage.local.set({
       [PROXY_AUTH_KEY]: {
-        enabled: Boolean(runtimeProxy.use_auth && runtimeProxy.username),
+        enabled: false,
         host: runtimeProxy.host,
         port: runtimeProxy.port,
         username: runtimeProxy.username || "",
@@ -633,7 +633,7 @@
       `端口: ${proxy.port}`,
       `用户名: ${proxy.username || "-"}`,
       `密码: ${proxy.password || "-"}`,
-      `鉴权: ${proxy.use_auth && proxy.username ? "已启用" : "未启用"}`
+      "鉴权: 手动输入"
     ];
     elements.proxyStatus.textContent = lines.join("\n");
   }

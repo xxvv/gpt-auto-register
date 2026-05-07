@@ -22,24 +22,7 @@
         return {};
       }
 
-      if (!proxyAuth.enabled || !proxyAuth.username) {
-        return {};
-      }
-
-      const challenger = details.challenger || {};
-      if (proxyAuth.host && challenger.host && proxyAuth.host !== challenger.host) {
-        return {};
-      }
-      if (proxyAuth.port && challenger.port && Number(proxyAuth.port) !== Number(challenger.port)) {
-        return {};
-      }
-
-      return {
-        authCredentials: {
-          username: proxyAuth.username,
-          password: proxyAuth.password || ""
-        }
-      };
+      return {};
     },
     { urls: ["<all_urls>"] },
     ["blocking"]
