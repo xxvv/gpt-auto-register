@@ -36,9 +36,19 @@
         <button id="refreshProxyButton" class="icon-button" type="button" title="刷新代理状态" aria-label="刷新代理状态">↻</button>
       </div>
       <div id="proxyStatus" class="proxy-status">读取代理状态中</div>
+      <label class="field-label" for="manualProxyInput">手动代理</label>
+      <textarea
+        id="manualProxyInput"
+        class="proxy-input"
+        spellcheck="false"
+        placeholder="http://username:password@host:port"
+      ></textarea>
       <div class="section-actions proxy-actions">
         <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
         <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
+      </div>
+      <div class="section-actions proxy-actions">
+        <button id="applyManualProxyButton" class="secondary-button" type="button">应用手动代理</button>
       </div>
       <div class="section-actions proxy-actions">
         <button id="replaceProxyButton" class="secondary-button" type="button">替换代理</button>
@@ -58,10 +68,75 @@
     <section class="tool-section" aria-labelledby="cardTitle">
       <div class="section-header">
         <h2 id="cardTitle">卡片</h2>
-        <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
+        <div class="section-header-actions">
+          <button
+            id="toggleFillSettingsButton"
+            class="section-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="fillSettingsPanel"
+          >设置</button>
+          <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
+        </div>
       </div>
       <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----年/月----cvv----phone----url----name----address,city state postcode,US"></textarea>
       <div id="cardPreview" class="card-preview" aria-live="polite"></div>
+      <section id="fillSettingsPanel" class="fill-settings" hidden aria-label="填充设置">
+        <p class="settings-hint">默认按当前页面这些字段 ID 填充，手机号会自动去掉前缀 +1。</p>
+        <div class="settings-grid">
+          <label class="settings-field" for="phoneSelectorInput">
+            <span>手机号</span>
+            <input id="phoneSelectorInput" type="text" spellcheck="false" placeholder="#phone">
+          </label>
+          <label class="settings-field" for="cardNumberSelectorInput">
+            <span>卡号</span>
+            <input id="cardNumberSelectorInput" type="text" spellcheck="false" placeholder="#cardNumber">
+          </label>
+          <label class="settings-field" for="cardExpirySelectorInput">
+            <span>过期时间</span>
+            <input id="cardExpirySelectorInput" type="text" spellcheck="false" placeholder="#cardExpiry">
+          </label>
+          <label class="settings-field" for="cardCvvSelectorInput">
+            <span>CVV</span>
+            <input id="cardCvvSelectorInput" type="text" spellcheck="false" placeholder="#cardCvv">
+          </label>
+          <label class="settings-field" for="firstNameSelectorInput">
+            <span>First Name</span>
+            <input id="firstNameSelectorInput" type="text" spellcheck="false" placeholder="#firstName">
+          </label>
+          <label class="settings-field" for="lastNameSelectorInput">
+            <span>Last Name</span>
+            <input id="lastNameSelectorInput" type="text" spellcheck="false" placeholder="#lastName">
+          </label>
+          <label class="settings-field" for="billingLine1SelectorInput">
+            <span>Address</span>
+            <input id="billingLine1SelectorInput" type="text" spellcheck="false" placeholder="#billingLine1">
+          </label>
+          <label class="settings-field" for="billingCitySelectorInput">
+            <span>City</span>
+            <input id="billingCitySelectorInput" type="text" spellcheck="false" placeholder="#billingCity">
+          </label>
+          <label class="settings-field" for="billingStateSelectorInput">
+            <span>State</span>
+            <input id="billingStateSelectorInput" type="text" spellcheck="false" placeholder="#billingState">
+          </label>
+          <label class="settings-field" for="billingPostalCodeSelectorInput">
+            <span>Postcode</span>
+            <input id="billingPostalCodeSelectorInput" type="text" spellcheck="false" placeholder="#billingPostalCode">
+          </label>
+          <label class="settings-field" for="passwordSelectorInput">
+            <span>密码字段</span>
+            <input id="passwordSelectorInput" type="text" spellcheck="false" placeholder="#password">
+          </label>
+          <label class="settings-field" for="passwordValueInput">
+            <span>默认密码</span>
+            <input id="passwordValueInput" type="text" spellcheck="false" placeholder="Bb02911ss">
+          </label>
+        </div>
+        <div class="section-actions">
+          <button id="resetFillSettingsButton" class="secondary-button" type="button">恢复默认</button>
+        </div>
+      </section>
       <output id="fillOutput" class="result-output" aria-live="polite"></output>
     </section>
   </main>

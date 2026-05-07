@@ -23,6 +23,20 @@
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
+  const DEFAULT_FILL_SETTINGS = Object.freeze({
+    phoneSelector: "#phone",
+    cardNumberSelector: "#cardNumber",
+    cardExpirySelector: "#cardExpiry",
+    cardCvvSelector: "#cardCvv",
+    firstNameSelector: "#firstName",
+    lastNameSelector: "#lastName",
+    billingLine1Selector: "#billingLine1",
+    billingCitySelector: "#billingCity",
+    billingStateSelector: "#billingState",
+    billingPostalCodeSelector: "#billingPostalCode",
+    passwordSelector: "#password",
+    passwordValue: "Bb02911ss"
+  });
 
   const elements = {
     currentTabText: document.getElementById("currentTabText"),
@@ -35,16 +49,33 @@
     codeOutput: document.getElementById("codeOutput"),
     refreshProxyButton: document.getElementById("refreshProxyButton"),
     proxyStatus: document.getElementById("proxyStatus"),
+    manualProxyInput: document.getElementById("manualProxyInput"),
     getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
     setProxyButton: document.getElementById("setProxyButton"),
+    applyManualProxyButton: document.getElementById("applyManualProxyButton"),
     replaceProxyButton: document.getElementById("replaceProxyButton"),
     clearProxyButton: document.getElementById("clearProxyButton"),
     proxyOutput: document.getElementById("proxyOutput"),
     fetchPayUrlButton: document.getElementById("fetchPayUrlButton"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
+    toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
     fillCardButton: document.getElementById("fillCardButton"),
     cardPreview: document.getElementById("cardPreview"),
+    fillSettingsPanel: document.getElementById("fillSettingsPanel"),
+    phoneSelectorInput: document.getElementById("phoneSelectorInput"),
+    cardNumberSelectorInput: document.getElementById("cardNumberSelectorInput"),
+    cardExpirySelectorInput: document.getElementById("cardExpirySelectorInput"),
+    cardCvvSelectorInput: document.getElementById("cardCvvSelectorInput"),
+    firstNameSelectorInput: document.getElementById("firstNameSelectorInput"),
+    lastNameSelectorInput: document.getElementById("lastNameSelectorInput"),
+    billingLine1SelectorInput: document.getElementById("billingLine1SelectorInput"),
+    billingCitySelectorInput: document.getElementById("billingCitySelectorInput"),
+    billingStateSelectorInput: document.getElementById("billingStateSelectorInput"),
+    billingPostalCodeSelectorInput: document.getElementById("billingPostalCodeSelectorInput"),
+    passwordSelectorInput: document.getElementById("passwordSelectorInput"),
+    passwordValueInput: document.getElementById("passwordValueInput"),
+    resetFillSettingsButton: document.getElementById("resetFillSettingsButton"),
     fillOutput: document.getElementById("fillOutput")
   };
 
@@ -53,6 +84,9 @@
     selectedEmail: "",
     lastCode: "",
     currentProxy: null,
+    manualProxyText: "",
+    fillSettings: createDefaultFillSettings(),
+    fillSettingsExpanded: false,
     currentTab: null,
     busy: new Set()
   };
@@ -77,14 +111,22 @@
     elements.refreshProxyButton.addEventListener("click", refreshProxyStatus);
     elements.getWebshareProxyButton.addEventListener("click", getCurrentWebshareProxy);
     elements.setProxyButton.addEventListener("click", setCurrentProxy);
+    elements.applyManualProxyButton.addEventListener("click", applyManualProxy);
     elements.replaceProxyButton.addEventListener("click", replaceWebshareProxy);
     elements.clearProxyButton.addEventListener("click", clearProxy);
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
+    elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
+    elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
     elements.fillCardButton.addEventListener("click", fillCardInCurrentTab);
+    elements.manualProxyInput.addEventListener("input", () => {
+      state.manualProxyText = elements.manualProxyInput.value;
+      persistState();
+    });
     elements.cardInput.addEventListener("input", () => {
       renderCardPreview();
       persistState();
     });
+    bindFillSettingsInputs();
   }
 
   async function restoreState() {
@@ -95,7 +137,12 @@
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
       state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
       state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
+      state.manualProxyText = typeof data.manualProxyText === "string" ? data.manualProxyText : "";
+      state.fillSettings = sanitizeFillSettings(data.fillSettings);
+      state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
+      elements.manualProxyInput.value = state.manualProxyText;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
+      renderFillSettings();
     } catch (error) {
       showOutput(elements.codeOutput, "error", `读取本地状态失败：${formatError(error)}`);
     }
@@ -116,7 +163,10 @@
           selectedEmail: state.selectedEmail,
           lastCode: state.lastCode,
           currentProxy: state.currentProxy,
-          cardInput: elements.cardInput.value
+          manualProxyText: state.manualProxyText,
+          cardInput: elements.cardInput.value,
+          fillSettings: state.fillSettings,
+          fillSettingsExpanded: state.fillSettingsExpanded
         }
       });
     } catch (error) {
@@ -293,7 +343,7 @@
   async function getCurrentWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在获取当前 Webshare 代理",
-      endpoint: "/api/webshare-proxy/current",
+      endpoint: "/api/webshare-proxy/current?prefer_http=1",
       successPrefix: "已获取并设置 Firefox 代理"
     });
   }
@@ -301,7 +351,7 @@
   async function replaceWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在替换 Webshare 代理",
-      endpoint: "/api/webshare-proxy/replace",
+      endpoint: "/api/webshare-proxy/replace?prefer_http=1",
       successPrefix: "已替换并设置 Firefox 代理"
     });
   }
@@ -341,6 +391,34 @@
       showOutput(elements.proxyOutput, "success", `已设置 Firefox 代理：${formatProxy(state.currentProxy)}`);
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `设置代理失败：${formatError(error)}`);
+    } finally {
+      setBusy("proxy", false);
+    }
+  }
+
+  async function applyManualProxy() {
+    const raw = String(elements.manualProxyInput.value || "").trim();
+    if (!raw) {
+      showOutput(elements.proxyOutput, "error", "请先输入代理链接");
+      return;
+    }
+
+    setBusy("proxy", true);
+    showOutput(elements.proxyOutput, "info", "正在解析并应用手动代理");
+    try {
+      const proxy = parseManualProxy(raw);
+      await applyFirefoxProxy(proxy);
+      await requestLocalApi("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ proxy })
+      });
+      state.currentProxy = proxy;
+      state.manualProxyText = raw;
+      renderProxyStatus();
+      await persistState();
+      showOutput(elements.proxyOutput, "success", `已应用手动代理：${formatProxy(proxy)}`);
+    } catch (error) {
+      showOutput(elements.proxyOutput, "error", `应用手动代理失败：${formatError(error)}`);
     } finally {
       setBusy("proxy", false);
     }
@@ -457,6 +535,40 @@
     return `${type}://${proxy.host}:${proxy.port}${auth}`;
   }
 
+  function parseManualProxy(raw) {
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (error) {
+      throw new Error("代理格式无效，请使用 http://username:password@host:port");
+    }
+
+    const protocol = String(parsed.protocol || "").replace(/:$/, "").toLowerCase();
+    if (!["http", "https", "socks", "socks4", "socks5"].includes(protocol)) {
+      throw new Error(`不支持的代理协议：${protocol || "unknown"}`);
+    }
+
+    const host = String(parsed.hostname || "").trim();
+    const port = Number(parsed.port || 0);
+    if (!host || port <= 0) {
+      throw new Error("代理缺少有效的 host 或 port");
+    }
+
+    const username = decodeURIComponent(parsed.username || "");
+    const password = decodeURIComponent(parsed.password || "");
+    const useAuth = Boolean(username);
+
+    return {
+      enabled: true,
+      type: protocol,
+      host,
+      port,
+      use_auth: useAuth,
+      username: useAuth ? username : "",
+      password: useAuth ? password : ""
+    };
+  }
+
   async function fetchPayUrl() {
     setBusy("payurl", true);
     showOutput(elements.payUrlOutput, "info", "正在读取 ChatGPT session");
@@ -570,13 +682,17 @@
     showOutput(elements.fillOutput, "info", "正在填充当前支付页面");
 
     try {
-      const tab = await requireCurrentTab("stripe");
+      const tab = await requireCurrentTab();
       await ext.tabs.executeScript(tab.id, {
         file: "content-script.js",
         allFrames: true,
         runAt: "document_idle"
       });
-      const code = `window.__gptAutoRegisterFillStripe && window.__gptAutoRegisterFillStripe(${JSON.stringify(card)})`;
+      const payload = {
+        card,
+        settings: state.fillSettings
+      };
+      const code = `window.__gptAutoRegisterFillForm && window.__gptAutoRegisterFillForm(${JSON.stringify(payload)})`;
       const results = await ext.tabs.executeScript(tab.id, {
         code,
         allFrames: true,
@@ -630,9 +746,11 @@
       year,
       month,
       cvv,
-      phone,
+      phone: normalizeUsPhone(phone),
       url,
       name,
+      firstName: extractFirstName(name),
+      lastName: extractLastName(name),
       address,
       city,
       state,
@@ -678,6 +796,7 @@
       ["卡号", maskCard(parsed.card)],
       ["有效期", parsed.expiryInput],
       ["CVV", parsed.cvv],
+      ["手机", parsed.phone],
       ["姓名", parsed.name],
       ["地址", `${parsed.address}, ${parsed.city} ${parsed.state} ${parsed.postcode}, ${parsed.country}`]
     ].forEach(([label, value]) => {
@@ -703,10 +822,113 @@
     if (expected === "chatgpt.com" && !/^https:\/\/chatgpt\.com\//i.test(url)) {
       throw new Error("请先切换到已登录的 https://chatgpt.com 页面");
     }
-    if (expected === "stripe" && !/^https:\/\/([^/]+\.)?stripe\.com\//i.test(url)) {
-      throw new Error("请先打开 Stripe 支付页面");
-    }
     return tab;
+  }
+
+  function bindFillSettingsInputs() {
+    const entries = [
+      ["phoneSelectorInput", "phoneSelector"],
+      ["cardNumberSelectorInput", "cardNumberSelector"],
+      ["cardExpirySelectorInput", "cardExpirySelector"],
+      ["cardCvvSelectorInput", "cardCvvSelector"],
+      ["firstNameSelectorInput", "firstNameSelector"],
+      ["lastNameSelectorInput", "lastNameSelector"],
+      ["billingLine1SelectorInput", "billingLine1Selector"],
+      ["billingCitySelectorInput", "billingCitySelector"],
+      ["billingStateSelectorInput", "billingStateSelector"],
+      ["billingPostalCodeSelectorInput", "billingPostalCodeSelector"],
+      ["passwordSelectorInput", "passwordSelector"],
+      ["passwordValueInput", "passwordValue"]
+    ];
+
+    entries.forEach(([elementKey, stateKey]) => {
+      elements[elementKey].addEventListener("input", () => {
+        state.fillSettings[stateKey] = String(elements[elementKey].value || "").trim();
+        persistState();
+      });
+    });
+  }
+
+  function toggleFillSettingsPanel() {
+    state.fillSettingsExpanded = !state.fillSettingsExpanded;
+    renderFillSettings();
+    persistState();
+  }
+
+  function resetFillSettings() {
+    state.fillSettings = createDefaultFillSettings();
+    renderFillSettings();
+    persistState();
+    showOutput(elements.fillOutput, "success", "已恢复默认填充设置");
+  }
+
+  function renderFillSettings() {
+    const settings = sanitizeFillSettings(state.fillSettings);
+    state.fillSettings = settings;
+    elements.fillSettingsPanel.hidden = !state.fillSettingsExpanded;
+    elements.toggleFillSettingsButton.setAttribute("aria-expanded", String(state.fillSettingsExpanded));
+    elements.toggleFillSettingsButton.textContent = state.fillSettingsExpanded ? "收起" : "设置";
+    elements.phoneSelectorInput.value = settings.phoneSelector;
+    elements.cardNumberSelectorInput.value = settings.cardNumberSelector;
+    elements.cardExpirySelectorInput.value = settings.cardExpirySelector;
+    elements.cardCvvSelectorInput.value = settings.cardCvvSelector;
+    elements.firstNameSelectorInput.value = settings.firstNameSelector;
+    elements.lastNameSelectorInput.value = settings.lastNameSelector;
+    elements.billingLine1SelectorInput.value = settings.billingLine1Selector;
+    elements.billingCitySelectorInput.value = settings.billingCitySelector;
+    elements.billingStateSelectorInput.value = settings.billingStateSelector;
+    elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector;
+    elements.passwordSelectorInput.value = settings.passwordSelector;
+    elements.passwordValueInput.value = settings.passwordValue;
+  }
+
+  function createDefaultFillSettings() {
+    return { ...DEFAULT_FILL_SETTINGS };
+  }
+
+  function sanitizeFillSettings(raw) {
+    const input = raw && typeof raw === "object" ? raw : {};
+    return {
+      phoneSelector: normalizeSelector(input.phoneSelector, DEFAULT_FILL_SETTINGS.phoneSelector),
+      cardNumberSelector: normalizeSelector(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
+      cardExpirySelector: normalizeSelector(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
+      cardCvvSelector: normalizeSelector(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
+      firstNameSelector: normalizeSelector(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
+      lastNameSelector: normalizeSelector(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
+      billingLine1Selector: normalizeSelector(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
+      billingCitySelector: normalizeSelector(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
+      billingStateSelector: normalizeSelector(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
+      billingPostalCodeSelector: normalizeSelector(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
+      passwordSelector: normalizeSelector(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
+      passwordValue: String(input.passwordValue || DEFAULT_FILL_SETTINGS.passwordValue).trim() || DEFAULT_FILL_SETTINGS.passwordValue
+    };
+  }
+
+  function normalizeSelector(value, fallback) {
+    const normalized = String(value || "").trim();
+    return normalized || fallback;
+  }
+
+  function normalizeUsPhone(phone) {
+    let normalized = String(phone || "").trim();
+    if (normalized.startsWith("+1")) {
+      normalized = normalized.slice(2).trim();
+    }
+    normalized = normalized.replace(/^[\s()-]+/, "");
+    return normalized;
+  }
+
+  function extractFirstName(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    return parts[0] || "";
+  }
+
+  function extractLastName(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) {
+      return "";
+    }
+    return parts.slice(1).join(" ");
   }
 
   async function readJsonResponse(response, label) {

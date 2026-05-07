@@ -45,23 +45,35 @@
     return true;
   }
 
-  window.__gptAutoRegisterFillStripe = function fillStripe(card) {
+  function buildFieldMap(card, settings) {
+    return {
+      [settings.phoneSelector]: card.phone,
+      [settings.cardNumberSelector]: card.card,
+      [settings.cardExpirySelector]: card.expiryInput,
+      [settings.cardCvvSelector]: card.cvv,
+      [settings.firstNameSelector]: card.firstName,
+      [settings.lastNameSelector]: card.lastName,
+      [settings.billingLine1Selector]: card.address,
+      [settings.billingCitySelector]: card.city,
+      [settings.billingStateSelector]: card.state,
+      [settings.billingPostalCodeSelector]: card.postcode,
+      [settings.passwordSelector]: settings.passwordValue
+    };
+  }
+
+  window.__gptAutoRegisterFillForm = function fillForm(payload) {
     try {
-      const fields = {
-        "#cardNumber": card.card,
-        "#cardExpiry": card.expiryInput,
-        "#cardCvc": card.cvv,
-        "#billingName": card.name,
-        "#billingAddressLine1": card.address,
-        "#billingLocality": card.city,
-        "#billingAdministrativeArea": card.state,
-        "#billingPostalCode": card.postcode
-      };
+      const card = payload && payload.card ? payload.card : {};
+      const settings = payload && payload.settings ? payload.settings : {};
+      const fields = buildFieldMap(card, settings);
 
       const missing = [];
       let filled = 0;
 
       Object.entries(fields).forEach(([selector, value]) => {
+        if (!selector) {
+          return;
+        }
         if (fillSelector(selector, value)) {
           filled += 1;
         } else {
@@ -69,17 +81,10 @@
         }
       });
 
-      let checked = 0;
-      if (checkSelector("#termsOfServiceConsentCheckbox")) {
-        checked += 1;
-      } else {
-        missing.push("#termsOfServiceConsentCheckbox");
-      }
-
       return {
-        ok: filled > 0 || checked > 0,
+        ok: filled > 0,
         filled,
-        checked,
+        checked: 0,
         missing
       };
     } catch (error) {
