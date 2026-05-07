@@ -58,6 +58,7 @@
     refreshProxyButton: document.getElementById("refreshProxyButton"),
     proxyStatus: document.getElementById("proxyStatus"),
     webshareApiKeyInput: document.getElementById("webshareApiKeyInput"),
+    proxyProtocolSelect: document.getElementById("proxyProtocolSelect"),
     getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
     setProxyButton: document.getElementById("setProxyButton"),
     replaceProxyButton: document.getElementById("replaceProxyButton"),
@@ -97,6 +98,7 @@
     lastPhoneCode: "",
     currentProxy: null,
     webshareApiKey: "",
+    proxyProtocol: "http",
     removeElementSelector: "",
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
@@ -143,6 +145,10 @@
       state.webshareApiKey = elements.webshareApiKeyInput.value;
       persistState();
     });
+    elements.proxyProtocolSelect.addEventListener("change", () => {
+      state.proxyProtocol = normalizeProxyProtocol(elements.proxyProtocolSelect.value);
+      persistState();
+    });
     elements.removeElementSelectorInput.addEventListener("input", () => {
       state.removeElementSelector = String(elements.removeElementSelectorInput.value || "").trim();
       persistState();
@@ -165,11 +171,13 @@
       state.lastPhoneCode = typeof data.lastPhoneCode === "string" ? data.lastPhoneCode : "";
       state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
       state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
+      state.proxyProtocol = normalizeProxyProtocol(data.proxyProtocol);
       state.removeElementSelector = typeof data.removeElementSelector === "string" ? data.removeElementSelector : "";
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
       elements.phoneKeyInput.value = state.phoneKeyInput;
       elements.webshareApiKeyInput.value = state.webshareApiKey;
+      elements.proxyProtocolSelect.value = state.proxyProtocol;
       elements.removeElementSelectorInput.value = state.removeElementSelector;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
       state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
@@ -197,6 +205,7 @@
           lastPhoneCode: state.lastPhoneCode,
           currentProxy: state.currentProxy,
           webshareApiKey: state.webshareApiKey,
+          proxyProtocol: state.proxyProtocol,
           removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
@@ -658,13 +667,13 @@
 
   async function getCurrentWebshareProxyDirect(apiKey) {
     const items = await fetchWebshareProxyList(apiKey);
-    const proxy = mapWebshareItemToProxy(items[0]);
+    const proxy = mapWebshareItemToProxy(items[0], state.proxyProtocol);
     return requireRuntimeProxy(proxy);
   }
 
   async function replaceWebshareProxyDirect(apiKey) {
     const currentItems = await fetchWebshareProxyList(apiKey);
-    const currentProxy = mapWebshareItemToProxy(currentItems[0]);
+    const currentProxy = mapWebshareItemToProxy(currentItems[0], state.proxyProtocol);
     const response = await fetch(WEBSHARE_REPLACE_API, {
       method: "POST",
       headers: buildWebshareHeaders(apiKey),
@@ -757,7 +766,7 @@
     return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
   }
 
-  function mapWebshareItemToProxy(item) {
+  function mapWebshareItemToProxy(item, protocol) {
     if (!item || typeof item !== "object") {
       throw new Error("Webshare 代理数据无效");
     }
@@ -774,13 +783,17 @@
     const password = String(item.password || "");
     return {
       enabled: true,
-      type: "socks5",
+      type: normalizeProxyProtocol(protocol),
       host,
       port,
       use_auth: Boolean(username),
       username: username || "",
       password: username ? password : ""
     };
+  }
+
+  function normalizeProxyProtocol(value) {
+    return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
   }
 
   function normalizeWebshareStatus(payload) {

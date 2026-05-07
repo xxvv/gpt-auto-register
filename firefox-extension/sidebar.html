@@ -65,6 +65,11 @@
         spellcheck="false"
         placeholder="输入 Webshare API Key"
       >
+      <label class="field-label" for="proxyProtocolSelect">代理协议</label>
+      <select id="proxyProtocolSelect" class="text-input">
+        <option value="http">http</option>
+        <option value="socks5">socks5</option>
+      </select>
       <div class="section-actions proxy-actions">
         <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
         <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
