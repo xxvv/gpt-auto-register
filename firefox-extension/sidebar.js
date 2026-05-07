@@ -765,10 +765,10 @@
     if (!host) {
       throw new Error("Webshare 代理缺少 host");
     }
-    const portValue = item.socks5_port || 0;
+    const portValue = item.port || 0;
     const port = Number(portValue || 0);
     if (!port || port <= 0) {
-      throw new Error("Webshare 代理缺少有效的 socks5_port");
+      throw new Error("Webshare 代理缺少有效的 port");
     }
     const username = String(item.username || item.user || "");
     const password = String(item.password || "");
