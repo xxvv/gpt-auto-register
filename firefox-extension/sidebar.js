@@ -26,17 +26,17 @@
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
-    phoneSelector: "#phone",
-    cardNumberSelector: "#cardNumber",
-    cardExpirySelector: "#cardExpiry",
-    cardCvvSelector: "#cardCvv",
-    firstNameSelector: "#firstName",
-    lastNameSelector: "#lastName",
-    billingLine1Selector: "#billingLine1",
-    billingCitySelector: "#billingCity",
-    billingStateSelector: "#billingState",
-    billingPostalCodeSelector: "#billingPostalCode",
-    passwordSelector: "#password",
+    phoneSelector: ["#phone", ""],
+    cardNumberSelector: ["#cardNumber", ""],
+    cardExpirySelector: ["#cardExpiry", ""],
+    cardCvvSelector: ["#cardCvv", ""],
+    firstNameSelector: ["#firstName", ""],
+    lastNameSelector: ["#lastName", ""],
+    billingLine1Selector: ["#billingLine1", ""],
+    billingCitySelector: ["#billingCity", ""],
+    billingStateSelector: ["#billingState", ""],
+    billingPostalCodeSelector: ["#billingPostalCode", ""],
+    passwordSelector: ["#password", ""],
     passwordValue: "Bb02911ss"
   });
 
@@ -74,16 +74,27 @@
     removeElementButton: document.getElementById("removeElementButton"),
     fillSettingsPanel: document.getElementById("fillSettingsPanel"),
     phoneSelectorInput: document.getElementById("phoneSelectorInput"),
+    phoneSelectorAltInput: document.getElementById("phoneSelectorAltInput"),
     cardNumberSelectorInput: document.getElementById("cardNumberSelectorInput"),
+    cardNumberSelectorAltInput: document.getElementById("cardNumberSelectorAltInput"),
     cardExpirySelectorInput: document.getElementById("cardExpirySelectorInput"),
+    cardExpirySelectorAltInput: document.getElementById("cardExpirySelectorAltInput"),
     cardCvvSelectorInput: document.getElementById("cardCvvSelectorInput"),
+    cardCvvSelectorAltInput: document.getElementById("cardCvvSelectorAltInput"),
     firstNameSelectorInput: document.getElementById("firstNameSelectorInput"),
+    firstNameSelectorAltInput: document.getElementById("firstNameSelectorAltInput"),
     lastNameSelectorInput: document.getElementById("lastNameSelectorInput"),
+    lastNameSelectorAltInput: document.getElementById("lastNameSelectorAltInput"),
     billingLine1SelectorInput: document.getElementById("billingLine1SelectorInput"),
+    billingLine1SelectorAltInput: document.getElementById("billingLine1SelectorAltInput"),
     billingCitySelectorInput: document.getElementById("billingCitySelectorInput"),
+    billingCitySelectorAltInput: document.getElementById("billingCitySelectorAltInput"),
     billingStateSelectorInput: document.getElementById("billingStateSelectorInput"),
+    billingStateSelectorAltInput: document.getElementById("billingStateSelectorAltInput"),
     billingPostalCodeSelectorInput: document.getElementById("billingPostalCodeSelectorInput"),
+    billingPostalCodeSelectorAltInput: document.getElementById("billingPostalCodeSelectorAltInput"),
     passwordSelectorInput: document.getElementById("passwordSelectorInput"),
+    passwordSelectorAltInput: document.getElementById("passwordSelectorAltInput"),
     passwordValueInput: document.getElementById("passwordValueInput"),
     resetFillSettingsButton: document.getElementById("resetFillSettingsButton"),
     fillOutput: document.getElementById("fillOutput")
@@ -1192,23 +1203,40 @@
 
   function bindFillSettingsInputs() {
     const entries = [
-      ["phoneSelectorInput", "phoneSelector"],
-      ["cardNumberSelectorInput", "cardNumberSelector"],
-      ["cardExpirySelectorInput", "cardExpirySelector"],
-      ["cardCvvSelectorInput", "cardCvvSelector"],
-      ["firstNameSelectorInput", "firstNameSelector"],
-      ["lastNameSelectorInput", "lastNameSelector"],
-      ["billingLine1SelectorInput", "billingLine1Selector"],
-      ["billingCitySelectorInput", "billingCitySelector"],
-      ["billingStateSelectorInput", "billingStateSelector"],
-      ["billingPostalCodeSelectorInput", "billingPostalCodeSelector"],
-      ["passwordSelectorInput", "passwordSelector"],
+      ["phoneSelectorInput", "phoneSelector", 0],
+      ["phoneSelectorAltInput", "phoneSelector", 1],
+      ["cardNumberSelectorInput", "cardNumberSelector", 0],
+      ["cardNumberSelectorAltInput", "cardNumberSelector", 1],
+      ["cardExpirySelectorInput", "cardExpirySelector", 0],
+      ["cardExpirySelectorAltInput", "cardExpirySelector", 1],
+      ["cardCvvSelectorInput", "cardCvvSelector", 0],
+      ["cardCvvSelectorAltInput", "cardCvvSelector", 1],
+      ["firstNameSelectorInput", "firstNameSelector", 0],
+      ["firstNameSelectorAltInput", "firstNameSelector", 1],
+      ["lastNameSelectorInput", "lastNameSelector", 0],
+      ["lastNameSelectorAltInput", "lastNameSelector", 1],
+      ["billingLine1SelectorInput", "billingLine1Selector", 0],
+      ["billingLine1SelectorAltInput", "billingLine1Selector", 1],
+      ["billingCitySelectorInput", "billingCitySelector", 0],
+      ["billingCitySelectorAltInput", "billingCitySelector", 1],
+      ["billingStateSelectorInput", "billingStateSelector", 0],
+      ["billingStateSelectorAltInput", "billingStateSelector", 1],
+      ["billingPostalCodeSelectorInput", "billingPostalCodeSelector", 0],
+      ["billingPostalCodeSelectorAltInput", "billingPostalCodeSelector", 1],
+      ["passwordSelectorInput", "passwordSelector", 0],
+      ["passwordSelectorAltInput", "passwordSelector", 1],
       ["passwordValueInput", "passwordValue"]
     ];
 
-    entries.forEach(([elementKey, stateKey]) => {
+    entries.forEach(([elementKey, stateKey, selectorIndex]) => {
       elements[elementKey].addEventListener("input", () => {
-        state.fillSettings[stateKey] = String(elements[elementKey].value || "").trim();
+        if (typeof selectorIndex === "number") {
+          const nextSelectors = normalizeSelectorList(state.fillSettings[stateKey], DEFAULT_FILL_SETTINGS[stateKey]);
+          nextSelectors[selectorIndex] = String(elements[elementKey].value || "").trim();
+          state.fillSettings[stateKey] = nextSelectors;
+        } else {
+          state.fillSettings[stateKey] = String(elements[elementKey].value || "").trim();
+        }
         persistState();
       });
     });
@@ -1233,17 +1261,28 @@
     elements.fillSettingsPanel.hidden = !state.fillSettingsExpanded;
     elements.toggleFillSettingsButton.setAttribute("aria-expanded", String(state.fillSettingsExpanded));
     elements.toggleFillSettingsButton.textContent = state.fillSettingsExpanded ? "收起" : "设置";
-    elements.phoneSelectorInput.value = settings.phoneSelector;
-    elements.cardNumberSelectorInput.value = settings.cardNumberSelector;
-    elements.cardExpirySelectorInput.value = settings.cardExpirySelector;
-    elements.cardCvvSelectorInput.value = settings.cardCvvSelector;
-    elements.firstNameSelectorInput.value = settings.firstNameSelector;
-    elements.lastNameSelectorInput.value = settings.lastNameSelector;
-    elements.billingLine1SelectorInput.value = settings.billingLine1Selector;
-    elements.billingCitySelectorInput.value = settings.billingCitySelector;
-    elements.billingStateSelectorInput.value = settings.billingStateSelector;
-    elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector;
-    elements.passwordSelectorInput.value = settings.passwordSelector;
+    elements.phoneSelectorInput.value = settings.phoneSelector[0];
+    elements.phoneSelectorAltInput.value = settings.phoneSelector[1];
+    elements.cardNumberSelectorInput.value = settings.cardNumberSelector[0];
+    elements.cardNumberSelectorAltInput.value = settings.cardNumberSelector[1];
+    elements.cardExpirySelectorInput.value = settings.cardExpirySelector[0];
+    elements.cardExpirySelectorAltInput.value = settings.cardExpirySelector[1];
+    elements.cardCvvSelectorInput.value = settings.cardCvvSelector[0];
+    elements.cardCvvSelectorAltInput.value = settings.cardCvvSelector[1];
+    elements.firstNameSelectorInput.value = settings.firstNameSelector[0];
+    elements.firstNameSelectorAltInput.value = settings.firstNameSelector[1];
+    elements.lastNameSelectorInput.value = settings.lastNameSelector[0];
+    elements.lastNameSelectorAltInput.value = settings.lastNameSelector[1];
+    elements.billingLine1SelectorInput.value = settings.billingLine1Selector[0];
+    elements.billingLine1SelectorAltInput.value = settings.billingLine1Selector[1];
+    elements.billingCitySelectorInput.value = settings.billingCitySelector[0];
+    elements.billingCitySelectorAltInput.value = settings.billingCitySelector[1];
+    elements.billingStateSelectorInput.value = settings.billingStateSelector[0];
+    elements.billingStateSelectorAltInput.value = settings.billingStateSelector[1];
+    elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector[0];
+    elements.billingPostalCodeSelectorAltInput.value = settings.billingPostalCodeSelector[1];
+    elements.passwordSelectorInput.value = settings.passwordSelector[0];
+    elements.passwordSelectorAltInput.value = settings.passwordSelector[1];
     elements.passwordValueInput.value = settings.passwordValue;
   }
 
@@ -1254,17 +1293,17 @@
   function sanitizeFillSettings(raw) {
     const input = raw && typeof raw === "object" ? raw : {};
     return {
-      phoneSelector: normalizeSelector(input.phoneSelector, DEFAULT_FILL_SETTINGS.phoneSelector),
-      cardNumberSelector: normalizeSelector(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
-      cardExpirySelector: normalizeSelector(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
-      cardCvvSelector: normalizeSelector(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
-      firstNameSelector: normalizeSelector(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
-      lastNameSelector: normalizeSelector(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
-      billingLine1Selector: normalizeSelector(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
-      billingCitySelector: normalizeSelector(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
-      billingStateSelector: normalizeSelector(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
-      billingPostalCodeSelector: normalizeSelector(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
-      passwordSelector: normalizeSelector(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
+      phoneSelector: normalizeSelectorList(input.phoneSelector, DEFAULT_FILL_SETTINGS.phoneSelector),
+      cardNumberSelector: normalizeSelectorList(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
+      cardExpirySelector: normalizeSelectorList(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
+      cardCvvSelector: normalizeSelectorList(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
+      firstNameSelector: normalizeSelectorList(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
+      lastNameSelector: normalizeSelectorList(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
+      billingLine1Selector: normalizeSelectorList(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
+      billingCitySelector: normalizeSelectorList(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
+      billingStateSelector: normalizeSelectorList(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
+      billingPostalCodeSelector: normalizeSelectorList(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
+      passwordSelector: normalizeSelectorList(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
       passwordValue: String(input.passwordValue || DEFAULT_FILL_SETTINGS.passwordValue).trim() || DEFAULT_FILL_SETTINGS.passwordValue
     };
   }
@@ -1272,6 +1311,23 @@
   function normalizeSelector(value, fallback) {
     const normalized = String(value || "").trim();
     return normalized || fallback;
+  }
+
+  function normalizeSelectorList(value, fallback) {
+    const fallbackList = Array.isArray(fallback) ? fallback : [String(fallback || ""), ""];
+    const rawList = Array.isArray(value)
+      ? value
+      : value
+        ? [value]
+        : [];
+    const normalized = [0, 1].map((index) => {
+      const candidate = index < rawList.length ? rawList[index] : fallbackList[index] || "";
+      return String(candidate || "").trim();
+    });
+    if (!normalized[0]) {
+      normalized[0] = String(fallbackList[0] || "").trim();
+    }
+    return normalized;
   }
 
   function normalizeUsPhone(phone) {
