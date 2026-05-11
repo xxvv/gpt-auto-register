@@ -13,13 +13,38 @@
         <h1>GPT Helper</h1>
         <p id="currentTabText">等待页面状态</p>
       </div>
-      <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+      <div class="header-actions">
+        <button id="openChatGptButton" class="section-button" type="button">打开 ChatGPT</button>
+        <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+      </div>
     </header>
 
     <section class="tool-section" aria-labelledby="emailTitle">
       <div class="section-header">
         <h2 id="emailTitle">邮箱</h2>
         <button id="generateEmailsButton" class="primary-button" type="button">生成</button>
+      </div>
+      <label class="field-label" for="emailProviderSelect">邮箱来源</label>
+      <select id="emailProviderSelect" class="text-input">
+        <option value="generated">内置随机</option>
+        <option value="outlook">Outlook</option>
+      </select>
+      <div id="outlookConfig" class="email-config" hidden>
+        <label class="field-label" for="outlookApiKeyInput">Outlook API Key</label>
+        <input
+          id="outlookApiKeyInput"
+          class="text-input"
+          type="password"
+          spellcheck="false"
+          placeholder="输入 127.0.0.1:5000 的 API Key"
+        >
+        <label class="field-label" for="outlookAccountsInput">Outlook 账号</label>
+        <textarea
+          id="outlookAccountsInput"
+          class="card-input email-account-input"
+          spellcheck="false"
+          placeholder="email@outlook.com----password----client_id----refresh_token"
+        ></textarea>
       </div>
       <div id="emailList" class="email-list" role="list"></div>
       <div class="section-actions">
@@ -70,6 +95,11 @@
         <option value="http">http</option>
         <option value="socks5">socks5</option>
       </select>
+      <label class="field-label" for="proxyCountrySelect">替换国家</label>
+      <select id="proxyCountrySelect" class="text-input">
+        <option value="US">美国 (US)</option>
+        <option value="JP">日本 (JP)</option>
+      </select>
       <div class="section-actions proxy-actions">
         <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
         <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
@@ -100,6 +130,7 @@
             aria-expanded="false"
             aria-controls="fillSettingsPanel"
           >设置</button>
+          <button id="setCountryButton" class="secondary-button" type="button">设置Country</button>
           <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
         </div>
       </div>
@@ -139,6 +170,11 @@
             <input id="cardCvvSelectorInput" type="text" spellcheck="false" placeholder="#cardCvv">
             <input id="cardCvvSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
+          <label class="settings-field" for="billingNameSelectorInput">
+            <span>Billing Name</span>
+            <input id="billingNameSelectorInput" type="text" spellcheck="false" placeholder="#billingName">
+            <input id="billingNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
+          </label>
           <label class="settings-field" for="firstNameSelectorInput">
             <span>First Name</span>
             <input id="firstNameSelectorInput" type="text" spellcheck="false" placeholder="#firstName">
@@ -168,6 +204,11 @@
             <span>Postcode</span>
             <input id="billingPostalCodeSelectorInput" type="text" spellcheck="false" placeholder="#billingPostalCode">
             <input id="billingPostalCodeSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
+          </label>
+          <label class="settings-field" for="countrySelectorInput">
+            <span>Country</span>
+            <input id="countrySelectorInput" type="text" spellcheck="false" placeholder="#country">
+            <input id="countrySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="passwordSelectorInput">
             <span>密码字段</span>
