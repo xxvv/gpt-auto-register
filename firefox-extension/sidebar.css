@@ -33,7 +33,8 @@ body {
 
 button,
 textarea,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -50,6 +51,7 @@ button:disabled {
 button:focus-visible,
 textarea:focus-visible,
 input:focus-visible,
+select:focus-visible,
 .email-item:focus-within {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -82,6 +84,13 @@ input:focus-visible,
   color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .tool-section {
@@ -196,6 +205,15 @@ input:focus-visible,
   gap: 6px;
   max-height: 246px;
   overflow: auto;
+}
+
+.email-config {
+  display: grid;
+  gap: 8px;
+}
+
+.email-account-input {
+  min-height: 86px;
 }
 
 .email-item {

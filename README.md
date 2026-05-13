@@ -4,6 +4,8 @@
 
 基于 Python + Selenium 实现注册自动化，内置 Web 管理面板，使用 NNAI.website 邮箱渠道、支持多个 catch-all 域名随机使用、并行注册、已有账号 Codex Token 补取，以及 CLIProxyAPI Token 池一键接入。
 
+python gen_email_links.py D:\code\gpt-auto-register\data\accounts\20260505_006.txt  输出 账号|收码
+
 ## 功能特性
 
 - **注册自动化** — 临时邮箱创建 → 注册表单填写 → 验证码获取 → 注册完成，全程无需手动操作

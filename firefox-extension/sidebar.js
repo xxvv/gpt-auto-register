@@ -17,33 +17,43 @@
   ];
 
   const CODE_API = "https://getemail.nnai.website/api/code";
+  const OUTLOOK_API_BASE = "http://127.0.0.1:5000";
   const PAYURL_API = "https://payurl.779.chat/api/request";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
+  const IP_API_BASE = "http://ip-api.com/json/";
   const STORAGE_KEY = "gptAutoRegisterSidebarState";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
+  const DEFAULT_REMOVE_ELEMENT_SELECTOR = "#captchaComponent";
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
     cardNumberSelector: ["#cardNumber", ""],
     cardExpirySelector: ["#cardExpiry", ""],
-    cardCvvSelector: ["#cardCvv", ""],
+    cardCvvSelector: ["#cardCvv", "#cardCvc"],
+    billingNameSelector: ["#billingName", ""],
     firstNameSelector: ["#firstName", ""],
     lastNameSelector: ["#lastName", ""],
-    billingLine1Selector: ["#billingLine1", ""],
-    billingCitySelector: ["#billingCity", ""],
+    billingLine1Selector: ["#billingLine1", "#billingAddressLine1"],
+    billingCitySelector: ["#billingCity", "#billingLocality"],
     billingStateSelector: ["#billingState", ""],
     billingPostalCodeSelector: ["#billingPostalCode", ""],
+    countrySelector: ["#country", ""],
     passwordSelector: ["#password", ""],
     passwordValue: "Bb02911ss"
   });
 
   const elements = {
     currentTabText: document.getElementById("currentTabText"),
+    openChatGptButton: document.getElementById("openChatGptButton"),
     refreshTabButton: document.getElementById("refreshTabButton"),
     generateEmailsButton: document.getElementById("generateEmailsButton"),
+    emailProviderSelect: document.getElementById("emailProviderSelect"),
+    outlookConfig: document.getElementById("outlookConfig"),
+    outlookApiKeyInput: document.getElementById("outlookApiKeyInput"),
+    outlookAccountsInput: document.getElementById("outlookAccountsInput"),
     emailList: document.getElementById("emailList"),
     copyEmailButton: document.getElementById("copyEmailButton"),
     fetchCodeButton: document.getElementById("fetchCodeButton"),
@@ -59,6 +69,7 @@
     proxyStatus: document.getElementById("proxyStatus"),
     webshareApiKeyInput: document.getElementById("webshareApiKeyInput"),
     proxyProtocolSelect: document.getElementById("proxyProtocolSelect"),
+    proxyCountrySelect: document.getElementById("proxyCountrySelect"),
     getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
     setProxyButton: document.getElementById("setProxyButton"),
     replaceProxyButton: document.getElementById("replaceProxyButton"),
@@ -68,6 +79,7 @@
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
+    setCountryButton: document.getElementById("setCountryButton"),
     fillCardButton: document.getElementById("fillCardButton"),
     cardPreview: document.getElementById("cardPreview"),
     removeElementSelectorInput: document.getElementById("removeElementSelectorInput"),
@@ -81,6 +93,8 @@
     cardExpirySelectorAltInput: document.getElementById("cardExpirySelectorAltInput"),
     cardCvvSelectorInput: document.getElementById("cardCvvSelectorInput"),
     cardCvvSelectorAltInput: document.getElementById("cardCvvSelectorAltInput"),
+    billingNameSelectorInput: document.getElementById("billingNameSelectorInput"),
+    billingNameSelectorAltInput: document.getElementById("billingNameSelectorAltInput"),
     firstNameSelectorInput: document.getElementById("firstNameSelectorInput"),
     firstNameSelectorAltInput: document.getElementById("firstNameSelectorAltInput"),
     lastNameSelectorInput: document.getElementById("lastNameSelectorInput"),
@@ -93,6 +107,8 @@
     billingStateSelectorAltInput: document.getElementById("billingStateSelectorAltInput"),
     billingPostalCodeSelectorInput: document.getElementById("billingPostalCodeSelectorInput"),
     billingPostalCodeSelectorAltInput: document.getElementById("billingPostalCodeSelectorAltInput"),
+    countrySelectorInput: document.getElementById("countrySelectorInput"),
+    countrySelectorAltInput: document.getElementById("countrySelectorAltInput"),
     passwordSelectorInput: document.getElementById("passwordSelectorInput"),
     passwordSelectorAltInput: document.getElementById("passwordSelectorAltInput"),
     passwordValueInput: document.getElementById("passwordValueInput"),
@@ -102,6 +118,10 @@
 
   const state = {
     emails: [],
+    emailProvider: "generated",
+    outlookAccountsInput: "",
+    outlookApiKey: "",
+    outlookAccounts: [],
     selectedEmail: "",
     lastCode: "",
     phoneKeyInput: "",
@@ -110,7 +130,8 @@
     currentProxy: null,
     webshareApiKey: "",
     proxyProtocol: "http",
-    removeElementSelector: "",
+    proxyCountry: "US",
+    removeElementSelector: DEFAULT_REMOVE_ELEMENT_SELECTOR,
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
     currentTab: null,
@@ -132,8 +153,15 @@
   }
 
   function bindEvents() {
+    elements.openChatGptButton.addEventListener("click", openChatGpt);
     elements.refreshTabButton.addEventListener("click", refreshCurrentTab);
     elements.generateEmailsButton.addEventListener("click", generateEmails);
+    elements.emailProviderSelect.addEventListener("change", handleEmailProviderChange);
+    elements.outlookApiKeyInput.addEventListener("input", () => {
+      state.outlookApiKey = String(elements.outlookApiKeyInput.value || "").trim();
+      persistState();
+    });
+    elements.outlookAccountsInput.addEventListener("input", handleOutlookAccountsInput);
     elements.copyEmailButton.addEventListener("click", copySelectedEmail);
     elements.fetchCodeButton.addEventListener("click", fetchVerificationCode);
     elements.copyCodeButton.addEventListener("click", copyLastCode);
@@ -149,6 +177,7 @@
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
     elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
     elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
+    elements.setCountryButton.addEventListener("click", setCountryInCurrentTab);
     elements.fillCardButton.addEventListener("click", fillCardInCurrentTab);
     elements.removeElementButton.addEventListener("click", removeElementInCurrentTab);
     elements.cardPreview.addEventListener("click", handleCardPreviewCopy);
@@ -158,6 +187,11 @@
     });
     elements.proxyProtocolSelect.addEventListener("change", () => {
       state.proxyProtocol = normalizeProxyProtocol(elements.proxyProtocolSelect.value);
+      persistState();
+    });
+    elements.proxyCountrySelect.addEventListener("change", () => {
+      state.proxyCountry = normalizeProxyCountry(elements.proxyCountrySelect.value);
+      elements.proxyCountrySelect.value = state.proxyCountry;
       persistState();
     });
     elements.removeElementSelectorInput.addEventListener("input", () => {
@@ -171,11 +205,19 @@
     bindFillSettingsInputs();
   }
 
+  async function openChatGpt() {
+    await ext.tabs.create({ url: "https://chatgpt.com", active: true });
+  }
+
   async function restoreState() {
     try {
       const saved = await ext.storage.local.get(STORAGE_KEY);
       const data = saved && saved[STORAGE_KEY] ? saved[STORAGE_KEY] : {};
       state.emails = Array.isArray(data.emails) ? data.emails.filter(Boolean) : [];
+      state.emailProvider = normalizeEmailProvider(data.emailProvider);
+      state.outlookAccountsInput = typeof data.outlookAccountsInput === "string" ? data.outlookAccountsInput : "";
+      state.outlookApiKey = typeof data.outlookApiKey === "string" ? data.outlookApiKey : "";
+      state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
       state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
       state.phoneKeyInput = typeof data.phoneKeyInput === "string" ? data.phoneKeyInput : "";
@@ -183,12 +225,17 @@
       state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
       state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
       state.proxyProtocol = normalizeProxyProtocol(data.proxyProtocol);
-      state.removeElementSelector = typeof data.removeElementSelector === "string" ? data.removeElementSelector : "";
+      state.proxyCountry = normalizeProxyCountry(data.proxyCountry);
+      state.removeElementSelector = normalizeRemoveElementSelector(data.removeElementSelector);
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
+      elements.emailProviderSelect.value = state.emailProvider;
+      elements.outlookApiKeyInput.value = state.outlookApiKey;
+      elements.outlookAccountsInput.value = state.outlookAccountsInput;
       elements.phoneKeyInput.value = state.phoneKeyInput;
       elements.webshareApiKeyInput.value = state.webshareApiKey;
       elements.proxyProtocolSelect.value = state.proxyProtocol;
+      elements.proxyCountrySelect.value = state.proxyCountry;
       elements.removeElementSelectorInput.value = state.removeElementSelector;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
       state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
@@ -200,6 +247,7 @@
     if (!state.emails.length) {
       createEmailSet();
     }
+    applyEmailProviderState();
     if (!state.selectedEmail || !state.emails.includes(state.selectedEmail)) {
       state.selectedEmail = state.emails[0] || "";
     }
@@ -210,6 +258,9 @@
       await ext.storage.local.set({
         [STORAGE_KEY]: {
           emails: state.emails,
+          emailProvider: state.emailProvider,
+          outlookAccountsInput: state.outlookAccountsInput,
+          outlookApiKey: state.outlookApiKey,
           selectedEmail: state.selectedEmail,
           lastCode: state.lastCode,
           phoneKeyInput: state.phoneKeyInput,
@@ -217,6 +268,7 @@
           currentProxy: state.currentProxy,
           webshareApiKey: state.webshareApiKey,
           proxyProtocol: state.proxyProtocol,
+          proxyCountry: state.proxyCountry,
           removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
@@ -247,11 +299,66 @@
   }
 
   function generateEmails() {
+    if (state.emailProvider === "outlook") {
+      importOutlookAccounts();
+      return;
+    }
     createEmailSet();
     state.selectedEmail = state.emails[0] || "";
     renderEmails();
     showOutput(elements.codeOutput, "success", `已生成 ${state.emails.length} 个邮箱`);
     persistState();
+  }
+
+  function handleEmailProviderChange() {
+    state.emailProvider = normalizeEmailProvider(elements.emailProviderSelect.value);
+    if (state.emailProvider === "generated") {
+      createEmailSet();
+    }
+    applyEmailProviderState();
+    state.selectedEmail = state.emails[0] || "";
+    state.lastCode = "";
+    renderEmails();
+    persistState();
+  }
+
+  function handleOutlookAccountsInput() {
+    state.outlookAccountsInput = String(elements.outlookAccountsInput.value || "");
+    state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
+    if (state.emailProvider === "outlook") {
+      state.emails = state.outlookAccounts.map((account) => account.email);
+      if (!state.selectedEmail || !state.emails.includes(state.selectedEmail)) {
+        state.selectedEmail = state.emails[0] || "";
+      }
+      renderEmails();
+    }
+    persistState();
+  }
+
+  function importOutlookAccounts() {
+    state.outlookAccountsInput = String(elements.outlookAccountsInput.value || "");
+    state.outlookApiKey = String(elements.outlookApiKeyInput.value || "").trim();
+    state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
+    state.emails = state.outlookAccounts.map((account) => account.email);
+    state.selectedEmail = state.emails[0] || "";
+    renderEmails();
+    if (state.emails.length) {
+      showOutput(elements.codeOutput, "success", `已导入 ${state.emails.length} 个 Outlook 邮箱`);
+    } else {
+      showOutput(elements.codeOutput, "error", "没有识别到 Outlook 邮箱，格式必须是 email----password----client_id----refresh_token");
+    }
+    persistState();
+  }
+
+  function applyEmailProviderState() {
+    state.emailProvider = normalizeEmailProvider(state.emailProvider);
+    elements.emailProviderSelect.value = state.emailProvider;
+    elements.generateEmailsButton.textContent = state.emailProvider === "outlook" ? "导入" : "生成";
+    elements.outlookConfig.hidden = state.emailProvider !== "outlook";
+    if (state.emailProvider === "outlook") {
+      state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
+      state.emails = state.outlookAccounts.map((account) => account.email);
+    }
   }
 
   function createEmailSet() {
@@ -323,6 +430,11 @@
     const email = getSelectedEmail();
     if (!email) {
       showOutput(elements.codeOutput, "error", "请先生成邮箱");
+      return;
+    }
+
+    if (state.emailProvider === "outlook") {
+      await fetchOutlookVerificationCode(email);
       return;
     }
 
@@ -527,13 +639,15 @@
         ? await replaceWebshareProxyDirect(webshareApiKey)
         : await getCurrentWebshareProxyDirect(webshareApiKey);
       await applyFirefoxProxy(proxy);
+      const ipInfo = await fetchCurrentIpInfoSafely(proxy.host);
+      proxy.ipInfo = ipInfo;
       state.currentProxy = proxy;
       renderProxyStatus();
       await persistState();
       showOutput(
         elements.proxyOutput,
-        "success",
-        `${successPrefix}：${formatProxy(proxy)}\n用户名: ${proxy.username || "-"}\n密码: ${proxy.password || "-"}`
+        hasIpInfoAddress(ipInfo) ? "success" : "info",
+        `${successPrefix}：${formatProxy(proxy)}\n用户名: ${proxy.username || "-"}\n密码: ${proxy.password || "-"}\n${formatIpInfoForCopy(ipInfo)}`
       );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `${busyLabel}失败：${formatError(error)}`);
@@ -555,11 +669,13 @@
     showOutput(elements.proxyOutput, "info", "正在设置 Firefox 代理");
     try {
       await applyFirefoxProxy(state.currentProxy);
+      state.currentProxy.ipInfo = await fetchCurrentIpInfoSafely(state.currentProxy.host);
       renderProxyStatus();
+      await persistState();
       showOutput(
         elements.proxyOutput,
-        "success",
-        `已设置 Firefox 代理：${formatProxy(state.currentProxy)}\n用户名: ${state.currentProxy.username || "-"}\n密码: ${state.currentProxy.password || "-"}`
+        hasIpInfoAddress(state.currentProxy.ipInfo) ? "success" : "info",
+        `已设置 Firefox 代理：${formatProxy(state.currentProxy)}\n用户名: ${state.currentProxy.username || "-"}\n密码: ${state.currentProxy.password || "-"}\n${formatIpInfoForCopy(state.currentProxy.ipInfo)}`
       );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `设置代理失败：${formatError(error)}`);
@@ -651,7 +767,7 @@
 
     const rows = [
       { label: "类型", value: String(proxy.type || "http").toLowerCase() },
-      { label: "地址", value: proxy.host },
+      { label: "地址", value: proxy.host, copyValue: proxy.host },
       { label: "端口", value: String(proxy.port || "") },
       { label: "城市", value: String(proxy.city_name || proxy.city || "-") },
       { label: "国家", value: String(proxy.country_code || proxy.country || "-").toUpperCase() },
@@ -693,6 +809,188 @@
 
       elements.proxyStatus.append(row);
     });
+
+    renderProxyIpInfo(proxy.ipInfo);
+  }
+
+  function renderProxyIpInfo(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo);
+    const titleRow = document.createElement("div");
+    titleRow.className = "preview-row proxy-ip-title-row";
+
+    const labelNode = document.createElement("span");
+    labelNode.className = "preview-label";
+    labelNode.textContent = "IP信息";
+
+    const valueNode = document.createElement("span");
+    valueNode.className = "preview-value";
+    valueNode.textContent = hasIpInfoAddress(normalizedIpInfo)
+      ? "当前出口"
+      : normalizedIpInfo && normalizedIpInfo.error
+        ? "查询失败"
+        : "未查询";
+
+    const copyButton = document.createElement("button");
+    copyButton.className = "preview-copy-button";
+    copyButton.type = "button";
+    copyButton.textContent = "复制";
+    copyButton.disabled = !normalizedIpInfo;
+    copyButton.addEventListener("click", async () => {
+      try {
+        const copyText = formatIpInfoForCopy(normalizedIpInfo);
+        await writeClipboard(copyText);
+        showOutput(elements.proxyOutput, "success", `已复制IP信息：\n${copyText}`);
+      } catch (error) {
+        showOutput(elements.proxyOutput, "error", `复制IP信息失败：${formatError(error)}`);
+      }
+    });
+
+    titleRow.append(labelNode, valueNode, copyButton);
+    elements.proxyStatus.append(titleRow);
+
+    const rows = normalizedIpInfo
+      ? [
+          { label: "address", value: normalizedIpInfo.address },
+          { label: "city", value: normalizedIpInfo.city },
+          { label: "state", value: normalizedIpInfo.state },
+          { label: "邮编", value: normalizedIpInfo.postcode }
+        ]
+      : [
+          { label: "address", value: "-" },
+          { label: "city", value: "-" },
+          { label: "state", value: "-" },
+          { label: "邮编", value: "-" }
+        ];
+
+    rows.forEach(({ label, value }) => {
+      const row = document.createElement("div");
+      row.className = "preview-row proxy-ip-row";
+
+      const rowLabel = document.createElement("span");
+      rowLabel.className = "preview-label";
+      rowLabel.textContent = label;
+
+      const rowValue = document.createElement("span");
+      rowValue.className = "preview-value";
+      rowValue.textContent = value || "-";
+
+      const rowCopyButton = document.createElement("button");
+      rowCopyButton.className = "preview-copy-button";
+      rowCopyButton.type = "button";
+      rowCopyButton.textContent = "复制";
+      rowCopyButton.disabled = !String(value || "").trim() || value === "-";
+      rowCopyButton.addEventListener("click", async () => {
+        try {
+          await writeClipboard(value);
+          showOutput(elements.proxyOutput, "success", `已复制${label}：${value}`);
+        } catch (error) {
+          showOutput(elements.proxyOutput, "error", `复制${label}失败：${formatError(error)}`);
+        }
+      });
+
+      row.append(rowLabel, rowValue, rowCopyButton);
+      elements.proxyStatus.append(row);
+    });
+  }
+
+  async function fetchCurrentIpInfo(ipAddress) {
+    const address = String(ipAddress || "").trim();
+    if (!address) {
+      throw new Error("缺少要查询的 IP 地址");
+    }
+    const apiUrl = `${IP_API_BASE}${encodeURIComponent(address)}`;
+    const payload = await fetchJsonWithTimeout(apiUrl, 12000);
+    if (String(payload.status || "").toLowerCase() !== "success") {
+      throw new Error(payload.message || "IP 查询失败");
+    }
+    const ipInfo = normalizeIpInfo(payload);
+    if (!ipInfo || !ipInfo.address) {
+      throw new Error("响应缺少 IP 地址");
+    }
+    return ipInfo;
+  }
+
+  async function fetchCurrentIpInfoSafely(ipAddress) {
+    try {
+      return await fetchCurrentIpInfo(ipAddress);
+    } catch (error) {
+      return {
+        address: String(ipAddress || "").trim(),
+        city: "",
+        state: "",
+        postcode: "",
+        error: formatError(error)
+      };
+    }
+  }
+
+  async function fetchJsonWithTimeout(url, timeoutMs) {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      const payload = await readJsonResponse(response, "当前 IP 信息");
+      if (!response.ok) {
+        throw new Error(payload.reason || payload.error || payload.message || `HTTP ${response.status}`);
+      }
+      return payload;
+    } finally {
+      clearTimeout(timerId);
+    }
+  }
+
+  function normalizeIpInfo(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const address = String(payload.address || payload.query || payload.ip || "").trim();
+    const city = String(payload.city || payload.city_name || "").trim();
+    const state = String(
+      payload.state ||
+      payload.state_code ||
+      payload.region ||
+      payload.region_code ||
+      payload.regionName ||
+      payload.region_name ||
+      ""
+    ).trim();
+    const postcode = String(payload.postcode || payload.zip || payload.postal || "").trim();
+    const error = payload.error || String(payload.status || "").toLowerCase() === "fail"
+      ? String(payload.reason || payload.message || payload.error || "").trim()
+      : "";
+    if (!address && !city && !state && !postcode && !error) {
+      return null;
+    }
+    return {
+      address,
+      city,
+      state,
+      postcode,
+      error
+    };
+  }
+
+  function formatIpInfoForCopy(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo) || {};
+    const lines = [
+      `address: ${normalizedIpInfo.address || "-"}`,
+      `city: ${normalizedIpInfo.city || "-"}`,
+      `state: ${normalizedIpInfo.state || "-"}`,
+      `邮编: ${normalizedIpInfo.postcode || "-"}`
+    ];
+    if (normalizedIpInfo.error) {
+      lines.push(`error: ${normalizedIpInfo.error}`);
+    }
+    return lines.join("\n");
+  }
+
+  function hasIpInfoAddress(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo);
+    return Boolean(normalizedIpInfo && normalizedIpInfo.address);
   }
 
   function formatProxy(proxy) {
@@ -727,7 +1025,7 @@
       headers: buildWebshareHeaders(apiKey),
       body: JSON.stringify({
         to_replace: { type: "ip_address", ip_addresses: [currentProxy.host] },
-        replace_with: [{ type: "country", country_code: "US", count: 1 }],
+        replace_with: [{ type: "country", country_code: state.proxyCountry, count: 1 }],
         dry_run: false
       })
     });
@@ -844,6 +1142,11 @@
 
   function normalizeProxyProtocol(value) {
     return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
+  }
+
+  function normalizeProxyCountry(value) {
+    const country = String(value || "").trim().toUpperCase();
+    return country === "JP" ? "JP" : "US";
   }
 
   function normalizeWebshareStatus(payload) {
@@ -1004,6 +1307,100 @@
     }
   }
 
+  async function setCountryInCurrentTab() {
+    let country = "US";
+    if (elements.cardInput.value.trim()) {
+      try {
+        country = (await parseCardInput(elements.cardInput.value)).country || "US";
+      } catch (error) {
+        country = "US";
+      }
+    }
+
+    setBusy("country", true);
+    showOutput(elements.fillOutput, "info", `正在设置 Country：${country}`);
+
+    try {
+      const tab = await requireCurrentTab();
+      await ext.tabs.executeScript(tab.id, {
+        file: "content-script.js",
+        allFrames: true,
+        runAt: "document_idle"
+      });
+      const payload = {
+        country,
+        settings: state.fillSettings
+      };
+      const code = `window.__gptAutoRegisterSetCountry && window.__gptAutoRegisterSetCountry(${JSON.stringify(payload)})`;
+      const results = await ext.tabs.executeScript(tab.id, {
+        code,
+        allFrames: true,
+        runAt: "document_idle"
+      });
+      const summary = summarizeFillResults(results);
+      if (!summary.success) {
+        throw new Error(summary.message);
+      }
+      showOutput(elements.fillOutput, "success", `Country 已设置为 ${country}`);
+      await persistState();
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `设置 Country 失败：${formatError(error)}`);
+    } finally {
+      setBusy("country", false);
+    }
+  }
+
+  async function fetchOutlookVerificationCode(email) {
+    const apiKey = String(elements.outlookApiKeyInput.value || state.outlookApiKey || "").trim();
+    if (!apiKey) {
+      showOutput(elements.codeOutput, "error", "请先输入 Outlook API Key");
+      return;
+    }
+
+    state.outlookApiKey = apiKey;
+    setBusy("code", true);
+    showOutput(elements.codeOutput, "info", `正在获取 Outlook 验证码：${email}`);
+
+    let lastError = "";
+    try {
+      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+        try {
+          const url = new URL("/api/external/emails", OUTLOOK_API_BASE);
+          url.searchParams.set("email", email);
+          url.searchParams.set("folder", "all");
+          url.searchParams.set("top", "5");
+          url.searchParams.set("api_key", apiKey);
+          const response = await fetch(url.toString(), {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            cache: "no-store"
+          });
+          const data = await readJsonResponse(response, "Outlook 邮件接口");
+          const codeInfo = findOutlookCode(data);
+          if (response.ok && codeInfo.code) {
+            state.lastCode = codeInfo.code;
+            await persistState();
+            showOutput(elements.codeOutput, "success", formatOutlookCodeResult(data, codeInfo));
+            return;
+          }
+          lastError = response.ok
+            ? "邮件里没有匹配到 6 位验证码"
+            : formatApiError(data, response.status);
+        } catch (error) {
+          lastError = formatError(error);
+        }
+
+        if (attempt < POLL_ATTEMPTS) {
+          showOutput(elements.codeOutput, "info", `第 ${attempt}/${POLL_ATTEMPTS} 次未取到 Outlook 验证码，继续轮询`);
+          await delay(POLL_DELAY_MS);
+        }
+      }
+      showOutput(elements.codeOutput, "error", `获取 Outlook 验证码失败，已轮询 ${POLL_ATTEMPTS} 次：${lastError || "没有匹配到 6 位验证码"}`);
+    } finally {
+      setBusy("code", false);
+    }
+  }
+
   async function removeElementInCurrentTab() {
     const selector = String(elements.removeElementSelectorInput.value || "").trim();
     if (!selector) {
@@ -1057,6 +1454,9 @@
     const normalizedCard = String(card || "").replace(/\s+/g, "");
     const expiryInfo = parseExpiry(expiry);
     const addressInfo = await parseAddressBlob(addressBlob);
+    const firstName = extractFirstName(name);
+    const lastName = extractLastName(name);
+    const billingName = [firstName, lastName].filter(Boolean).join(" ");
 
     const parsed = {
       card: normalizedCard,
@@ -1066,8 +1466,9 @@
       phone: normalizeUsPhone(phone),
       url,
       name,
-      firstName: extractFirstName(name),
-      lastName: extractLastName(name),
+      billingName,
+      firstName,
+      lastName,
       address: addressInfo.address,
       city: addressInfo.city,
       state: addressInfo.state,
@@ -1114,6 +1515,7 @@
       ["卡号", parsed.card],
       ["有效期", parsed.expiryDisplay],
       ["CVV", parsed.cvv],
+      ["Billing Name", parsed.billingName],
       ["First Name", parsed.firstName],
       ["Last Name", parsed.lastName],
       ["Address", parsed.address],
@@ -1211,6 +1613,8 @@
       ["cardExpirySelectorAltInput", "cardExpirySelector", 1],
       ["cardCvvSelectorInput", "cardCvvSelector", 0],
       ["cardCvvSelectorAltInput", "cardCvvSelector", 1],
+      ["billingNameSelectorInput", "billingNameSelector", 0],
+      ["billingNameSelectorAltInput", "billingNameSelector", 1],
       ["firstNameSelectorInput", "firstNameSelector", 0],
       ["firstNameSelectorAltInput", "firstNameSelector", 1],
       ["lastNameSelectorInput", "lastNameSelector", 0],
@@ -1223,6 +1627,8 @@
       ["billingStateSelectorAltInput", "billingStateSelector", 1],
       ["billingPostalCodeSelectorInput", "billingPostalCodeSelector", 0],
       ["billingPostalCodeSelectorAltInput", "billingPostalCodeSelector", 1],
+      ["countrySelectorInput", "countrySelector", 0],
+      ["countrySelectorAltInput", "countrySelector", 1],
       ["passwordSelectorInput", "passwordSelector", 0],
       ["passwordSelectorAltInput", "passwordSelector", 1],
       ["passwordValueInput", "passwordValue"]
@@ -1269,6 +1675,8 @@
     elements.cardExpirySelectorAltInput.value = settings.cardExpirySelector[1];
     elements.cardCvvSelectorInput.value = settings.cardCvvSelector[0];
     elements.cardCvvSelectorAltInput.value = settings.cardCvvSelector[1];
+    elements.billingNameSelectorInput.value = settings.billingNameSelector[0];
+    elements.billingNameSelectorAltInput.value = settings.billingNameSelector[1];
     elements.firstNameSelectorInput.value = settings.firstNameSelector[0];
     elements.firstNameSelectorAltInput.value = settings.firstNameSelector[1];
     elements.lastNameSelectorInput.value = settings.lastNameSelector[0];
@@ -1281,6 +1689,8 @@
     elements.billingStateSelectorAltInput.value = settings.billingStateSelector[1];
     elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector[0];
     elements.billingPostalCodeSelectorAltInput.value = settings.billingPostalCodeSelector[1];
+    elements.countrySelectorInput.value = settings.countrySelector[0];
+    elements.countrySelectorAltInput.value = settings.countrySelector[1];
     elements.passwordSelectorInput.value = settings.passwordSelector[0];
     elements.passwordSelectorAltInput.value = settings.passwordSelector[1];
     elements.passwordValueInput.value = settings.passwordValue;
@@ -1297,12 +1707,14 @@
       cardNumberSelector: normalizeSelectorList(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
       cardExpirySelector: normalizeSelectorList(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
       cardCvvSelector: normalizeSelectorList(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
+      billingNameSelector: normalizeSelectorList(input.billingNameSelector, DEFAULT_FILL_SETTINGS.billingNameSelector),
       firstNameSelector: normalizeSelectorList(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
       lastNameSelector: normalizeSelectorList(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
       billingLine1Selector: normalizeSelectorList(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
       billingCitySelector: normalizeSelectorList(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
       billingStateSelector: normalizeSelectorList(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
       billingPostalCodeSelector: normalizeSelectorList(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
+      countrySelector: normalizeSelectorList(input.countrySelector, DEFAULT_FILL_SETTINGS.countrySelector),
       passwordSelector: normalizeSelectorList(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
       passwordValue: String(input.passwordValue || DEFAULT_FILL_SETTINGS.passwordValue).trim() || DEFAULT_FILL_SETTINGS.passwordValue
     };
@@ -1313,6 +1725,10 @@
     return normalized || fallback;
   }
 
+  function normalizeRemoveElementSelector(value) {
+    return normalizeSelector(value, DEFAULT_REMOVE_ELEMENT_SELECTOR);
+  }
+
   function normalizeSelectorList(value, fallback) {
     const fallbackList = Array.isArray(fallback) ? fallback : [String(fallback || ""), ""];
     const rawList = Array.isArray(value)
@@ -1321,8 +1737,8 @@
         ? [value]
         : [];
     const normalized = [0, 1].map((index) => {
-      const candidate = index < rawList.length ? rawList[index] : fallbackList[index] || "";
-      return String(candidate || "").trim();
+      const candidate = index < rawList.length ? rawList[index] : "";
+      return String(candidate || fallbackList[index] || "").trim();
     });
     if (!normalized[0]) {
       normalized[0] = String(fallbackList[0] || "").trim();
@@ -1538,6 +1954,86 @@
     };
   }
 
+  function normalizeEmailProvider(value) {
+    return value === "outlook" ? "outlook" : "generated";
+  }
+
+  function parseOutlookAccounts(rawInput) {
+    const seen = new Set();
+    const accounts = [];
+    String(rawInput || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .forEach((line) => {
+        const parts = line.split("----").map((part) => part.trim());
+        const email = String(parts[0] || "").toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || seen.has(email)) {
+          return;
+        }
+        seen.add(email);
+        accounts.push({
+          raw: line,
+          email,
+          password: parts[1] || "",
+          clientId: parts[2] || "",
+          refreshToken: parts.slice(3).join("----")
+        });
+      });
+    return accounts;
+  }
+
+  function findOutlookCode(data) {
+    const emails = Array.isArray(data && data.emails) ? data.emails : [];
+    for (const item of emails) {
+      const haystack = [
+        item && item.subject,
+        item && item.body_preview,
+        item && item.body,
+        item && item.text,
+        item && item.html
+      ].filter(Boolean).join("\n");
+      const code = extractSixDigitCode(haystack);
+      if (code) {
+        return { code, email: item || null };
+      }
+    }
+    return { code: "", email: null };
+  }
+
+  function formatOutlookCodeResult(data, codeInfo) {
+    const item = codeInfo.email || {};
+    const lines = [`验证码：${codeInfo.code}`];
+    const requestedEmail = data && (data.requested_email || data.resolved_email);
+    if (requestedEmail) {
+      lines.push(`邮箱：${requestedEmail}`);
+    }
+    if (item.subject) {
+      lines.push(`主题：${item.subject}`);
+    }
+    if (item.from) {
+      lines.push(`发件人：${item.from}`);
+    }
+    if (item.folder) {
+      lines.push(`文件夹：${item.folder}`);
+    }
+    if (item.date) {
+      lines.push(`时间：${item.date}`);
+    }
+    return lines.join("\n");
+  }
+
+  function formatApiError(data, status) {
+    const detail = data && (data.error || data.message);
+    if (!detail) {
+      return `HTTP ${status}`;
+    }
+    if (typeof detail === "string") {
+      return `HTTP ${status} ${detail}`;
+    }
+    return `HTTP ${status} ${detail.message || JSON.stringify(detail).slice(0, 160)}`;
+  }
+
   function requirePhoneKey() {
     const phoneKey = state.phoneKey || parsePhoneKeyInput(elements.phoneKeyInput.value);
     state.phoneKey = phoneKey;
@@ -1653,6 +2149,7 @@
     elements.replaceProxyButton.disabled = state.busy.has("proxy");
     elements.clearProxyButton.disabled = state.busy.has("proxy");
     elements.fetchPayUrlButton.disabled = state.busy.has("payurl");
+    elements.setCountryButton.disabled = state.busy.has("country");
     elements.fillCardButton.disabled = state.busy.has("fill");
     elements.removeElementButton.disabled = state.busy.has("removeElement");
   }
