@@ -247,9 +247,24 @@ class TokenUploadConfig:
     """Token 自动上传配置"""
 
     enabled: bool = False
-    api_url: str = "https://free-team-redeem.111pengwei.workers.dev/api/admin/account/add"
+    api_url: str = (
+        "https://free-team-redeem.111pengwei.workers.dev/api/admin/account/add"
+    )
     api_key: str = ""
     timeout: int = 10
+
+
+@dataclass
+class InviteConfig:
+    """邀请请求配置"""
+
+    enabled: bool = True  # 请功能未启
+
+    access_token: str = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWDh6WTZ2VzJwUTl0UjNkRTduSzFqTDVnSCIsImV4cCI6MTc3OTUzNDA3NiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImFtciI6WyJvdHAiLCJ1cm46b3BlbmFpOmFtcjpvdHBfZW1haWwiXSwiY2hhdGdwdF9hY2NvdW50X2lkIjoiMGZiMmE1NjAtN2I1Mi00ZTFiLTgyZTctMTZkYzQ3NDYzZGQ3IiwiY2hhdGdwdF9hY2NvdW50X3VzZXJfaWQiOiJ1c2VyLVlGelNFVDZOR1FXZ1FTZG5XV2hoa0ZaTF9fMGZiMmE1NjAtN2I1Mi00ZTFiLTgyZTctMTZkYzQ3NDYzZGQ3IiwiY2hhdGdwdF9jb21wdXRlX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6ImZyZWVfd29ya3NwYWNlIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci1ZRnpTRVQ2TkdRV2dRU2RuV1doaGtGWkwiLCJ1c2VyX2lkIjoidXNlci1ZRnpTRVQ2TkdRV2dRU2RuV1doaGtGWkwifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoieHh2djZAMjAyNDAxMjUueHl6IiwiZW1haWxfdmVyaWZpZWQiOnRydWV9LCJpYXQiOjE3Nzg2NzAwNzYsImlzcyI6Imh0dHBzOi8vYXV0aC5vcGVuYWkuY29tIiwianRpIjoiZTZhY2VlOGUtNzA2OC00OGViLWI1ZTItYWQ0Yzk5ZjU0MzliIiwibmJmIjoxNzc4NjcwMDc2LCJwd2RfYXV0aF90aW1lIjoxNzc4NjcwMDc1NDI1LCJzY3AiOlsib3BlbmlkIiwiZW1haWwiLCJwcm9maWxlIiwib2ZmbGluZV9hY2Nlc3MiLCJtb2RlbC5yZXF1ZXN0IiwibW9kZWwucmVhZCIsIm9yZ2FuaXphdGlvbi5yZWFkIiwib3JnYW5pemF0aW9uLndyaXRlIl0sInNlc3Npb25faWQiOiJhdXRoc2Vzc184dk1lZVJtRE1mOWZSdnBZQ0lvYTVqQ2giLCJzbCI6dHJ1ZSwic3ViIjoiYXV0aDB8Smh0aXZnWnh6NVFIQWlOSjJtZUpNV2ZLIn0.q2j_r2o8IjV_3oxyzUUwjqmLZuQhxOnNDa_Uw984tuaSgK5fTliVPMgMwUVS6mdRpJGp87IfEIvIkAg-TGfsrpO1y6LiooeByX3etwv9Bep-o44X8UzaTPOs6ZQh8rghrxvIwhIB3-SufG3B7VskFLExnOORrDggUcXApyRfpZs9mQIDNsn8OFoZZik9E9KYP6e2k5xZlHB8-GJeqqAJB9q5cBartQks4jrbJIJrwsqUGChI-mM7KbN1qgVHZH3DBew3nwJY6-5kXu4qVJonjyeIO3NPPQRR3WqIP20a_2_nBYvJGf3BWPk-MUkSVFUBJwKiXLLpZzhadsOQoqjMw0mKFFgtWrlJDDncm6Dw5vfmk-id35X-V329RWZYkchdz5TPyk_j6l48HiEWBkvr8Q-jb8gVwbu_uO6c-32BQZ15YryzgrCyXVrZzzKlS83uCKDMs1DCIJ8DZqI55dQr2Qg8QSCaYuDyUhxmOpemWzf4uhjU3XAeHBuPpsDT-8tpc6NzbTsRxrNKwLHA-knKdxKXEgSztZsRZXgd0Us8iArDQJTtgp_faxDT0Nh5d5NUhKAjVu5_YhJveeNUZ9Dq05u0PdqmsoIdujdXa6uMz9M5GX-16gULs21oftpr5FcrH3NWHCo8B-Jk6tB_5YoQ7Q1t_GGJyK7qn5w0RobiiQE"
+    account_id: str = "0fb2a560-7b52-4e1b-82e7-16dc47463dd7"
+    role: str = "account-owner"
+    seat_type: str = "default"
+    resend_emails: bool = True
 
 
 @dataclass
@@ -300,6 +315,7 @@ class AppConfig:
     outlookemail: OutlookEmailConfig = field(default_factory=OutlookEmailConfig)
     token_upload: TokenUploadConfig = field(default_factory=TokenUploadConfig)
     payment: PaymentConfig = field(default_factory=PaymentConfig)
+    invite: InviteConfig = field(default_factory=InviteConfig)
 
 
 # ==============================================================
@@ -655,6 +671,29 @@ class ConfigLoader:
             ),
             timeout=int(
                 os.environ.get("TOKEN_UPLOAD_TIMEOUT", token_upload.get("timeout", 10))
+            ),
+        )
+
+        # 邀请请求配置
+        invite = self.raw_config.get("invite", {})
+        self.config.invite = InviteConfig(
+            enabled=self._as_bool(
+                os.environ.get("INVITE_ENABLED", invite.get("enabled", False))
+            ),
+            access_token=os.environ.get(
+                "INVITE_ACCESS_TOKEN", invite.get("access_token", "")
+            ),
+            account_id=os.environ.get(
+                "INVITE_ACCOUNT_ID", invite.get("account_id", "")
+            ),
+            role=os.environ.get("INVITE_ROLE", invite.get("role", "account-owner")),
+            seat_type=os.environ.get(
+                "INVITE_SEAT_TYPE", invite.get("seat_type", "default")
+            ),
+            resend_emails=self._as_bool(
+                os.environ.get(
+                    "INVITE_RESEND_EMAILS", invite.get("resend_emails", True)
+                )
             ),
         )
 

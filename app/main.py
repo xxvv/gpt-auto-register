@@ -5,6 +5,7 @@ ChatGPT 账号自动注册 - 主程序
 
 import time
 import random
+import requests
 
 from .config import (
     cfg,
@@ -18,7 +19,12 @@ from .config import (
     allocate_output_batch_id,
     set_output_batch_id,
 )
-from .utils import generate_random_password, save_to_txt, update_account_status, upload_access_token
+from .utils import (
+    generate_random_password,
+    save_to_txt,
+    update_account_status,
+    upload_access_token,
+)
 from . import email_providers
 from . import payment_service
 from .browser import (
@@ -37,6 +43,49 @@ from .browser import (
 
 LOGIN_SUCCESS_WINDOW_HOLD_SECONDS = BROWSER_SUCCESS_HOLD_SECONDS
 AUTH_FLOW_RETRY_LIMIT = 3
+
+
+def send_account_invite(email: str) -> bool:
+    """
+    发送账号邀请请求
+
+    返回:
+        bool: 是否成功
+    """
+    if (
+        not cfg.invite.enabled
+        or not cfg.invite.access_token
+        or not cfg.invite.account_id
+    ):
+        print("⚠️ 邀请功能未启用或配置不完整")
+        return False
+
+    url = f"https://chatgpt.com/backend-api/accounts/{cfg.invite.account_id}/invites"
+    headers = {"Authorization": f"Bearer {cfg.invite.access_token}"}
+    body = {
+        "email_addresses": [email],
+        "role": cfg.invite.role,
+        "seat_type": cfg.invite.seat_type,
+        "resend_emails": cfg.invite.resend_emails,
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            account_invites = data.get("account_invites", [])
+            if len(account_invites) > 0:
+                print("✅ 账号邀请请求成功")
+                return True
+            else:
+                print("❌ 账号邀请请求失败：account_invites 为空")
+                return False
+        else:
+            print(f"❌ 账号邀请请求失败：HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ 发送邀请请求时出错: {e}")
+        return False
 
 
 class ProxyEgressCheckError(RuntimeError):
@@ -272,7 +321,9 @@ def register_one_account_with_email(
         print(f"📧 正在使用预定义邮箱: {email}")
 
         # 登录到 NNAI 邮箱以接收验证码
-        login_mailbox_func = getattr(provider_info["module"], "login_existing_email", None)
+        login_mailbox_func = getattr(
+            provider_info["module"], "login_existing_email", None
+        )
         if not callable(login_mailbox_func):
             raise RuntimeError(f"provider={email_provider} 暂不支持登录邮箱")
 
@@ -285,6 +336,12 @@ def register_one_account_with_email(
 
         # 2. 生成随机密码
         password = generate_random_password()
+
+        # 发送邀请请求（如果启用）
+        if cfg.invite.enabled:
+            invite_success = send_account_invite(email)
+            if not invite_success:
+                print("⚠️ 邀请请求失败，但继续注册流程")
 
         # 3. 初始化浏览器
         driver = create_driver(headless=headless, proxy=proxy)
@@ -356,7 +413,11 @@ def register_one_account_with_email(
         account_status = "已注册"
 
         # 上传 access token 到 API（如果启用）
-        if cfg.token_upload.enabled and account_record_info and account_record_info.startswith("eyJ"):
+        if (
+            cfg.token_upload.enabled
+            and account_record_info
+            and account_record_info.startswith("eyJ")
+        ):
             upload_access_token(account_record_info)
 
         # 保存账号信息
@@ -391,7 +452,9 @@ def register_one_account_with_email(
                     provider=email_provider,
                 )
             except Exception as exc:
-                account_status = f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                account_status = (
+                    f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                )
                 print(f"❌ 支付流程失败: {exc}")
                 save_to_txt(
                     email,
@@ -503,7 +566,9 @@ def register_one_account(
                 print(f"⚠️ 标记邮箱已注册失败: {e}")
 
     def _release_provider_reservation():
-        module = provider_info.get("module") if isinstance(provider_info, dict) else None
+        module = (
+            provider_info.get("module") if isinstance(provider_info, dict) else None
+        )
         release_func = getattr(module, "release_reserved_email", None)
         if callable(release_func) and email and not success:
             try:
@@ -543,6 +608,12 @@ def register_one_account(
 
         # 2. 生成随机密码
         password = generate_random_password()
+
+        # 发送邀请请求（如果启用）
+        if cfg.invite.enabled:
+            invite_success = send_account_invite(email)
+            if not invite_success:
+                print("⚠️ 邀请请求失败，但继续注册流程")
 
         # 3. 初始化浏览器
         driver = create_driver(headless=headless, proxy=proxy)
@@ -614,7 +685,11 @@ def register_one_account(
         account_status = "已注册"
 
         # 上传 access token 到 API（如果启用）
-        if cfg.token_upload.enabled and account_record_info and account_record_info.startswith("eyJ"):
+        if (
+            cfg.token_upload.enabled
+            and account_record_info
+            and account_record_info.startswith("eyJ")
+        ):
             upload_access_token(account_record_info)
 
         # 保存账号信息（含临时邮箱凭证和提供商，用于再次登录临时邮箱）
@@ -649,7 +724,9 @@ def register_one_account(
                     provider=email_provider,
                 )
             except Exception as exc:
-                account_status = f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                account_status = (
+                    f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                )
                 print(f"❌ 支付流程失败: {exc}")
                 save_to_txt(
                     email,
@@ -744,7 +821,9 @@ def login_one_account(
         if not provider_info:
             raise RuntimeError(f"未知邮箱提供商: {email_provider}")
 
-        login_mailbox_func = getattr(provider_info["module"], "login_existing_email", None)
+        login_mailbox_func = getattr(
+            provider_info["module"], "login_existing_email", None
+        )
         if not callable(login_mailbox_func):
             raise RuntimeError(f"provider={email_provider} 暂不支持重新登录收件箱")
 
@@ -801,7 +880,9 @@ def login_one_account(
         print("🎉 登录成功！")
         print(f"   邮箱: {email}")
         print("=" * 50)
-        print(f"⏳ 登录成功，保留浏览器窗口 {LOGIN_SUCCESS_WINDOW_HOLD_SECONDS} 秒后继续下一个任务...")
+        print(
+            f"⏳ 登录成功，保留浏览器窗口 {LOGIN_SUCCESS_WINDOW_HOLD_SECONDS} 秒后继续下一个任务..."
+        )
         time.sleep(LOGIN_SUCCESS_WINDOW_HOLD_SECONDS)
 
     except InterruptedError:
