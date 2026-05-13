@@ -20,6 +20,7 @@ from . import token_batch_service
 from . import account_login_service
 from . import browser_json_service
 from . import payment_service
+from . import stored_accounts
 from . import us_proxy_pool
 from . import utils
 from .config import (
@@ -34,7 +35,9 @@ from .utils import describe_proxy, ensure_proxy_ready
 
 STATIC_DIR = PROJECT_ROOT / "static"
 DEFAULT_PROXY_SWITCH_INTERVAL = 1
-DEFAULT_PAYMENT_METHOD = "card"
+DEFAULT_PAYMENT_METHOD = payment_service.normalize_payment_method(
+    getattr(cfg.payment, "default_method", "card")
+)
 
 app = Flask(__name__, static_url_path="", static_folder=str(STATIC_DIR))
 
@@ -221,6 +224,33 @@ def _normalize_proxy_switch_interval(value, default=DEFAULT_PROXY_SWITCH_INTERVA
 def _normalize_payment_method(value):
     method = str(value or DEFAULT_PAYMENT_METHOD).strip().lower()
     return method if method in {"card", "paypal"} else DEFAULT_PAYMENT_METHOD
+
+
+def _normalize_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _should_enable_payment_flow(data):
+    requested = _normalize_bool(
+        data.get("complete_payment_flow"),
+        state.complete_payment_flow,
+    )
+    if requested:
+        return True
+    if payment_service.is_payment_simulation_enabled():
+        main.print("🧪 检测到模拟卡密配置，自动启用注册后支付流程")
+        return True
+    return False
 
 
 def _disabled_proxy():
@@ -418,7 +448,10 @@ def worker_thread(
                     attempt_proxy = account_proxy
 
                     def on_success_ready(_email, _password, _account_record_info):
-                        main.print("⚡ accessToken 已保存并保留窗口完成，开始排队下个注册任务")
+                        if complete_payment_flow:
+                            main.print("⚡ accessToken 已保存，保留窗口继续支付流程")
+                        else:
+                            main.print("⚡ accessToken 已保存，开始排队下个注册任务")
                         release_slot()
 
                     while True:
@@ -752,6 +785,122 @@ def browser_json_worker_thread(
             state.is_running = False
             set_output_batch_id(None)
 
+
+def account_payment_worker_thread(
+    email,
+    access_token,
+    source_file,
+    headless,
+    proxy,
+    use_proxy=False,
+    proxy_switch_interval=DEFAULT_PROXY_SWITCH_INTERVAL,
+    payment_method=DEFAULT_PAYMENT_METHOD,
+):
+    try:
+        task_proxy, proxy_switch_interval = _build_task_proxy_plan(
+            proxy,
+            use_proxy=use_proxy,
+            switch_interval=proxy_switch_interval,
+        )
+    except Exception as exc:
+        state.is_running = False
+        state.current_action = "Webshare 代理准备失败"
+        main.print(f"🛑 Webshare 代理准备失败，账号支付任务启动终止: {exc}")
+        return
+
+    with _log_proxy_context(task_proxy):
+        state.is_running = True
+        state.stop_requested = False
+        state.success_count = 0
+        state.fail_count = 0
+        state.reset_progress(task_type="account_payment", total=1)
+        state.current_action = f"正在支付账号: {email}"
+        state.update_frame(None)
+        with state.lock:
+            state.proxy = dict(task_proxy) if task_proxy else _disabled_proxy()
+
+        main.print(f"💳 开始账号支付: {email}")
+        main.print(f"🧾 支付方式: {payment_method}")
+        main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
+        if task_proxy and task_proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
+            try:
+                ensure_proxy_ready(task_proxy, purpose="账号支付任务启动前代理预检", timeout=10)
+            except Exception as exc:
+                state.is_running = False
+                state.current_action = "代理预检失败"
+                main.print(f"🛑 账号支付任务启动终止: {exc}")
+                return
+        else:
+            main.print("🌐 代理: 未启用")
+
+        driver = None
+
+        def monitor(driver, _step):
+            if state.stop_requested:
+                main.print("🛑 检测到停止请求，正在中断账号支付任务...")
+                raise InterruptedError("用户请求停止")
+            try:
+                state.update_frame(driver.get_screenshot_as_png())
+            except Exception:
+                pass
+
+        try:
+            driver = browser.create_driver(headless=headless, proxy=task_proxy)
+            pay_url = payment_service.request_stripe_payurl(access_token)
+            payment_service.execute_payurl_payment_flow(
+                driver,
+                pay_url,
+                payment_method=payment_method,
+                email=email,
+                monitor_callback=monitor,
+            )
+            stored_accounts.update_account_status_in_file(
+                source_file,
+                email,
+                payment_service.PAYMENT_SUCCESS_STATUS,
+            )
+            state.success_count = 1
+            state.update_progress(
+                task_type="account_payment",
+                total=1,
+                completed=1,
+                processed=1,
+                skipped=0,
+            )
+            state.current_action = f"账号支付完成: {email}"
+            main.print(f"✅ 账号支付完成: {email}")
+        except InterruptedError:
+            state.fail_count = 1
+            state.update_progress(
+                task_type="account_payment",
+                total=1,
+                completed=1,
+                processed=1,
+                skipped=0,
+            )
+            state.current_action = f"账号支付已停止: {email}"
+            main.print(f"🛑 账号支付已停止: {email}")
+        except Exception as exc:
+            state.fail_count = 1
+            state.update_progress(
+                task_type="account_payment",
+                total=1,
+                completed=1,
+                processed=1,
+                skipped=0,
+            )
+            state.current_action = f"账号支付失败: {email}"
+            main.print(f"❌ 账号支付失败 ({email}): {exc}")
+            main.print("ℹ️ 已保留原 accessToken 状态，方便稍后重试")
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception as exc:
+                    main.print(f"⚠️ 关闭支付浏览器时忽略异常: {exc}")
+            state.is_running = False
+
 # ==========================================
 # 🌊 MJPEG 流生成器
 # ==========================================
@@ -809,14 +958,15 @@ def start_task():
 
     data = request.json or {}
     count = data.get('count', 1)
-    complete_payment_flow = bool(data.get("complete_payment_flow", state.complete_payment_flow))
+    complete_payment_flow = _should_enable_payment_flow(data)
     payment_method = _normalize_payment_method(
         data.get("payment_method", state.payment_method)
     )
-    use_proxy = bool(data.get("use_proxy", state.use_proxy_for_tasks))
+    use_proxy = _normalize_bool(data.get("use_proxy"), state.use_proxy_for_tasks)
     proxy_switch_interval = _normalize_proxy_switch_interval(
         data.get("proxy_switch_interval", state.proxy_switch_interval)
     )
+    state.complete_payment_flow = complete_payment_flow
     state.payment_method = payment_method
     state.use_proxy_for_tasks = use_proxy
     state.proxy_switch_interval = proxy_switch_interval
@@ -825,6 +975,12 @@ def start_task():
 
     providers = ["nnai"]
     domains = _current_email_domains()
+    main.print(
+        "🧩 启动参数: "
+        f"complete_payment_flow={complete_payment_flow}, "
+        f"payment_method={payment_method}, "
+        f"raw_complete_payment_flow={data.get('complete_payment_flow', 'N/A')}"
+    )
 
     threading.Thread(
         target=worker_thread,
@@ -968,6 +1124,60 @@ def start_accounts_browser_json():
         "output_dir": output_dir,
     })
 
+
+@app.route('/api/accounts/pay', methods=['POST'])
+def start_account_payment():
+    if state.is_running:
+        return jsonify({"error": "Already running"}), 400
+
+    data = request.json or {}
+    email = str(data.get("email", "")).strip()
+    source_file = str(data.get("source_file", "")).strip()
+    payment_method = _normalize_payment_method(
+        data.get("payment_method", state.payment_method)
+    )
+    use_proxy = _normalize_bool(data.get("use_proxy"), state.use_proxy_for_tasks)
+    proxy_switch_interval = _normalize_proxy_switch_interval(
+        data.get("proxy_switch_interval", state.proxy_switch_interval)
+    )
+
+    if not email or "@" not in email:
+        return jsonify({"error": "邮箱无效"}), 400
+
+    record = _find_account_record(email, source_file=source_file)
+    if not record:
+        return jsonify({"error": "未找到对应账号记录"}), 404
+
+    access_token = _extract_access_token_from_status(
+        data.get("access_token") or record.get("access_token")
+    )
+    if not access_token:
+        return jsonify({"error": "该账号当前没有可用 accessToken，无法进行支付"}), 400
+
+    state.payment_method = payment_method
+    state.use_proxy_for_tasks = use_proxy
+    state.proxy_switch_interval = proxy_switch_interval
+
+    threading.Thread(
+        target=account_payment_worker_thread,
+        args=(
+            email,
+            access_token,
+            record["source_file"],
+            state.headless,
+            dict(state.proxy),
+            use_proxy,
+            proxy_switch_interval,
+            payment_method,
+        ),
+        daemon=True,
+    ).start()
+    return jsonify({
+        "status": "started",
+        "email": email,
+        "payment_method": payment_method,
+    })
+
 @app.route('/api/settings', methods=['POST'])
 def set_settings():
     data = request.json or {}
@@ -1014,7 +1224,16 @@ def get_current_webshare_proxy():
         return jsonify({"error": "任务运行中，暂不支持获取 Webshare 代理"}), 400
 
     try:
-        proxy = payment_service.get_current_webshare_static_proxy()
+        data = request.json or {}
+        prefer_http = _normalize_bool(request.args.get("prefer_http"), False)
+        payment_cfg = payment_service.with_webshare_api_key(
+            cfg.payment,
+            data.get("webshare_api_key"),
+        )
+        proxy = payment_service.get_current_webshare_static_proxy(
+            payment_cfg=payment_cfg,
+            prefer_http=prefer_http,
+        )
         state.proxy = proxy
         main.print(f"✅ 已获取当前 Webshare 代理: {describe_proxy(state.proxy)}")
         return jsonify({"status": "ok", "proxy": state.proxy})
@@ -1029,7 +1248,16 @@ def replace_webshare_proxy():
         return jsonify({"error": "任务运行中，暂不支持替换 Webshare 代理"}), 400
 
     try:
-        proxy = payment_service.replace_webshare_static_proxy()
+        data = request.json or {}
+        prefer_http = _normalize_bool(request.args.get("prefer_http"), False)
+        payment_cfg = payment_service.with_webshare_api_key(
+            cfg.payment,
+            data.get("webshare_api_key"),
+        )
+        proxy = payment_service.replace_webshare_static_proxy(
+            payment_cfg=payment_cfg,
+            prefer_http=prefer_http,
+        )
         state.proxy = proxy
         main.print(f"✅ 已替换当前 Webshare 代理: {describe_proxy(state.proxy)}")
         return jsonify({"status": "ok", "proxy": state.proxy})
@@ -1179,30 +1407,10 @@ def set_email_domains():
 
 @app.route('/api/accounts')
 def get_accounts():
-    accounts = []
-    for accounts_path in _account_list_paths():
-        if not accounts_path.exists():
-            continue
-        try:
-            with open(accounts_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    parts = line.strip().split('|')
-                    if len(parts) >= 2 and '@' in parts[0]:
-                        provider_id = parts[5].strip() if len(parts) > 5 else 'nnai'
-                        provider_info = email_providers.get_provider_info(provider_id)
-                        accounts.append({
-                            "email": parts[0].strip(),
-                            "password": parts[1].strip(),
-                            "time": parts[2].strip() if len(parts) > 2 else "",
-                            "status": parts[3].strip() if len(parts) > 3 else "",
-                            "temp_credential": parts[4].strip() if len(parts) > 4 else "",
-                            "provider": provider_id,
-                            "provider_name": provider_info["name"] if provider_info else provider_id,
-                            "inbox_url": provider_info["inbox_url"] if provider_info else email_providers.PROVIDERS["nnai"]["inbox_url"],
-                            "has_password": provider_info["has_password"] if provider_info else False,
-                        })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+    try:
+        accounts = _load_accounts_for_list()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     return jsonify(accounts[::-1])
 
 def serve_app():
@@ -1251,6 +1459,85 @@ def _account_list_paths() -> list[Path]:
 
 def _default_accounts_candidate_path() -> Path:
     return PROJECT_ROOT / "data" / "accounts" / f"{datetime.now().strftime('%Y%m%d')}_001.txt"
+
+
+def _extract_access_token_from_status(status: str) -> str:
+    value = str(status or "").strip()
+    if not value:
+        return ""
+
+    lowered = value.lower()
+    if lowered == stored_accounts.NEED_PHONE_STATUS:
+        return ""
+
+    blocked_prefixes = (
+        "已注册",
+        "支付失败",
+        "错误:",
+        "用户中断",
+        "邮箱已创建",
+    )
+    if value.startswith(blocked_prefixes):
+        return ""
+    if any("\u4e00" <= char <= "\u9fff" for char in value):
+        return ""
+    if " " in value or len(value) < 20:
+        return ""
+    return value
+
+
+def _parse_account_line(parts: list[str], accounts_path: Path) -> dict | None:
+    if len(parts) < 2 or '@' not in parts[0]:
+        return None
+
+    provider_id = parts[5].strip() if len(parts) > 5 else 'nnai'
+    provider_info = email_providers.get_provider_info(provider_id)
+    status = parts[3].strip() if len(parts) > 3 else ""
+    access_token = _extract_access_token_from_status(status)
+    default_provider = email_providers.PROVIDERS["nnai"]
+    return {
+        "email": parts[0].strip(),
+        "password": parts[1].strip(),
+        "time": parts[2].strip() if len(parts) > 2 else "",
+        "status": status,
+        "temp_credential": parts[4].strip() if len(parts) > 4 else "",
+        "provider": provider_id,
+        "provider_name": provider_info["name"] if provider_info else provider_id,
+        "inbox_url": provider_info["inbox_url"] if provider_info else default_provider["inbox_url"],
+        "has_password": provider_info["has_password"] if provider_info else False,
+        "source_file": str(accounts_path),
+        "access_token": access_token,
+        "can_pay": bool(access_token),
+    }
+
+
+def _load_accounts_for_list(paths: list[Path] | None = None) -> list[dict]:
+    accounts = []
+    for accounts_path in (paths or _account_list_paths()):
+        if not accounts_path.exists():
+            continue
+        with open(accounts_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parsed = _parse_account_line(line.strip().split('|'), accounts_path)
+                if parsed:
+                    accounts.append(parsed)
+    return accounts
+
+
+def _find_account_record(email: str, source_file: str = "") -> dict | None:
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    if source_file:
+        search_paths = [_resolve_request_path(source_file)]
+    else:
+        search_paths = _account_list_paths()
+
+    for record in _load_accounts_for_list(search_paths):
+        if record["email"].strip().lower() == normalized_email:
+            return record
+    return None
 
 
 if __name__ == '__main__':

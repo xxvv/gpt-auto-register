@@ -124,7 +124,7 @@ class ExhaustedRetryToEmailDriver:
         if (
             by == browser.By.CSS_SELECTOR
             and selector
-            == 'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]'
+            == 'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email"], input[id="email-input"]'
         ):
             return [FakeElement()]
         return []
@@ -360,7 +360,7 @@ class BrowserSignupFlowTests(unittest.TestCase):
                     "mapping": {
                         (
                             browser.By.CSS_SELECTOR,
-                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email"], input[id="email-input"]',
                         ): [email_input]
                     },
                 },
@@ -594,7 +594,7 @@ class BrowserSignupFlowTests(unittest.TestCase):
                     "mapping": {
                         (
                             browser.By.CSS_SELECTOR,
-                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+                            'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email"], input[id="email-input"]',
                         ): [FakeElement()]
                     },
                 },

@@ -224,6 +224,10 @@
                         <input type="number" id="browserJsonProxySwitchInterval" class="ctrl-input" value="1" min="1" max="1000"
                             title="切换 IP 间隔"
                             style="width: 140px;" onchange="syncProxyTaskOptions('browser-json')">
+                        <button class="btn btn-secondary" style="width:auto; padding:10px 18px;" id="btnAccountPay"
+                            onclick="startSelectedAccountPayment()">
+                            <span>💳</span> 支付选中
+                        </button>
                         <button class="btn btn-primary" style="width:auto; padding:10px 18px;" id="btnBrowserJson"
                             onclick="startBrowserJsonTask()">
                             <span>🌐</span> 获取 JSON

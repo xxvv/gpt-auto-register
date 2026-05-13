@@ -247,6 +247,7 @@ class PaymentConfig:
     """注册后支付流程配置"""
 
     enabled_default: bool = False
+    default_method: str = "card"
     webshare_api_key: str = ""
     webshare_plan_id: str = ""
     proxy_debug_mode: bool = False
@@ -629,6 +630,11 @@ class ConfigLoader:
             enabled_default=self._as_bool(
                 os.environ.get(
                     "PAYMENT_ENABLED_DEFAULT", payment.get("enabled_default", False)
+                )
+            ),
+            default_method=str(
+                os.environ.get(
+                    "PAYMENT_DEFAULT_METHOD", payment.get("default_method", "card")
                 )
             ),
             webshare_api_key=os.environ.get(

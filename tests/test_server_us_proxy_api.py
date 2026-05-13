@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 import tempfile
+from pathlib import Path
 
 from app import server
 
@@ -47,6 +48,72 @@ class ServerUsProxyApiTests(unittest.TestCase):
             delattr(server._log_context, "proxy")
         except AttributeError:
             pass
+
+    def test_get_accounts_marks_access_token_and_source_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            accounts_path = Path(tmpdir) / "accounts.txt"
+            accounts_path.write_text(
+                "has-token@example.com|pass|20260507_120000|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock.mock|cred|nnai\n"
+                "no-token@example.com|pass|20260507_120001|已注册/支付成功|cred|nnai\n",
+                encoding="utf-8",
+            )
+            with mock.patch("app.server._account_list_paths", return_value=[accounts_path]):
+                response = self.client.get("/api/accounts")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        token_row = next(item for item in payload if item["email"] == "has-token@example.com")
+        no_token_row = next(item for item in payload if item["email"] == "no-token@example.com")
+        self.assertTrue(token_row["can_pay"])
+        self.assertEqual(token_row["access_token"], "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock.mock")
+        self.assertEqual(token_row["source_file"], str(accounts_path))
+        self.assertFalse(no_token_row["can_pay"])
+        self.assertEqual(no_token_row["access_token"], "")
+
+    def test_start_account_payment_rejects_missing_access_token(self):
+        with mock.patch(
+            "app.server._find_account_record",
+            return_value={
+                "email": "user@example.com",
+                "source_file": "/tmp/accounts.txt",
+                "access_token": "",
+            },
+        ):
+            response = self.client.post(
+                "/api/accounts/pay",
+                json={"email": "user@example.com", "source_file": "/tmp/accounts.txt"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("accessToken", response.get_json()["error"])
+
+    @mock.patch("app.server.threading.Thread")
+    def test_start_account_payment_starts_background_worker(self, thread_cls):
+        thread_instance = mock.Mock()
+        thread_cls.return_value = thread_instance
+        with mock.patch(
+            "app.server._find_account_record",
+            return_value={
+                "email": "user@example.com",
+                "source_file": "/tmp/accounts.txt",
+                "access_token": "token-1234567890abcdefghijklmn",
+            },
+        ):
+            response = self.client.post(
+                "/api/accounts/pay",
+                json={
+                    "email": "user@example.com",
+                    "source_file": "/tmp/accounts.txt",
+                    "payment_method": "card",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["email"], "user@example.com")
+        thread_cls.assert_called_once()
+        thread_instance.start.assert_called_once_with()
 
     @mock.patch("app.server.us_proxy_pool.load_us_proxy_pool")
     def test_apply_us_proxy_updates_current_proxy(self, load_pool):
@@ -486,6 +553,35 @@ class ServerUsProxyApiTests(unittest.TestCase):
         self.assertEqual(server.state.payment_method, "paypal")
         self.assertTrue(server.state.use_proxy_for_tasks)
         self.assertEqual(server.state.proxy_switch_interval, 5)
+        thread.start.assert_called_once()
+
+    @mock.patch(
+        "app.server.payment_service.is_payment_simulation_enabled",
+        return_value=True,
+    )
+    @mock.patch("app.server.threading.Thread")
+    def test_start_task_enables_payment_flow_for_debug_card(
+        self,
+        thread_cls,
+        is_payment_simulation_enabled,
+    ):
+        thread = mock.Mock()
+        thread_cls.return_value = thread
+
+        response = self.client.post(
+            "/api/start",
+            json={
+                "count": 1,
+            },
+        )
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "started")
+        kwargs = thread_cls.call_args.kwargs
+        self.assertTrue(kwargs["args"][6])
+        self.assertTrue(server.state.complete_payment_flow)
+        is_payment_simulation_enabled.assert_called_once()
         thread.start.assert_called_once()
 
     @mock.patch("app.server.threading.Thread")

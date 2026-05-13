@@ -79,38 +79,19 @@ def _run_post_registration_payment_flow(
         method = "card"
 
     if payment_service.is_payment_simulation_enabled():
-        print("🧪 支付流程模拟模式: 使用本地调试卡密，不请求 PayURL/Stripe/PayPal")
-        card = payment_service.redeem_next_card(email=email)
-        print(
-            "✅ 支付流程模拟完成 "
-            f"(卡尾号 {card.card[-4:]}, 姓名 {card.name}, 城市 {card.city})"
-        )
-        return "payment-simulation"
+        print("🧪 卡密调试模式: 将使用本地模拟卡密填写支付页面")
 
     print("💳 支付流程: step 1/4 获取 Stripe 支付链接")
     stripe_payurl = payment_service.request_stripe_payurl(access_token)
-    print("💳 支付流程: step 2/4 打开 Stripe 并确认金额为 €0.00")
-    payment_service.open_stripe_payment_page(
+    print("💳 支付流程: step 2/4 执行支付提交流程")
+    payment_service.execute_payurl_payment_flow(
         driver,
         stripe_payurl,
+        payment_method=method,
+        email=email,
         monitor_callback=monitor_callback,
     )
-    print("💳 支付流程: step 3/4 获取支付卡信息并提交支付")
-    card = payment_service.redeem_next_card(email=email)
-    if method == "paypal":
-        payment_service.fill_and_submit_paypal_payment(
-            driver,
-            card,
-            email=email,
-            monitor_callback=monitor_callback,
-        )
-    else:
-        payment_service.fill_and_submit_stripe_payment(
-            driver,
-            card,
-            monitor_callback=monitor_callback,
-        )
-    print("🌐 支付流程: step 4/4 按账号管理流程获取 JSON")
+    print("🌐 支付流程: step 3/4 按账号管理流程获取 JSON")
     token_path = payment_service.fetch_and_save_browser_json_for_registered_account(
         email=email,
         password=password,
@@ -477,11 +458,14 @@ def register_one_account(
 
     finally:
         if driver:
-            print("🔒 正在关闭浏览器...")
-            try:
-                driver.quit()
-            except Exception as e:
-                print(f"⚠️ 关闭浏览器时忽略异常: {e}")
+            if complete_payment_flow:
+                print("🟢 已启用支付流程，保留浏览器窗口不关闭")
+            else:
+                print("🔒 正在关闭浏览器...")
+                try:
+                    driver.quit()
+                except Exception as e:
+                    print(f"⚠️ 关闭浏览器时忽略异常: {e}")
         _release_provider_reservation()
 
     return email, password, success

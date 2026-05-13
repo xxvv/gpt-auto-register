@@ -185,6 +185,20 @@ class BrowserProxyDiagnosticsTests(unittest.TestCase):
         driver.get.assert_called_once_with("https://chatgpt.com/")
         driver.execute_script.assert_called_once_with("window.stop();")
 
+    @patch("app.browser.time.sleep", return_value=None)
+    def test_open_chatgpt_url_retries_chatgpt_timeout_before_reaching_target(self, _sleep):
+        driver = MagicMock()
+        first_timeout = TimeoutException(
+            "timeout: Timed out receiving message from renderer: 19.950"
+        )
+        driver.current_url = "data:,"
+        driver.get.side_effect = [first_timeout, None]
+
+        browser.open_chatgpt_url(driver, browser.CHATGPT_HOME_URL, attempts=2)
+
+        self.assertEqual(driver.get.call_count, 2)
+        driver.execute_script.assert_called_once_with("window.stop();")
+
     def test_open_chatgpt_url_keeps_timeout_fatal_before_reaching_chatgpt(self):
         driver = MagicMock()
         driver.current_url = "data:,"

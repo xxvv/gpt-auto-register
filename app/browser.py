@@ -55,7 +55,7 @@ _PASSWORD_INPUT_SELECTORS = [
 _EMAIL_INPUT_SELECTORS = [
     (
         By.CSS_SELECTOR,
-        'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email-input"]',
+        'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="email"], input[id="email"], input[id="email-input"]',
     )
 ]
 _VERIFICATION_INPUT_SELECTORS = [
@@ -643,6 +643,10 @@ def _is_chatgpt_navigation_timeout(driver, url: str, exc: Exception) -> bool:
     return current_host in {"chatgpt.com", "www.chatgpt.com"}
 
 
+def _is_chatgpt_url(url: str) -> bool:
+    return _normalize_url_host(url) in {"chatgpt.com", "www.chatgpt.com"}
+
+
 def _stop_page_load(driver) -> None:
     try:
         driver.execute_script("window.stop();")
@@ -698,8 +702,25 @@ def open_chatgpt_url(driver, url: str, attempts: int = 2) -> None:
             return
         except Exception as exc:
             last_exc = exc
-            if _is_chatgpt_navigation_timeout(driver, url, exc):
+            if isinstance(exc, TimeoutException) and _is_chatgpt_url(url):
                 _stop_page_load(driver)
+                if _is_chatgpt_navigation_timeout(driver, url, exc):
+                    try:
+                        print(
+                            "  ⚠️ ChatGPT 页面加载未完全结束，但已进入目标站，继续等待页面元素..."
+                            f" current_url={driver.current_url or 'N/A'}"
+                        )
+                    except Exception:
+                        print("  ⚠️ ChatGPT 页面加载未完全结束，但已进入目标站，继续等待页面元素...")
+                    return
+                if attempt < total_attempts:
+                    print(
+                        "  ⚠️ ChatGPT 首屏加载超时，准备停止当前加载并重试..."
+                        f"（第 {attempt}/{total_attempts} 次）"
+                    )
+                    time.sleep(1)
+                    continue
+            if _is_chatgpt_navigation_timeout(driver, url, exc):
                 try:
                     print(
                         "  ⚠️ ChatGPT 页面加载未完全结束，但已进入目标站，继续等待页面元素..."
@@ -1072,6 +1093,7 @@ def create_driver(headless=False, proxy=None):
         )
 
     options = uc.ChromeOptions()
+    options.page_load_strategy = "eager"
 
     # === 伪无头模式 (Fake Headless) ===
     # 真正的 Headless 很难过 Cloudflare，我们使用"移出屏幕"的策略

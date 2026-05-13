@@ -23,6 +23,7 @@ class ConfigOAuthTests(unittest.TestCase):
 
             payment:
               enabled_default: true
+              default_method: "paypal"
               webshare_api_key: "webshare-secret"
               webshare_plan_id: "plan-123"
               proxy_debug_mode: true
@@ -76,6 +77,7 @@ class ConfigOAuthTests(unittest.TestCase):
         )
         self.assertEqual(loader.config.cpa.upload_api_token, "secret-token")
         self.assertTrue(loader.config.payment.enabled_default)
+        self.assertEqual(loader.config.payment.default_method, "paypal")
         self.assertEqual(loader.config.payment.webshare_api_key, "webshare-secret")
         self.assertEqual(loader.config.payment.webshare_plan_id, "plan-123")
         self.assertTrue(loader.config.payment.proxy_debug_mode)

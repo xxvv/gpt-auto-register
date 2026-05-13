@@ -211,6 +211,23 @@ token_exports/<时间戳>/
 uv run python main.py
 ```
 
+直接打开某个 `pay_url` 做支付流程测试：
+
+```bash
+uv run python scripts/direct_payment_test.py \
+  --pay-url "https://checkout.stripe.com/..." \
+  --method card
+```
+
+如果要测试 PayPal 分支：
+
+```bash
+uv run python scripts/direct_payment_test.py \
+  --pay-url "https://checkout.stripe.com/..." \
+  --method paypal \
+  --email "your-test@example.com"
+```
+
 ## 从已有账号补取 Token
 
 通过 Web 面板「Token 导入」功能，或 API：

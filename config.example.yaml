@@ -78,6 +78,7 @@ cpa:
 # Webshare API Key 建议通过环境变量 WEBSHARE_API_KEY 提供
 payment:
   enabled_default: false
+  default_method: "paypal"
   webshare_api_key: ""
   webshare_plan_id: ""
   proxy_debug_mode: false

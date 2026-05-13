@@ -64,6 +64,7 @@ async function pollStatus() {
 function updateUI(data) {
     const progress = data.progress || {};
     const currentProxy = data.current_proxy || {};
+    const wasRunning = isRunning;
 
     document.getElementById('valAction').textContent = data.current_action;
     document.getElementById('valSuccess').textContent = data.success;
@@ -95,12 +96,14 @@ function updateUI(data) {
     const btnReplaceWebshareProxy = document.getElementById('btnReplaceWebshareProxy');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
+    const btnAccountPay = document.getElementById('btnAccountPay');
 
     if (isRunning) {
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
         if (btnGetWebshareProxy) btnGetWebshareProxy.disabled = true;
         if (btnReplaceWebshareProxy) btnReplaceWebshareProxy.disabled = true;
+        if (btnAccountPay) btnAccountPay.disabled = true;
         const btnBrowserJson = document.getElementById('btnBrowserJson');
         if (btnBrowserJson) btnBrowserJson.disabled = true;
         statusDot.classList.add('running');
@@ -110,10 +113,18 @@ function updateUI(data) {
         btnStop.classList.add('hidden');
         if (btnGetWebshareProxy) btnGetWebshareProxy.disabled = webshareProxyActionInFlight;
         if (btnReplaceWebshareProxy) btnReplaceWebshareProxy.disabled = webshareProxyActionInFlight;
+        if (btnAccountPay) btnAccountPay.disabled = false;
         const btnBrowserJson = document.getElementById('btnBrowserJson');
         if (btnBrowserJson) btnBrowserJson.disabled = false;
         statusDot.classList.remove('running');
         statusText.textContent = "系统空闲";
+    }
+
+    if (wasRunning && !isRunning) {
+        const accountView = document.getElementById('view-accounts');
+        if (accountView && accountView.classList.contains('active')) {
+            loadAccounts();
+        }
     }
 
     const monitorImg = document.getElementById('liveMonitor');
@@ -222,7 +233,7 @@ async function loadSettings() {
         document.getElementById('parallelCount').value = data.parallel ?? 1;
         document.getElementById('headlessMode').checked = data.headless ?? false;
         document.getElementById('completePaymentFlow').checked = data.complete_payment_flow ?? false;
-        document.getElementById('paymentMethod').value = data.payment_method ?? 'card';
+        document.getElementById('paymentMethod').value = data.payment_method ?? 'paypal';
         const useProxy = data.use_proxy_for_tasks ?? false;
         const proxySwitchInterval = data.proxy_switch_interval ?? 1;
         document.getElementById('useProxyForTasks').checked = useProxy;
@@ -261,7 +272,7 @@ async function saveSettings() {
     const parallel = parseInt(document.getElementById('parallelCount').value) || 1;
     const headless = document.getElementById('headlessMode').checked;
     const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
-    const paymentMethod = document.getElementById('paymentMethod').value || 'card';
+    const paymentMethod = document.getElementById('paymentMethod').value || 'paypal';
     const useProxyForTasks = document.getElementById('useProxyForTasks').checked;
     const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
     try {
@@ -299,7 +310,7 @@ async function saveSettings() {
 async function startTask() {
     const count = parseInt(document.getElementById('targetCount').value) || 1;
     const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
-    const paymentMethod = document.getElementById('paymentMethod').value || 'card';
+    const paymentMethod = document.getElementById('paymentMethod').value || 'paypal';
     const useProxy = document.getElementById('useProxyForTasks').checked;
     const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
 
@@ -643,7 +654,7 @@ async function loadAccounts() {
         const accounts = await res.json();
         renderAccounts(accounts);
     } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:red">加载失败: ${e}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:red">加载失败: ${e}</td></tr>`;
     }
 }
 
@@ -791,4 +802,67 @@ async function startBrowserJsonTask() {
     } catch (e) {
         alert("请求失败: " + e);
     }
+}
+
+async function startAccountPayment(email, sourceFile) {
+    const normalizedEmail = String(email || '').trim();
+    if (!normalizedEmail) return;
+
+    if (!confirm(`确认开始为账号 ${normalizedEmail} 自动支付吗？`)) return;
+
+    const paymentMethod = document.getElementById('paymentMethod').value || 'paypal';
+    const useProxy = document.getElementById('useProxyForTasks').checked;
+    const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
+
+    clearLogs();
+
+    try {
+        const res = await fetch('/api/accounts/pay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: normalizedEmail,
+                source_file: sourceFile,
+                payment_method: paymentMethod,
+                use_proxy: useProxy,
+                proxy_switch_interval: proxySwitchInterval
+            })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || '启动支付失败');
+            return;
+        }
+        await loadAccounts();
+    } catch (e) {
+        alert(`启动支付失败: ${e}`);
+    }
+}
+
+async function startSelectedAccountPayment() {
+    const emails = Array.from(selectedAccountEmails);
+    if (emails.length === 0) {
+        alert('请先勾选 1 个要支付的账号');
+        return;
+    }
+    if (emails.length > 1) {
+        alert('当前一次只支持支付 1 个账号，请只勾选 1 个');
+        return;
+    }
+
+    const selectedEmail = emails[0];
+    const account = Array.isArray(window.allAccounts)
+        ? window.allAccounts.find(item => item.email === selectedEmail)
+        : null;
+
+    if (!account) {
+        alert('未找到选中的账号，请刷新列表后重试');
+        return;
+    }
+    if (!account.can_pay) {
+        alert('该账号当前没有可用 accessToken，无法进行支付');
+        return;
+    }
+
+    await startAccountPayment(account.email, account.source_file);
 }
