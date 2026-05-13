@@ -1,8 +1,19 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://kiro.nnai.website",
+    "ANTHROPIC_AUTH_TOKEN": "sinite"
+  },
+  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
-      "Bash(python -m pytest:*)",
-      "Bash(python3:*)"
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)"
     ]
-  }
+  },
+  "model": "gpt-5.4",
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": true
+  },
+  "skipDangerousModePermissionPrompt": true
 }

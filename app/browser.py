@@ -1791,6 +1791,9 @@ def _calculate_age_from_birthday(year: str, month: str, day: str) -> str:
 
 
 def _fill_profile_form_fields(driver, form_fields=None):
+    if form_fields is None:
+        form_fields = _wait_for_profile_form_fields(driver, timeout=60)
+
     user_info = generate_user_info()
     user_name = user_info["name"]
     birthday_year = user_info["year"]
@@ -1800,23 +1803,20 @@ def _fill_profile_form_fields(driver, form_fields=None):
         birthday_year, birthday_month, birthday_day
     )
 
-    if form_fields is None:
-        form_fields = _wait_for_profile_form_fields(driver, timeout=60)
-
-    print("👤 正在填写姓名/用户名...")
+    print("👤 正在填写姓名/用户名...", flush=True)
     _fill_input_value(driver, form_fields["name_input"], user_name)
-    print(f"✅ 已输入姓名: {user_name}")
+    print(f"✅ 已输入姓名: {user_name}", flush=True)
     time.sleep(BROWSER_ACTION_WAIT)
 
-    print("🎂 正在识别年龄/生日输入方式...")
+    print("🎂 正在识别年龄/生日输入方式...", flush=True)
     profile_fields = form_fields["birth_fields"]
 
     if profile_fields["mode"] == "age":
-        print("🎯 检测到年龄输入框，改为直接输入年龄...")
+        print("🎯 检测到年龄输入框，改为直接输入年龄...", flush=True)
         _fill_input_value(driver, profile_fields["age_input"], age, delay=0.1)
-        print(f"✅ 已输入年龄: {age}")
+        print(f"✅ 已输入年龄: {age}", flush=True)
     else:
-        print("🎯 检测到生日输入框，按年月日填写...")
+        print("🎯 检测到生日输入框，按年月日填写...", flush=True)
         _fill_input_value(
             driver, profile_fields["year_input"], birthday_year, delay=0.1
         )
@@ -1828,7 +1828,7 @@ def _fill_profile_form_fields(driver, form_fields=None):
         _fill_input_value(
             driver, profile_fields["day_input"], birthday_day, delay=0.1
         )
-        print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}")
+        print(f"✅ 已输入生日: {birthday_year}/{birthday_month}/{birthday_day}", flush=True)
 
     time.sleep(BROWSER_ACTION_WAIT)
 
@@ -1845,6 +1845,97 @@ def _fill_merged_profile_form_if_present(driver, timeout=3) -> bool:
         time.sleep(0.2)
 
     return False
+
+
+_LOGGED_IN_SELECTORS = [
+    "textarea#prompt-textarea",
+    'button[data-testid="profile-button"]',
+    'button[data-testid="user-menu-button"]',
+    'nav a[href*="/settings"]',
+    'a[href*="/settings"]',
+    'button[data-testid="getting-started-button"]',
+]
+
+
+def _current_url_lower(driver) -> str:
+    try:
+        return (driver.current_url or "").lower()
+    except Exception:
+        return ""
+
+
+def _has_logged_in_indicator(driver) -> bool:
+    for selector in _LOGGED_IN_SELECTORS:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+        except Exception:
+            continue
+        for element in elements:
+            try:
+                if element.is_displayed():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _has_visible_logged_out_prompt(driver) -> bool:
+    auth_prompt_xpath = (
+        '//a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "log in") '
+        'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "sign up") '
+        'or contains(normalize-space(.), "登录") '
+        'or contains(normalize-space(.), "注册")]'
+        '|//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "log in") '
+        'or contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "sign up") '
+        'or contains(normalize-space(.), "登录") '
+        'or contains(normalize-space(.), "注册")]'
+    )
+
+    try:
+        elements = driver.find_elements(By.XPATH, auth_prompt_xpath)
+    except Exception:
+        return False
+
+    for element in elements:
+        try:
+            if element.is_displayed():
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _is_likely_logged_in_context(driver) -> bool:
+    if _has_logged_in_indicator(driver):
+        return True
+
+    current_url = _current_url_lower(driver)
+    if "chatgpt.com" in current_url and not any(
+        token in current_url for token in ["/auth", "login", "signup"]
+    ):
+        return True
+
+    return False
+
+
+def _wait_for_profile_form_or_logged_in(driver, timeout=60):
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        fields = _detect_profile_form_fields_once(driver)
+        if fields:
+            return fields
+
+        if _is_likely_logged_in_context(driver):
+            return None
+
+        time.sleep(BROWSER_POLL_INTERVAL)
+
+    if _is_likely_logged_in_context(driver):
+        return None
+
+    raise RuntimeError("未找到姓名和年龄/生日输入框")
 
 
 def _fill_input_value(driver, element, value: str, delay=0.1):
@@ -2441,20 +2532,25 @@ def fill_profile_info(driver):
         bool: 是否成功
     """
     try:
-        _fill_profile_form_fields(driver)
+        form_fields = _wait_for_profile_form_or_logged_in(driver, timeout=60)
+        if form_fields is None:
+            print("✅ 未检测到资料页，当前已进入登录态/完成页，跳过资料填写", flush=True)
+            return True
 
-        print("🔘 点击最终提交按钮...")
+        _fill_profile_form_fields(driver, form_fields=form_fields)
+
+        print("🔘 点击最终提交按钮...", flush=True)
         wait = WebDriverWait(driver, MAX_WAIT_TIME)
         continue_btn = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
         )
         continue_btn.click()
-        print("✅ 已提交注册信息")
+        print("✅ 已提交注册信息", flush=True)
 
         return True
 
     except Exception as e:
-        print(f"❌ 填写资料失败: {e}")
+        print(f"❌ 填写资料失败: {e}", flush=True)
         return False
 
 
@@ -2516,21 +2612,14 @@ def verify_logged_in(driver, timeout=90):
     返回:
         bool: 是否验证成功
     """
-    print("🔍 正在验证登录状态...")
+    print("🔍 正在验证登录状态...", flush=True)
 
     # 先等待页面跳转完成；注册成功后有时会在 onboarding 页停留数秒
     end_time = time.time() + timeout
-    logged_in_selectors = [
-        "textarea#prompt-textarea",
-        'button[data-testid="profile-button"]',
-        'button[data-testid="user-menu-button"]',
-        'nav a[href*="/settings"]',
-        'a[href*="/settings"]',
-    ]
 
     while time.time() < end_time:
         try:
-            current_url = (driver.current_url or "").lower()
+            current_url = _current_url_lower(driver)
 
             # 若仍处于认证路径，继续等待跳转
             if any(key in current_url for key in ["/auth", "login", "signup"]):
@@ -2538,18 +2627,24 @@ def verify_logged_in(driver, timeout=90):
                 continue
 
             # 出现核心已登录元素即可判定成功
-            for selector in logged_in_selectors:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                if any(el.is_displayed() for el in elements):
-                    print("✅ 登录状态验证成功")
-                    return True
+            if _has_logged_in_indicator(driver):
+                print("✅ 登录状态验证成功", flush=True)
+                return True
+
+            # 已跳到 ChatGPT 主站且不在认证路径，优先作为完成态处理。
+            # 完成页源码里可能仍包含 signup/login 文案，不能只靠 page_source 阻塞。
+            if "chatgpt.com" in current_url:
+                if _has_visible_logged_out_prompt(driver):
+                    time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
+                    continue
+                _dismiss_onboarding(driver)
+                print("✅ 登录状态验证成功（ChatGPT URL 兜底判定）", flush=True)
+                return True
 
             page_source = (driver.page_source or "").lower()
             blocked_markers = [
                 "verify your email",
                 "enter code",
-                "log in",
-                "sign up",
             ]
 
             if any(marker in page_source for marker in blocked_markers):
@@ -2561,15 +2656,15 @@ def verify_logged_in(driver, timeout=90):
 
             # 如果 URL 已不在 auth 路径，且没有明显登录/注册提示，作为兜底判定
             if "auth" not in current_url:
-                print("✅ 登录状态验证成功（URL 兜底判定）")
+                print("✅ 登录状态验证成功（URL 兜底判定）", flush=True)
                 return True
 
         except Exception as e:
-            print(f"  登录状态检查中断: {e}")
+            print(f"  登录状态检查中断: {e}", flush=True)
 
         time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
 
-    print("❌ 登录状态验证失败：超时仍未确认登录")
+    print("❌ 登录状态验证失败：超时仍未确认登录", flush=True)
     return False
 
 

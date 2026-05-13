@@ -243,6 +243,16 @@ class OutlookEmailConfig:
 
 
 @dataclass
+class TokenUploadConfig:
+    """Token 自动上传配置"""
+
+    enabled: bool = False
+    api_url: str = "https://free-team-redeem.111pengwei.workers.dev/api/admin/account/add"
+    api_key: str = ""
+    timeout: int = 10
+
+
+@dataclass
 class PaymentConfig:
     """注册后支付流程配置"""
 
@@ -288,6 +298,7 @@ class AppConfig:
     custom2925: Custom2925Config = field(default_factory=Custom2925Config)
     gaggle: GaggleConfig = field(default_factory=GaggleConfig)
     outlookemail: OutlookEmailConfig = field(default_factory=OutlookEmailConfig)
+    token_upload: TokenUploadConfig = field(default_factory=TokenUploadConfig)
     payment: PaymentConfig = field(default_factory=PaymentConfig)
 
 
@@ -621,6 +632,29 @@ class ConfigLoader:
                 outlookemail.get(
                     "registered_file", "data/state/outlookemail_registered.json"
                 ),
+            ),
+        )
+
+        # Token 自动上传配置
+        token_upload = self.raw_config.get("token_upload", {})
+        self.config.token_upload = TokenUploadConfig(
+            enabled=self._as_bool(
+                os.environ.get(
+                    "TOKEN_UPLOAD_ENABLED", token_upload.get("enabled", False)
+                )
+            ),
+            api_url=os.environ.get(
+                "TOKEN_UPLOAD_API_URL",
+                token_upload.get(
+                    "api_url",
+                    "https://free-team-redeem.111pengwei.workers.dev/api/admin/account/add",
+                ),
+            ),
+            api_key=os.environ.get(
+                "TOKEN_UPLOAD_API_KEY", token_upload.get("api_key", "")
+            ),
+            timeout=int(
+                os.environ.get("TOKEN_UPLOAD_TIMEOUT", token_upload.get("timeout", 10))
             ),
         )
 

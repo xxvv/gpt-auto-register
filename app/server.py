@@ -786,6 +786,138 @@ def browser_json_worker_thread(
             set_output_batch_id(None)
 
 
+def predefined_accounts_worker_thread(
+    selected_emails,
+    headless,
+    proxy,
+    complete_payment_flow=False,
+    use_proxy=False,
+    proxy_switch_interval=DEFAULT_PROXY_SWITCH_INTERVAL,
+    payment_method=DEFAULT_PAYMENT_METHOD,
+):
+    """使用预定义的邮箱地址进行注册"""
+    try:
+        task_proxy, proxy_switch_interval = _build_task_proxy_plan(
+            proxy,
+            use_proxy=use_proxy,
+            switch_interval=proxy_switch_interval,
+        )
+    except Exception as exc:
+        state.is_running = False
+        state.current_action = "Webshare 代理准备失败"
+        main.print(f"🛑 Webshare 代理准备失败，任务启动终止: {exc}")
+        return
+
+    with state.lock:
+        state.proxy = dict(task_proxy) if task_proxy else _disabled_proxy()
+
+    count = len(selected_emails)
+    state.is_running = True
+    state.stop_requested = False
+    state.success_count = 0
+    state.fail_count = 0
+    state.current_action = f"🚀 任务启动，目标: {count} 个预定义账号"
+    state.reset_progress(task_type="registration", total=count)
+    state.update_frame(None)
+    batch_id = allocate_output_batch_id()
+    set_output_batch_id(batch_id)
+
+    with _log_proxy_context(task_proxy):
+        main.print(f"🚀 开始预定义账号注册任务，计划注册: {count} 个")
+        main.print(f"🧾 输出批次: {batch_id}")
+        main.print("📬 邮箱渠道: 使用预定义邮箱地址")
+        main.print(f"🖥️ 浏览器模式: {'Headless' if headless else '有界面'}")
+        if complete_payment_flow:
+            main.print(f"💳 支付流程: 已启用 ({payment_method})")
+        if task_proxy and task_proxy.get("enabled"):
+            main.print(f"🌐 代理: {describe_proxy(task_proxy)}")
+            main.print(f"🔁 代理切换间隔: 每 {proxy_switch_interval} 个任务")
+            if not complete_payment_flow:
+                try:
+                    ensure_proxy_ready(task_proxy, purpose="预定义账号注册任务启动前代理预检", timeout=10)
+                except Exception as exc:
+                    state.is_running = False
+                    set_output_batch_id(None)
+                    state.current_action = "代理预检失败"
+                    main.print(f"🛑 任务启动终止: {exc}")
+                    return
+        else:
+            main.print("🌐 代理: 未启用")
+
+        proxy_selector = _TaskProxySelector(task_proxy, proxy_switch_interval)
+
+        def monitor(driver, _step):
+            if state.stop_requested:
+                main.print("🛑 检测到停止请求，正在中断任务...")
+                raise InterruptedError("用户请求停止")
+            try:
+                state.update_frame(driver.get_screenshot_as_png())
+            except Exception:
+                pass
+
+        for idx, email in enumerate(selected_emails, 1):
+            if state.stop_requested:
+                main.print("🛑 任务已停止")
+                break
+
+            account_proxy = proxy_selector.next_proxy(idx)
+            if account_proxy and account_proxy.get("enabled"):
+                with state.lock:
+                    state.proxy = dict(account_proxy)
+
+            with _log_proxy_context(account_proxy):
+                state.current_action = f"正在注册 ({idx}/{count}): {email}"
+                if account_proxy and account_proxy.get("enabled"):
+                    proxy_label = describe_proxy(account_proxy)
+                    main.print(f"🧭 第 {idx}/{count} 个账号使用代理: {proxy_label}")
+
+                # 从邮箱地址提取域名
+                email_domain = email.split('@')[-1] if '@' in email else None
+
+                try:
+                    attempt_proxy = account_proxy
+
+                    # 使用预定义的邮箱地址进行注册
+                    with _log_proxy_context(attempt_proxy):
+                        _, _, success = main.register_one_account_with_email(
+                            predefined_email=email,
+                            monitor_callback=monitor,
+                            email_provider="nnai",
+                            email_domain=email_domain,
+                            headless=headless,
+                            proxy=attempt_proxy,
+                            raise_proxy_errors=True,
+                            complete_payment_flow=complete_payment_flow,
+                            payment_method=payment_method,
+                        )
+
+                    if success:
+                        state.success_count += 1
+                    else:
+                        state.fail_count += 1
+
+                    state.update_progress(
+                        completed=state.success_count + state.fail_count,
+                        processed=state.success_count,
+                    )
+
+                except InterruptedError:
+                    main.print("🛑 任务已中断")
+                    break
+                except Exception as e:
+                    state.fail_count += 1
+                    state.update_progress(
+                        completed=state.success_count + state.fail_count,
+                        processed=state.success_count,
+                    )
+                    main.print(f"❌ 异常: {str(e)}")
+
+        state.is_running = False
+        set_output_batch_id(None)
+        state.current_action = "任务已完成"
+        main.print("🏁 预定义账号注册任务结束")
+
+
 def account_payment_worker_thread(
     email,
     access_token,
@@ -1412,6 +1544,69 @@ def get_accounts():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(accounts[::-1])
+
+
+@app.route('/api/predefined-accounts')
+def get_predefined_accounts():
+    """读取 accounts.txt 文件中的预定义账号列表"""
+    try:
+        accounts_file = PROJECT_ROOT / "accounts.txt"
+        if not accounts_file.exists():
+            return jsonify({"error": "accounts.txt 文件不存在"}), 404
+
+        accounts = []
+        with open(accounts_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                email = line.strip()
+                if email and '@' in email:
+                    accounts.append(email)
+
+        return jsonify({"accounts": accounts, "total": len(accounts)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/start-with-predefined', methods=['POST'])
+def start_with_predefined_accounts():
+    """使用预定义账号启动注册任务"""
+    if state.is_running:
+        return jsonify({"error": "Already running"}), 400
+
+    data = request.json or {}
+    selected_emails = data.get('emails', [])
+
+    if not isinstance(selected_emails, list) or len(selected_emails) == 0:
+        return jsonify({"error": "请至少选择一个账号"}), 400
+
+    complete_payment_flow = _should_enable_payment_flow(data)
+    payment_method = _normalize_payment_method(
+        data.get("payment_method", state.payment_method)
+    )
+    use_proxy = _normalize_bool(data.get("use_proxy"), state.use_proxy_for_tasks)
+    proxy_switch_interval = _normalize_proxy_switch_interval(
+        data.get("proxy_switch_interval", state.proxy_switch_interval)
+    )
+
+    state.complete_payment_flow = complete_payment_flow
+    state.payment_method = payment_method
+    state.use_proxy_for_tasks = use_proxy
+    state.proxy_switch_interval = proxy_switch_interval
+
+    threading.Thread(
+        target=predefined_accounts_worker_thread,
+        args=(
+            selected_emails,
+            state.headless,
+            dict(state.proxy),
+            complete_payment_flow,
+            use_proxy,
+            proxy_switch_interval,
+            payment_method,
+        ),
+        daemon=True
+    ).start()
+
+    return jsonify({"status": "started", "count": len(selected_emails)})
 
 def serve_app():
     from waitress import serve

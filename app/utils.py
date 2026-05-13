@@ -768,7 +768,7 @@ def generate_random_name():
         last_name = random.choice(LAST_NAMES)
         full_name = f"{first_name} {last_name}"
     
-    print(f"✅ 已生成随机姓名: {full_name}")
+    print(f"✅ 已生成随机姓名: {full_name}", flush=True)
     return full_name
 
 
@@ -815,7 +815,7 @@ def generate_random_birthday():
         month_str = str(birth_month).zfill(2)
         day_str = str(birth_day).zfill(2)
     
-    print(f"✅ 已生成随机生日: {year_str}/{month_str}/{day_str}")
+    print(f"✅ 已生成随机生日: {year_str}/{month_str}/{day_str}", flush=True)
     return year_str, month_str, day_str
 
 
@@ -949,22 +949,22 @@ def generate_us_address():
 def generate_billing_info(country="JP"):
     """
     生成完整的支付账单信息（姓名 + 地址）
-    
+
     参数:
         country: 国家代码，"JP" 或 "US"
-    
+
     返回:
         dict: 包含姓名和地址的完整账单信息
     """
     # 生成姓名
     name = generate_random_name()
-    
+
     # 根据国家生成地址
     if country.upper() == "US":
         address = generate_us_address()
     else:
         address = generate_japan_address()
-    
+
     billing_info = {
         "name": name,
         "zip": address["zip"],
@@ -973,10 +973,95 @@ def generate_billing_info(country="JP"):
         "address1": address["address1"],
         "country": country.upper()
     }
-    
+
     print("📋 完整账单信息已生成:")
     print(f"   姓名: {billing_info['name']}")
     print(f"   地址: {billing_info['address1']}, {billing_info['city']}")
     print(f"   州/省: {billing_info['state']}, 邮编: {billing_info['zip']}")
-    
+
     return billing_info
+
+
+def upload_access_token(access_token: str, api_key: str = None,
+                       api_url: str = None,
+                       timeout: int = None) -> bool:
+    """
+    上传 access token 到远程 API
+
+    参数:
+        access_token: ChatGPT 的 access token
+        api_key: API 密钥，默认从配置读取
+        api_url: API 端点 URL，默认从配置读取
+        timeout: 请求超时时间（秒），默认从配置读取
+
+    返回:
+        bool: 上传成功返回 True，失败返回 False
+    """
+    if not access_token or not access_token.strip():
+        print("⚠️ access token 为空，跳过上传")
+        return False
+
+    # 检查 token 格式（应该是 eyJ 开头的 JWT）
+    token = access_token.strip()
+    if not token.startswith("eyJ"):
+        print(f"⚠️ access token 格式不正确，跳过上传: {token[:50]}...")
+        return False
+
+    # 从配置读取默认值
+    if api_key is None:
+        api_key = cfg.token_upload.api_key
+    if api_url is None:
+        api_url = cfg.token_upload.api_url
+    if timeout is None:
+        timeout = cfg.token_upload.timeout
+
+    if not api_key:
+        print("⚠️ 未配置 token_upload.api_key，跳过上传")
+        return False
+
+    try:
+        print("📤 正在上传 access token 到 API...")
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": api_key
+        }
+
+        data = {
+            "accessToken": token
+        }
+
+        response = http_session.post(
+            api_url,
+            json=data,
+            headers=headers,
+            timeout=timeout
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                print("✅ access token 上传成功")
+                return True
+            else:
+                error_msg = result.get("error", "未知错误")
+                print(f"❌ access token 上传失败: {error_msg}")
+                return False
+        else:
+            print(f"❌ access token 上传失败: HTTP {response.status_code}")
+            try:
+                error_detail = response.json()
+                print(f"   错误详情: {error_detail}")
+            except Exception:
+                print(f"   响应内容: {response.text[:200]}")
+            return False
+
+    except requests.exceptions.Timeout:
+        print(f"❌ access token 上传超时（>{timeout}s）")
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"❌ access token 上传请求失败: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ access token 上传异常: {e}")
+        return False

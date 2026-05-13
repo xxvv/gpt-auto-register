@@ -2,6 +2,7 @@ let isRunning = false;
 let logIndex = 0;
 let pollInterval = null;
 let selectedAccountEmails = new Set();
+let selectedPredefinedEmails = new Set();
 let webshareProxyActionInFlight = false;
 
 // 初始化
@@ -31,6 +32,9 @@ function switchTab(tabName) {
     const activeNav = document.querySelector(`.nav-item[data-tab="${tabName}"]`);
     if (activeNav) activeNav.classList.add('active');
 
+    if (tabName === 'predefined') {
+        loadPredefinedAccounts();
+    }
     if (tabName === 'accounts') {
         loadAccounts();
     }
@@ -866,3 +870,155 @@ async function startSelectedAccountPayment() {
 
     await startAccountPayment(account.email, account.source_file);
 }
+
+// ==========================================
+// 📝 预定义账号管理
+// ==========================================
+
+async function loadPredefinedAccounts() {
+    const tbody = document.getElementById('predefinedTableBody');
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center">加载中...</td></tr>';
+
+    try {
+        const res = await fetch('/api/predefined-accounts');
+        const data = await res.json();
+
+        if (!res.ok) {
+            tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:red">${data.error || '加载失败'}</td></tr>`;
+            return;
+        }
+
+        renderPredefinedAccounts(data.accounts || []);
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:red">加载失败: ${e}</td></tr>`;
+    }
+}
+
+function renderPredefinedAccounts(accounts) {
+    const tbody = document.getElementById('predefinedTableBody');
+    tbody.innerHTML = '';
+
+    if (accounts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#666">accounts.txt 文件为空或不存在</td></tr>';
+        updatePredefinedCount();
+        return;
+    }
+
+    accounts.forEach((email, index) => {
+        const tr = document.createElement('tr');
+        const checked = selectedPredefinedEmails.has(email) ? 'checked' : '';
+
+        // 创建 checkbox 单元格
+        const selectCell = document.createElement('td');
+        selectCell.className = 'select-col';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'predefined-select';
+        checkbox.value = email;
+        checkbox.checked = selectedPredefinedEmails.has(email);
+        checkbox.addEventListener('change', function() {
+            togglePredefinedSelection(email, this.checked);
+        });
+        selectCell.appendChild(checkbox);
+
+        // 创建邮箱单元格
+        const emailCell = document.createElement('td');
+        emailCell.textContent = email;
+
+        // 创建序号单元格
+        const indexCell = document.createElement('td');
+        indexCell.textContent = index + 1;
+
+        tr.appendChild(selectCell);
+        tr.appendChild(emailCell);
+        tr.appendChild(indexCell);
+        tbody.appendChild(tr);
+    });
+
+    window.allPredefinedAccounts = accounts;
+    syncPredefinedSelectAllState();
+    updatePredefinedCount();
+}
+
+function togglePredefinedSelection(email, checked) {
+    if (checked) {
+        selectedPredefinedEmails.add(email);
+    } else {
+        selectedPredefinedEmails.delete(email);
+    }
+    syncPredefinedSelectAllState();
+    updatePredefinedCount();
+}
+
+function toggleAllPredefined(checked) {
+    document.querySelectorAll('.predefined-select').forEach(checkbox => {
+        checkbox.checked = checked;
+        if (checked) {
+            selectedPredefinedEmails.add(checkbox.value);
+        } else {
+            selectedPredefinedEmails.delete(checkbox.value);
+        }
+    });
+    syncPredefinedSelectAllState();
+    updatePredefinedCount();
+}
+
+function syncPredefinedSelectAllState() {
+    const selectAll = document.getElementById('selectAllPredefined');
+    if (!selectAll) return;
+
+    const visible = Array.from(document.querySelectorAll('.predefined-select'));
+    const checkedCount = visible.filter(checkbox => checkbox.checked).length;
+    selectAll.checked = visible.length > 0 && checkedCount === visible.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < visible.length;
+}
+
+function updatePredefinedCount() {
+    const el = document.getElementById('predefinedSelectedCount');
+    if (el) el.textContent = `已选 ${selectedPredefinedEmails.size}`;
+}
+
+async function startPredefinedTask() {
+    const emails = Array.from(selectedPredefinedEmails);
+
+    if (emails.length === 0) {
+        alert('请先勾选需要注册的账号');
+        return;
+    }
+
+    if (!confirm(`确定使用选中的 ${emails.length} 个邮箱地址进行注册吗？`)) {
+        return;
+    }
+
+    const completePaymentFlow = document.getElementById('completePaymentFlow').checked;
+    const paymentMethod = document.getElementById('paymentMethod').value || 'paypal';
+    const useProxy = document.getElementById('useProxyForTasks').checked;
+    const proxySwitchInterval = readProxySwitchInterval('proxySwitchInterval');
+
+    clearLogs();
+
+    try {
+        const res = await fetch('/api/start-with-predefined', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                emails: emails,
+                complete_payment_flow: completePaymentFlow,
+                payment_method: paymentMethod,
+                use_proxy: useProxy,
+                proxy_switch_interval: proxySwitchInterval
+            })
+        });
+
+        if (!res.ok) {
+            const data = await res.json();
+            alert(data.error || "启动失败");
+            return;
+        }
+
+        switchTab('dashboard');
+    } catch (e) {
+        alert("请求失败: " + e);
+    }
+}
+

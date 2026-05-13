@@ -639,6 +639,25 @@ class BrowserSignupFlowTests(unittest.TestCase):
         fill_input_value.assert_any_call(driver, age_input, mock.ANY, delay=0.1)
         click_button.assert_called_once()
 
+    def test_fill_profile_info_skips_when_registration_already_completed(self):
+        driver = StaticDriver(current_url="https://chatgpt.com/")
+        driver.page_source = ""
+
+        with patch.object(browser, "generate_user_info") as generate_user_info:
+            result = browser.fill_profile_info(driver)
+
+        self.assertTrue(result)
+        generate_user_info.assert_not_called()
+
+    def test_verify_logged_in_accepts_chatgpt_url_with_static_signup_text(self):
+        driver = StaticDriver(current_url="https://chatgpt.com/")
+        driver.page_source = "sign up"
+
+        with patch.object(browser, "_dismiss_onboarding", return_value=False):
+            result = browser.verify_logged_in(driver, timeout=1)
+
+        self.assertTrue(result)
+
 
 if __name__ == "__main__":
     unittest.main()

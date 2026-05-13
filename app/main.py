@@ -7,6 +7,7 @@ import time
 import random
 
 from .config import (
+    cfg,
     TOTAL_ACCOUNTS,
     BATCH_INTERVAL_MIN,
     BATCH_INTERVAL_MAX,
@@ -17,7 +18,7 @@ from .config import (
     allocate_output_batch_id,
     set_output_batch_id,
 )
-from .utils import generate_random_password, save_to_txt, update_account_status
+from .utils import generate_random_password, save_to_txt, update_account_status, upload_access_token
 from . import email_providers
 from . import payment_service
 from .browser import (
@@ -214,6 +215,242 @@ def _run_login_until_code_submitted(
     return False
 
 
+def register_one_account_with_email(
+    predefined_email,
+    monitor_callback=None,
+    email_provider="nnai",
+    email_domain=None,
+    headless=False,
+    proxy=None,
+    raise_proxy_errors=False,
+    complete_payment_flow=False,
+    payment_method: str = "card",
+):
+    """
+    使用预定义的邮箱地址注册账号
+    :param predefined_email: 预定义的邮箱地址
+    :param monitor_callback: 回调函数 func(driver, step_name)，用于截图和中断检查
+    :param email_provider: 临时邮箱提供商 ID（当前固定为 nnai）
+    :param email_domain: NNAI 邮箱域名（未使用，从 predefined_email 提取）
+    :param complete_payment_flow: 是否完成支付流程
+
+    返回:
+        tuple: (邮箱, 密码, 是否成功)
+    """
+    del email_domain  # 未使用，从 predefined_email 提取
+    driver = None
+    email = predefined_email
+    password = None
+    success = False
+    temp_credential = None
+    account_record_info = ""
+
+    # 获取提供商信息
+    provider_info = email_providers.get_provider_info(email_provider)
+    if not provider_info:
+        print(f"❌ 未知邮箱提供商: {email_provider}，回退到 NNAI.website")
+        email_provider = "nnai"
+        provider_info = email_providers.get_provider_info("nnai")
+
+    provider_name = provider_info["name"]
+
+    # 辅助函数：执行回调
+    def _report(step_name):
+        if monitor_callback and driver:
+            monitor_callback(driver, step_name)
+
+    def _mark_provider_registered(status):
+        mark_func = getattr(provider_info["module"], "mark_registered_email", None)
+        if callable(mark_func) and email:
+            try:
+                mark_func(email, password or "", status)
+            except Exception as e:
+                print(f"⚠️ 标记邮箱已注册失败: {e}")
+
+    try:
+        # 1. 使用预定义邮箱，需要先登录到该邮箱以接收验证码
+        print(f"📧 正在使用预定义邮箱: {email}")
+
+        # 登录到 NNAI 邮箱以接收验证码
+        login_mailbox_func = getattr(provider_info["module"], "login_existing_email", None)
+        if not callable(login_mailbox_func):
+            raise RuntimeError(f"provider={email_provider} 暂不支持登录邮箱")
+
+        token = login_mailbox_func(email, email)
+        temp_credential = email  # 使用邮箱地址作为凭证
+
+        if not token:
+            print(f"❌ 登录邮箱失败（{provider_name}），终止注册")
+            return None, None, False
+
+        # 2. 生成随机密码
+        password = generate_random_password()
+
+        # 3. 初始化浏览器
+        driver = create_driver(headless=headless, proxy=proxy)
+        _report("init_browser")
+
+        # 若启用代理，先打印浏览器出口 IP 便于确认是否生效
+        if proxy and proxy.get("enabled"):
+            browser_proxy_diag = log_browser_egress_ip(driver)
+            if not browser_proxy_diag.get("ok"):
+                raise ProxyEgressCheckError(
+                    f"浏览器代理出口检测失败: {browser_proxy_diag.get('reason', 'unknown_error')}"
+                )
+            _report("proxy_ip_check")
+
+        # 4. 打开注册页面
+        url = CHATGPT_HOME_URL
+        print(f"🌐 正在打开 {url}...")
+        try:
+            open_chatgpt_url(driver, url)
+        except Exception as e:
+            current_url = ""
+            handle_count = 0
+            try:
+                current_url = str(driver.current_url or "")
+            except Exception:
+                pass
+            try:
+                handle_count = len(driver.window_handles)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"打开 ChatGPT 页面失败: {e} | current_url={current_url or 'N/A'} | windows={handle_count}"
+            ) from e
+        time.sleep(BROWSER_OPEN_PAGE_WAIT)
+        _report("open_page")
+
+        # 5. 填写注册表单并完成验证码提交
+        code_submitted, profile_submitted = _run_signup_until_code_submitted(
+            driver,
+            email,
+            password,
+            email_provider,
+            str(token or ""),
+            monitor_callback=monitor_callback,
+        )
+        if not code_submitted:
+            return email, password, False
+
+        # 6. 填写个人资料
+        if profile_submitted:
+            print("✅ 验证码页已合并提交个人资料，跳过下一页等待")
+            _report("fill_profile")
+        else:
+            if not fill_profile_info(driver):
+                print("❌ 填写个人资料失败")
+                return email, password, False
+            _report("fill_profile")
+
+        # 7. 页面稳定等待
+        time.sleep(BROWSER_POST_SUBMIT_WAIT)
+
+        # 8. 最终校验：确认已登录
+        if not verify_logged_in(driver):
+            print("❌ 最终登录状态校验失败")
+            return email, password, False
+        _report("verify_logged_in")
+
+        account_record_info = _build_registered_account_info(driver, proxy=proxy)
+        account_status = "已注册"
+
+        # 上传 access token 到 API（如果启用）
+        if cfg.token_upload.enabled and account_record_info and account_record_info.startswith("eyJ"):
+            upload_access_token(account_record_info)
+
+        # 保存账号信息
+        save_to_txt(
+            email,
+            password,
+            account_record_info or account_status,
+            mailbox_credential=str(temp_credential or ""),
+            provider=email_provider,
+        )
+
+        if complete_payment_flow:
+            try:
+                _run_post_registration_payment_flow(
+                    driver=driver,
+                    email=email,
+                    password=password,
+                    access_token=account_record_info,
+                    email_provider=email_provider,
+                    mailbox_credential=str(temp_credential or "") or email,
+                    proxy=proxy,
+                    headless=headless,
+                    payment_method=payment_method,
+                    monitor_callback=monitor_callback,
+                )
+                account_status = payment_service.PAYMENT_SUCCESS_STATUS
+                save_to_txt(
+                    email,
+                    password,
+                    account_status,
+                    mailbox_credential=str(temp_credential or ""),
+                    provider=email_provider,
+                )
+            except Exception as exc:
+                account_status = f"{payment_service.PAYMENT_FAILED_STATUS}: {str(exc)[:80]}"
+                print(f"❌ 支付流程失败: {exc}")
+                save_to_txt(
+                    email,
+                    password,
+                    account_status,
+                    mailbox_credential=str(temp_credential or ""),
+                    provider=email_provider,
+                )
+                _mark_provider_registered(account_status)
+                return email, password, False
+
+        success = True
+        _mark_provider_registered(account_status)
+
+        print("\n" + "=" * 50)
+        print("🎉 注册成功！")
+        print(f"   邮箱: {email}")
+        print(f"   密码: {password}")
+        print(f"   邮箱渠道: {provider_name}")
+        print("=" * 50)
+
+        _report("registered")
+
+    except InterruptedError:
+        print("🛑 任务已被用户强制中断")
+        if email:
+            update_account_status(email, "用户中断", provider=email_provider)
+        return email, password, False
+
+    except ProxyEgressCheckError as e:
+        print(f"❌ 发生错误: {e}")
+        if email and password:
+            update_account_status(
+                email, f"错误: {str(e)[:50]}", provider=email_provider
+            )
+        if raise_proxy_errors:
+            raise
+
+    except Exception as e:
+        print(f"❌ 发生错误: {e}")
+        if email and password:
+            update_account_status(
+                email, f"错误: {str(e)[:50]}", provider=email_provider
+            )
+
+    finally:
+        if driver:
+            if complete_payment_flow:
+                print("🟢 已启用支付流程，保留浏览器窗口不关闭")
+            else:
+                print("🔒 正在关闭浏览器...")
+                try:
+                    driver.quit()
+                except Exception as e:
+                    print(f"⚠️ 关闭浏览器时忽略异常: {e}")
+
+    return email, password, success
+
+
 def register_one_account(
     monitor_callback=None,
     email_provider="nnai",
@@ -375,6 +612,10 @@ def register_one_account(
 
         account_record_info = _build_registered_account_info(driver, proxy=proxy)
         account_status = "已注册"
+
+        # 上传 access token 到 API（如果启用）
+        if cfg.token_upload.enabled and account_record_info and account_record_info.startswith("eyJ"):
+            upload_access_token(account_record_info)
 
         # 保存账号信息（含临时邮箱凭证和提供商，用于再次登录临时邮箱）
         save_to_txt(

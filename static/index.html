@@ -24,6 +24,9 @@
             <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
                 <span>📊</span> 仪表盘
             </div>
+            <div class="nav-item" data-tab="predefined" onclick="switchTab('predefined')">
+                <span>📝</span> 指定账号
+            </div>
             <div class="nav-item" data-tab="accounts" onclick="switchTab('accounts')">
                 <span>👥</span> 账号管理
             </div>
@@ -200,6 +203,51 @@
                     </div>
                     <div class="log-body" id="logContainer">
                         <div style="color: #666; text-align: center; margin-top: 20px;">> Ready to start...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Predefined Accounts Tab -->
+        <div id="view-predefined" class="view-section hidden">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span>📝</span> 指定账号注册
+                    </div>
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <button class="action-btn" onclick="loadPredefinedAccounts()">🔄 刷新列表</button>
+                        <span class="status-pill neutral" id="predefinedSelectedCount">已选 0</span>
+                        <button class="btn btn-primary" style="width:auto; padding:10px 18px;" id="btnStartPredefined"
+                            onclick="startPredefinedTask()">
+                            <span>🚀</span> 开始注册
+                        </button>
+                    </div>
+                </div>
+
+                <div style="padding: 24px; display: grid; gap: 18px;">
+                    <div class="proxy-pool-note">
+                        从 <code>accounts.txt</code> 文件中读取邮箱地址列表，勾选后将使用这些邮箱地址进行 ChatGPT 账号注册。
+                        每行一个邮箱地址，系统会自动登录到 NNAI 邮箱接收验证码。
+                    </div>
+
+                    <div class="table-container" style="border:none; box-shadow:none; border-radius:0">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th class="select-col">
+                                        <input type="checkbox" id="selectAllPredefined" onchange="toggleAllPredefined(this.checked)">
+                                    </th>
+                                    <th>邮箱地址</th>
+                                    <th>序号</th>
+                                </tr>
+                            </thead>
+                            <tbody id="predefinedTableBody">
+                                <tr>
+                                    <td colspan="3" style="text-align:center;color:#666">点击"刷新列表"加载账号</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
