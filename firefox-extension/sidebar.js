@@ -76,6 +76,9 @@
     clearProxyButton: document.getElementById("clearProxyButton"),
     proxyOutput: document.getElementById("proxyOutput"),
     fetchPayUrlButton: document.getElementById("fetchPayUrlButton"),
+    fetchTokenButton: document.getElementById("fetchTokenButton"),
+    checkoutLinkOnlyButton: document.getElementById("checkoutLinkOnlyButton"),
+    copyCheckoutLinkButton: document.getElementById("copyCheckoutLinkButton"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
@@ -131,6 +134,7 @@
     webshareApiKey: "",
     proxyProtocol: "http",
     proxyCountry: "US",
+    lastCheckoutPaymentLink: "",
     removeElementSelector: DEFAULT_REMOVE_ELEMENT_SELECTOR,
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
@@ -175,6 +179,9 @@
     elements.replaceProxyButton.addEventListener("click", replaceWebshareProxy);
     elements.clearProxyButton.addEventListener("click", clearProxy);
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
+    elements.fetchTokenButton.addEventListener("click", fetchAndCopyAccessToken);
+    elements.checkoutLinkOnlyButton.addEventListener("click", checkoutLinkOnly);
+    elements.copyCheckoutLinkButton.addEventListener("click", copyCheckoutPaymentLink);
     elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
     elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
     elements.setCountryButton.addEventListener("click", setCountryInCurrentTab);
@@ -226,6 +233,7 @@
       state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
       state.proxyProtocol = normalizeProxyProtocol(data.proxyProtocol);
       state.proxyCountry = normalizeProxyCountry(data.proxyCountry);
+      state.lastCheckoutPaymentLink = typeof data.lastCheckoutPaymentLink === "string" ? data.lastCheckoutPaymentLink : "";
       state.removeElementSelector = normalizeRemoveElementSelector(data.removeElementSelector);
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
@@ -269,6 +277,7 @@
           webshareApiKey: state.webshareApiKey,
           proxyProtocol: state.proxyProtocol,
           proxyCountry: state.proxyCountry,
+          lastCheckoutPaymentLink: state.lastCheckoutPaymentLink,
           removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
@@ -1179,6 +1188,150 @@
       showOutput(elements.payUrlOutput, "error", `获取 PayURL 失败：${formatError(error)}`);
     } finally {
       setBusy("payurl", false);
+    }
+  }
+
+  async function fetchAndCopyAccessToken() {
+    setBusy("token", true);
+    showOutput(elements.payUrlOutput, "info", "正在读取 ChatGPT accessToken");
+
+    try {
+      const tab = await requireCurrentTab("chatgpt.com");
+      const accessToken = await fetchAccessTokenFromTab(tab.id);
+      await writeClipboard(accessToken);
+      console.log("accessToken:", accessToken);
+      showOutput(elements.payUrlOutput, "success", `accessToken 已复制：${accessToken}`);
+    } catch (error) {
+      console.log("accessToken: null");
+      showOutput(elements.payUrlOutput, "error", `获取 accessToken 失败：${formatError(error)}`);
+    } finally {
+      setBusy("token", false);
+    }
+  }
+
+  async function checkoutLinkOnly() {
+    setBusy("checkoutLink", true);
+    showOutput(elements.payUrlOutput, "info", "正在请求 ChatGPT Checkout 链接");
+
+    try {
+      const tab = await requireCurrentTab("chatgpt.com");
+      const result = await runCheckoutLinkOnlyInTab(tab.id);
+      if (!result || !result.ok) {
+        throw new Error((result && (result.error || result.detail)) || "checkout 请求失败");
+      }
+
+      console.log("accessToken:", result.accessToken);
+      console.log("paymentLink:", result.paymentLink);
+      const paymentLink = String(result.paymentLink || "").trim();
+      state.lastCheckoutPaymentLink = paymentLink;
+      await persistState();
+
+      let copyStatus = "已复制";
+      try {
+        await writeClipboard(paymentLink);
+      } catch (error) {
+        copyStatus = `复制失败：${formatError(error)}`;
+      }
+
+      await ext.tabs.create({ url: paymentLink, active: true });
+      showOutput(elements.payUrlOutput, "success", `paymentLink：${paymentLink}\n已打开，${copyStatus}`);
+    } catch (error) {
+      console.log("accessToken: null");
+      console.log("paymentLink: null");
+      showOutput(elements.payUrlOutput, "error", `获取 Checkout 链接失败：${formatError(error)}`);
+    } finally {
+      setBusy("checkoutLink", false);
+    }
+  }
+
+  async function copyCheckoutPaymentLink() {
+    const paymentLink = String(state.lastCheckoutPaymentLink || "").trim();
+    if (!paymentLink) {
+      showOutput(elements.payUrlOutput, "error", "请先获取 Checkout 链接");
+      return;
+    }
+
+    try {
+      await writeClipboard(paymentLink);
+      showOutput(elements.payUrlOutput, "success", `已复制 Checkout 链接：${paymentLink}`);
+    } catch (error) {
+      showOutput(elements.payUrlOutput, "error", `复制 Checkout 链接失败：${formatError(error)}`);
+    }
+  }
+
+  async function runCheckoutLinkOnlyInTab(tabId) {
+    const code = `(${requestChatGptCheckoutLinkOnly.toString()})()`;
+    const results = await ext.tabs.executeScript(tabId, {
+      code,
+      allFrames: false,
+      runAt: "document_idle"
+    });
+    return Array.isArray(results) ? results[0] : results;
+  }
+
+  async function requestChatGptCheckoutLinkOnly() {
+    try {
+      const session = await fetch("https://chatgpt.com/api/auth/session", {
+        cache: "no-store",
+        credentials: "include"
+      }).then((response) => response.json());
+      const accessToken = session && session.accessToken;
+      if (!accessToken) {
+        console.log("accessToken: null");
+        return {
+          ok: false,
+          accessToken: "",
+          paymentLink: "",
+          error: "accessToken: null"
+        };
+      }
+
+      const payload = {
+        plan_name: "chatgptplusplan",
+        billing_details: {
+          country: "ID",
+          currency: "IDR"
+        },
+        cancel_url: "https://chatgpt.com/#pricing",
+        promo_campaign: {
+          promo_campaign_id: "plus-1-month-free",
+          is_coupon_from_query_param: false
+        },
+        checkout_ui_mode: "hosted"
+      };
+
+      const response = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      const paymentLink = data && (data.url || data.stripe_hosted_url || data.checkout_url) || null;
+
+      console.log("accessToken:", accessToken);
+      console.log("paymentLink:", paymentLink);
+
+      return {
+        ok: response.ok && Boolean(paymentLink),
+        status: response.status,
+        accessToken,
+        paymentLink,
+        error: response.ok ? "" : `HTTP ${response.status}`,
+        detail: paymentLink ? "" : "paymentLink: null"
+      };
+    } catch (error) {
+      console.log("accessToken: null");
+      console.log("paymentLink: null");
+      return {
+        ok: false,
+        accessToken: "",
+        paymentLink: "",
+        error: error && error.message ? error.message : "checkout_fetch_failed"
+      };
     }
   }
 
@@ -2149,6 +2302,9 @@
     elements.replaceProxyButton.disabled = state.busy.has("proxy");
     elements.clearProxyButton.disabled = state.busy.has("proxy");
     elements.fetchPayUrlButton.disabled = state.busy.has("payurl");
+    elements.fetchTokenButton.disabled = state.busy.has("token");
+    elements.checkoutLinkOnlyButton.disabled = state.busy.has("checkoutLink");
+    elements.copyCheckoutLinkButton.disabled = state.busy.has("checkoutLink");
     elements.setCountryButton.disabled = state.busy.has("country");
     elements.fillCardButton.disabled = state.busy.has("fill");
     elements.removeElementButton.disabled = state.busy.has("removeElement");
