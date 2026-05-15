@@ -17,7 +17,6 @@
   ];
 
   const CODE_API = "https://getemail.nnai.website/api/code";
-  const OUTLOOK_API_BASE = "http://127.0.0.1:5000";
   const PAYURL_API = "https://payurl.779.chat/api/request";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
@@ -50,10 +49,6 @@
     openChatGptButton: document.getElementById("openChatGptButton"),
     refreshTabButton: document.getElementById("refreshTabButton"),
     generateEmailsButton: document.getElementById("generateEmailsButton"),
-    emailProviderSelect: document.getElementById("emailProviderSelect"),
-    outlookConfig: document.getElementById("outlookConfig"),
-    outlookApiKeyInput: document.getElementById("outlookApiKeyInput"),
-    outlookAccountsInput: document.getElementById("outlookAccountsInput"),
     emailList: document.getElementById("emailList"),
     copyEmailButton: document.getElementById("copyEmailButton"),
     fetchCodeButton: document.getElementById("fetchCodeButton"),
@@ -118,10 +113,6 @@
 
   const state = {
     emails: [],
-    emailProvider: "generated",
-    outlookAccountsInput: "",
-    outlookApiKey: "",
-    outlookAccounts: [],
     selectedEmail: "",
     lastCode: "",
     phoneKeyInput: "",
@@ -156,12 +147,6 @@
     elements.openChatGptButton.addEventListener("click", openChatGpt);
     elements.refreshTabButton.addEventListener("click", refreshCurrentTab);
     elements.generateEmailsButton.addEventListener("click", generateEmails);
-    elements.emailProviderSelect.addEventListener("change", handleEmailProviderChange);
-    elements.outlookApiKeyInput.addEventListener("input", () => {
-      state.outlookApiKey = String(elements.outlookApiKeyInput.value || "").trim();
-      persistState();
-    });
-    elements.outlookAccountsInput.addEventListener("input", handleOutlookAccountsInput);
     elements.copyEmailButton.addEventListener("click", copySelectedEmail);
     elements.fetchCodeButton.addEventListener("click", fetchVerificationCode);
     elements.copyCodeButton.addEventListener("click", copyLastCode);
@@ -214,10 +199,6 @@
       const saved = await ext.storage.local.get(STORAGE_KEY);
       const data = saved && saved[STORAGE_KEY] ? saved[STORAGE_KEY] : {};
       state.emails = Array.isArray(data.emails) ? data.emails.filter(Boolean) : [];
-      state.emailProvider = normalizeEmailProvider(data.emailProvider);
-      state.outlookAccountsInput = typeof data.outlookAccountsInput === "string" ? data.outlookAccountsInput : "";
-      state.outlookApiKey = typeof data.outlookApiKey === "string" ? data.outlookApiKey : "";
-      state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
       state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
       state.phoneKeyInput = typeof data.phoneKeyInput === "string" ? data.phoneKeyInput : "";
@@ -229,9 +210,6 @@
       state.removeElementSelector = normalizeRemoveElementSelector(data.removeElementSelector);
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
-      elements.emailProviderSelect.value = state.emailProvider;
-      elements.outlookApiKeyInput.value = state.outlookApiKey;
-      elements.outlookAccountsInput.value = state.outlookAccountsInput;
       elements.phoneKeyInput.value = state.phoneKeyInput;
       elements.webshareApiKeyInput.value = state.webshareApiKey;
       elements.proxyProtocolSelect.value = state.proxyProtocol;
@@ -247,7 +225,6 @@
     if (!state.emails.length) {
       createEmailSet();
     }
-    applyEmailProviderState();
     if (!state.selectedEmail || !state.emails.includes(state.selectedEmail)) {
       state.selectedEmail = state.emails[0] || "";
     }
@@ -258,9 +235,6 @@
       await ext.storage.local.set({
         [STORAGE_KEY]: {
           emails: state.emails,
-          emailProvider: state.emailProvider,
-          outlookAccountsInput: state.outlookAccountsInput,
-          outlookApiKey: state.outlookApiKey,
           selectedEmail: state.selectedEmail,
           lastCode: state.lastCode,
           phoneKeyInput: state.phoneKeyInput,
@@ -299,66 +273,11 @@
   }
 
   function generateEmails() {
-    if (state.emailProvider === "outlook") {
-      importOutlookAccounts();
-      return;
-    }
     createEmailSet();
     state.selectedEmail = state.emails[0] || "";
     renderEmails();
     showOutput(elements.codeOutput, "success", `已生成 ${state.emails.length} 个邮箱`);
     persistState();
-  }
-
-  function handleEmailProviderChange() {
-    state.emailProvider = normalizeEmailProvider(elements.emailProviderSelect.value);
-    if (state.emailProvider === "generated") {
-      createEmailSet();
-    }
-    applyEmailProviderState();
-    state.selectedEmail = state.emails[0] || "";
-    state.lastCode = "";
-    renderEmails();
-    persistState();
-  }
-
-  function handleOutlookAccountsInput() {
-    state.outlookAccountsInput = String(elements.outlookAccountsInput.value || "");
-    state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
-    if (state.emailProvider === "outlook") {
-      state.emails = state.outlookAccounts.map((account) => account.email);
-      if (!state.selectedEmail || !state.emails.includes(state.selectedEmail)) {
-        state.selectedEmail = state.emails[0] || "";
-      }
-      renderEmails();
-    }
-    persistState();
-  }
-
-  function importOutlookAccounts() {
-    state.outlookAccountsInput = String(elements.outlookAccountsInput.value || "");
-    state.outlookApiKey = String(elements.outlookApiKeyInput.value || "").trim();
-    state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
-    state.emails = state.outlookAccounts.map((account) => account.email);
-    state.selectedEmail = state.emails[0] || "";
-    renderEmails();
-    if (state.emails.length) {
-      showOutput(elements.codeOutput, "success", `已导入 ${state.emails.length} 个 Outlook 邮箱`);
-    } else {
-      showOutput(elements.codeOutput, "error", "没有识别到 Outlook 邮箱，格式必须是 email----password----client_id----refresh_token");
-    }
-    persistState();
-  }
-
-  function applyEmailProviderState() {
-    state.emailProvider = normalizeEmailProvider(state.emailProvider);
-    elements.emailProviderSelect.value = state.emailProvider;
-    elements.generateEmailsButton.textContent = state.emailProvider === "outlook" ? "导入" : "生成";
-    elements.outlookConfig.hidden = state.emailProvider !== "outlook";
-    if (state.emailProvider === "outlook") {
-      state.outlookAccounts = parseOutlookAccounts(state.outlookAccountsInput);
-      state.emails = state.outlookAccounts.map((account) => account.email);
-    }
   }
 
   function createEmailSet() {
@@ -430,11 +349,6 @@
     const email = getSelectedEmail();
     if (!email) {
       showOutput(elements.codeOutput, "error", "请先生成邮箱");
-      return;
-    }
-
-    if (state.emailProvider === "outlook") {
-      await fetchOutlookVerificationCode(email);
       return;
     }
 
@@ -1350,57 +1264,6 @@
     }
   }
 
-  async function fetchOutlookVerificationCode(email) {
-    const apiKey = String(elements.outlookApiKeyInput.value || state.outlookApiKey || "").trim();
-    if (!apiKey) {
-      showOutput(elements.codeOutput, "error", "请先输入 Outlook API Key");
-      return;
-    }
-
-    state.outlookApiKey = apiKey;
-    setBusy("code", true);
-    showOutput(elements.codeOutput, "info", `正在获取 Outlook 验证码：${email}`);
-
-    let lastError = "";
-    try {
-      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-        try {
-          const url = new URL("/api/external/emails", OUTLOOK_API_BASE);
-          url.searchParams.set("email", email);
-          url.searchParams.set("folder", "all");
-          url.searchParams.set("top", "5");
-          url.searchParams.set("api_key", apiKey);
-          const response = await fetch(url.toString(), {
-            method: "GET",
-            headers: { Accept: "application/json" },
-            cache: "no-store"
-          });
-          const data = await readJsonResponse(response, "Outlook 邮件接口");
-          const codeInfo = findOutlookCode(data);
-          if (response.ok && codeInfo.code) {
-            state.lastCode = codeInfo.code;
-            await persistState();
-            showOutput(elements.codeOutput, "success", formatOutlookCodeResult(data, codeInfo));
-            return;
-          }
-          lastError = response.ok
-            ? "邮件里没有匹配到 6 位验证码"
-            : formatApiError(data, response.status);
-        } catch (error) {
-          lastError = formatError(error);
-        }
-
-        if (attempt < POLL_ATTEMPTS) {
-          showOutput(elements.codeOutput, "info", `第 ${attempt}/${POLL_ATTEMPTS} 次未取到 Outlook 验证码，继续轮询`);
-          await delay(POLL_DELAY_MS);
-        }
-      }
-      showOutput(elements.codeOutput, "error", `获取 Outlook 验证码失败，已轮询 ${POLL_ATTEMPTS} 次：${lastError || "没有匹配到 6 位验证码"}`);
-    } finally {
-      setBusy("code", false);
-    }
-  }
-
   async function removeElementInCurrentTab() {
     const selector = String(elements.removeElementSelectorInput.value || "").trim();
     if (!selector) {
@@ -1952,86 +1815,6 @@
       phone,
       smsUrl: parsedUrl.toString()
     };
-  }
-
-  function normalizeEmailProvider(value) {
-    return value === "outlook" ? "outlook" : "generated";
-  }
-
-  function parseOutlookAccounts(rawInput) {
-    const seen = new Set();
-    const accounts = [];
-    String(rawInput || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .forEach((line) => {
-        const parts = line.split("----").map((part) => part.trim());
-        const email = String(parts[0] || "").toLowerCase();
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || seen.has(email)) {
-          return;
-        }
-        seen.add(email);
-        accounts.push({
-          raw: line,
-          email,
-          password: parts[1] || "",
-          clientId: parts[2] || "",
-          refreshToken: parts.slice(3).join("----")
-        });
-      });
-    return accounts;
-  }
-
-  function findOutlookCode(data) {
-    const emails = Array.isArray(data && data.emails) ? data.emails : [];
-    for (const item of emails) {
-      const haystack = [
-        item && item.subject,
-        item && item.body_preview,
-        item && item.body,
-        item && item.text,
-        item && item.html
-      ].filter(Boolean).join("\n");
-      const code = extractSixDigitCode(haystack);
-      if (code) {
-        return { code, email: item || null };
-      }
-    }
-    return { code: "", email: null };
-  }
-
-  function formatOutlookCodeResult(data, codeInfo) {
-    const item = codeInfo.email || {};
-    const lines = [`验证码：${codeInfo.code}`];
-    const requestedEmail = data && (data.requested_email || data.resolved_email);
-    if (requestedEmail) {
-      lines.push(`邮箱：${requestedEmail}`);
-    }
-    if (item.subject) {
-      lines.push(`主题：${item.subject}`);
-    }
-    if (item.from) {
-      lines.push(`发件人：${item.from}`);
-    }
-    if (item.folder) {
-      lines.push(`文件夹：${item.folder}`);
-    }
-    if (item.date) {
-      lines.push(`时间：${item.date}`);
-    }
-    return lines.join("\n");
-  }
-
-  function formatApiError(data, status) {
-    const detail = data && (data.error || data.message);
-    if (!detail) {
-      return `HTTP ${status}`;
-    }
-    if (typeof detail === "string") {
-      return `HTTP ${status} ${detail}`;
-    }
-    return `HTTP ${status} ${detail.message || JSON.stringify(detail).slice(0, 160)}`;
   }
 
   function requirePhoneKey() {
