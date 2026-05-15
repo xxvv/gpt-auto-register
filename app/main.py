@@ -24,6 +24,8 @@ from .utils import (
     save_to_txt,
     update_account_status,
     upload_access_token,
+    generate_cpa_json,
+    upload_cpa_json,
 )
 from . import email_providers
 from . import payment_service
@@ -419,6 +421,38 @@ def register_one_account_with_email(
             and account_record_info.startswith("eyJ")
         ):
             upload_access_token(account_record_info)
+
+        # 上传 CPA 数据到管理 API（如果启用）
+        if (
+            cfg.cpa.enabled
+            and account_record_info
+            and account_record_info.startswith("eyJ")
+        ):
+            try:
+                from .oauth_service import _decode_jwt_payload
+                from datetime import datetime, timezone
+
+                # 构建 token_data 用于生成 CPA
+                payload = _decode_jwt_payload(account_record_info)
+                exp_timestamp = payload.get("exp")
+                expired_str = ""
+                if isinstance(exp_timestamp, int) and exp_timestamp > 0:
+                    exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+                    expired_str = exp_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
+
+                now = datetime.now(tz=timezone.utc)
+                token_data = {
+                    "access_token": account_record_info,
+                    "refresh_token": "",
+                    "id_token": "",
+                    "expired": expired_str,
+                    "last_refresh": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z",
+                }
+
+                cpa_data = generate_cpa_json(token_data, email)
+                upload_cpa_json(cpa_data)
+            except Exception as e:
+                print(f"⚠️ CPA 上传失败: {e}")
 
         # 保存账号信息
         save_to_txt(

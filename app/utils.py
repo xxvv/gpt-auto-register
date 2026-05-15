@@ -1065,3 +1065,145 @@ def upload_access_token(access_token: str, api_key: str = None,
     except Exception as e:
         print(f"❌ access token 上传异常: {e}")
         return False
+
+
+def generate_cpa_json(token_data: dict, email: str) -> dict:
+    """
+    从 token 数据生成 CPA 格式的 JSON
+
+    参数:
+        token_data: 包含 access_token, refresh_token, id_token 等的字典
+        email: 账号邮箱
+
+    返回:
+        dict: CPA 格式的账号数据
+    """
+    from .oauth_service import _decode_jwt_payload
+    from datetime import datetime, timezone
+
+    access_token = token_data.get("access_token", "")
+    id_token = token_data.get("id_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+
+    # 解析 access_token 获取账号信息
+    account_id = ""
+    chatgpt_plan_type = "free"
+    expired_iso = ""
+
+    if access_token:
+        try:
+            payload = _decode_jwt_payload(access_token)
+            auth_info = payload.get("https://api.openai.com/auth", {})
+
+            account_id = auth_info.get("chatgpt_account_id", "")
+            chatgpt_plan_type = auth_info.get("chatgpt_plan_type", "free")
+
+            # 从 exp 字段获取过期时间
+            exp_timestamp = payload.get("exp")
+            if isinstance(exp_timestamp, int) and exp_timestamp > 0:
+                exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+                expired_iso = exp_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
+        except Exception as e:
+            print(f"⚠️ 解析 JWT 失败: {e}")
+
+    # 生成当前时间戳
+    now = datetime.now(tz=timezone.utc)
+    last_refresh_iso = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
+
+    # 生成 CPA 格式（匹配 Chrome 扩展格式）
+    cpa_data = {
+        "type": "codex",
+        "account_id": account_id,
+        "chatgpt_account_id": account_id,
+        "email": email,
+        "name": email.split("@")[0],
+        "plan_type": chatgpt_plan_type,
+        "chatgpt_plan_type": chatgpt_plan_type,
+        "id_token": id_token,
+        "id_token_synthetic": False,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "session_token": "",
+        "last_refresh": last_refresh_iso,
+        "expired": expired_iso,
+        "disabled": False
+    }
+
+    return cpa_data
+
+
+def upload_cpa_json(cpa_data: dict, api_url: str = None, api_key: str = None, timeout: int = None) -> bool:
+    """
+    上传 CPA JSON 到 CLIPROXY 管理 API
+
+    参数:
+        cpa_data: CPA 格式的账号数据
+        api_url: 管理 API URL，默认从配置读取
+        api_key: API 密钥，默认从配置读取
+        timeout: 请求超时时间（秒），默认从配置读取
+
+    返回:
+        bool: 上传成功返回 True，失败返回 False
+    """
+    if not cpa_data or not cpa_data.get("access_token"):
+        print("⚠️ CPA 数据无效，跳过上传")
+        return False
+
+    # 从配置读取默认值
+    if api_url is None:
+        api_url = cfg.cpa.management_api_url
+    if api_key is None:
+        api_key = cfg.cpa.management_api_key
+    if timeout is None:
+        timeout = cfg.cpa.timeout
+
+    if not api_url:
+        print("⚠️ 未配置 cpa.management_api_url，跳过 CPA 上传")
+        return False
+
+    if not api_key:
+        print("⚠️ 未配置 cpa.management_api_key，跳过 CPA 上传")
+        return False
+
+    try:
+        print("📤 正在上传 CPA 数据到管理 API...")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+
+        response = http_session.post(
+            api_url,
+            json=cpa_data,
+            headers=headers,
+            timeout=timeout
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success") or result.get("status") == "success":
+                print(f"✅ CPA 上传成功: {cpa_data.get('email')}")
+                return True
+            else:
+                error_msg = result.get("error") or result.get("message", "未知错误")
+                print(f"❌ CPA 上传失败: {error_msg}")
+                return False
+        else:
+            print(f"❌ CPA 上传失败: HTTP {response.status_code}")
+            try:
+                error_detail = response.json()
+                print(f"   错误详情: {error_detail}")
+            except Exception:
+                print(f"   响应内容: {response.text[:200]}")
+            return False
+
+    except requests.exceptions.Timeout:
+        print(f"❌ CPA 上传超时（>{timeout}s）")
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"❌ CPA 上传请求失败: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ CPA 上传异常: {e}")
+        return False

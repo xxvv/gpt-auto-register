@@ -1617,6 +1617,20 @@ def save_codex_tokens(
             _upload_to_cliproxy(token_data, cliproxy_cfg=cliproxy_cfg)
         except Exception as exc:
             print(f"⚠️ CLIProxyAPI 上传失败: {exc}")
+
+    # ── 上传 CPA JSON 到管理 API ──────────────────────────────
+    if getattr(cpa_cfg, "enabled", False):
+        try:
+            from .utils import generate_cpa_json, upload_cpa_json
+            cpa_data = generate_cpa_json(token_data, email)
+            upload_cpa_json(
+                cpa_data,
+                api_url=getattr(cpa_cfg, "management_api_url", None),
+                api_key=getattr(cpa_cfg, "management_api_key", None),
+                timeout=getattr(cpa_cfg, "timeout", 30),
+            )
+        except Exception as exc:
+            print(f"⚠️ CPA 管理 API 上传失败: {exc}")
     # ──────────────────────────────────────────────────────────
 
     return token_path

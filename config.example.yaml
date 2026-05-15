@@ -71,8 +71,12 @@ cliproxy:
 
 # CPA 上传配置（可选）
 cpa:
-  upload_api_url: ""     # 例如 https://your-cpa.example.com/upload
-  upload_api_token: ""   # 建议优先通过环境变量 CPA_UPLOAD_API_TOKEN 提供
+  enabled: false                    # 是否启用 CPA 上传到管理 API
+  management_api_url: ""            # CLIPROXY 管理 API 地址（例如 https://your-cliproxy.example.com/api/accounts）
+  management_api_key: ""            # 管理 API 密钥（建议通过环境变量 CPA_MANAGEMENT_API_KEY 设置）
+  timeout: 30                       # 上传超时时间（秒）
+  upload_api_url: ""                # 旧版文件上传 API（保留兼容）
+  upload_api_token: ""              # 旧版 API Token（建议通过环境变量 CPA_UPLOAD_API_TOKEN 设置）
 
 # Token 自动上传配置（可选）
 # 注册成功后自动上传 access token 到指定 API

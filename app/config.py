@@ -187,6 +187,10 @@ class OAuthConfig:
 class CpaConfig:
     """CPA 上传配置"""
 
+    enabled: bool = False
+    management_api_url: str = ""
+    management_api_key: str = ""
+    timeout: int = 30
     upload_api_url: str = ""
     upload_api_token: str = ""
 
@@ -518,6 +522,18 @@ class ConfigLoader:
         # CPA 上传配置
         cpa = self.raw_config.get("cpa", {})
         self.config.cpa = CpaConfig(
+            enabled=self._as_bool(
+                os.environ.get("CPA_ENABLED", cpa.get("enabled", False))
+            ),
+            management_api_url=os.environ.get(
+                "CPA_MANAGEMENT_API_URL", cpa.get("management_api_url", "")
+            ),
+            management_api_key=os.environ.get(
+                "CPA_MANAGEMENT_API_KEY", cpa.get("management_api_key", "")
+            ),
+            timeout=int(
+                os.environ.get("CPA_TIMEOUT", cpa.get("timeout", 30))
+            ),
             upload_api_url=os.environ.get(
                 "CPA_UPLOAD_API_URL", cpa.get("upload_api_url", "")
             ),
