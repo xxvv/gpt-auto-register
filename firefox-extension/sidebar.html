@@ -71,7 +71,12 @@
     <section class="tool-section" aria-labelledby="payUrlTitle">
       <div class="section-header">
         <h2 id="payUrlTitle">PayURL</h2>
-        <button id="fetchPayUrlButton" class="primary-button" type="button">获取并打开</button>
+        <div class="section-header-actions">
+          <button id="fetchPayUrlButton" class="primary-button" type="button">获取并打开</button>
+          <button id="fetchTokenButton" class="secondary-button" type="button">获取Token</button>
+          <button id="checkoutLinkOnlyButton" class="secondary-button" type="button">Checkout链接</button>
+          <button id="copyCheckoutLinkButton" class="secondary-button" type="button">复制Checkout</button>
+        </div>
       </div>
       <output id="payUrlOutput" class="result-output" aria-live="polite"></output>
     </section>
