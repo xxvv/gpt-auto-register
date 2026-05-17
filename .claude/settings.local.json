@@ -8,7 +8,13 @@
     "allow": [
       "Bash(python:*)",
       "Bash(find:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git fetch *)",
+      "Bash(git restore *)",
+      "PowerShell(python -m py_compile app/config.py app/utils.py app/main.py app/oauth_service.py)",
+      "PowerShell(python test_cpa_upload.py)",
+      "PowerShell($env:PYTHONIOENCODING=\"utf-8\"; python test_cpa_upload.py)",
+      "PowerShell(\\(Get-Content \"d:\\\\code\\\\gpt-auto-register\\\\firefox-extension\\\\sidebar.js\"\\).Count)"
     ]
   },
   "model": "gpt-5.4",

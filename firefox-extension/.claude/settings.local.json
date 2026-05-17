@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:\\\\Users\\\\vv\\\\Downloads\\\\GPTSession2CPA-Extension\\\\GPTSession2CPA-Extension\" -type f -name \"*.js\" -o -name \"*.json\" -o -name \"*.ts\" | head -30)",
+      "Read(//c/Users/vv/Downloads/GPTSession2CPA-Extension/GPTSession2CPA-Extension/**)",
+      "Read(//d/code/gpt-auto-register/**)",
+      "Bash(find . -maxdepth 3 -type f \\\\\\( -name \"wrangler.toml\" -o -name \"package.json\" -o -name \"*.sql\" -o -name \"*migration*\" -o -name \"*schema*\" \\\\\\))"
+    ]
+  }
+}

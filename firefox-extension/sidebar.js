@@ -74,6 +74,7 @@
     fetchTokenButton: document.getElementById("fetchTokenButton"),
     checkoutLinkOnlyButton: document.getElementById("checkoutLinkOnlyButton"),
     copyCheckoutLinkButton: document.getElementById("copyCheckoutLinkButton"),
+    checkoutRegionSelect: document.getElementById("checkoutRegionSelect"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
@@ -111,7 +112,12 @@
     passwordSelectorAltInput: document.getElementById("passwordSelectorAltInput"),
     passwordValueInput: document.getElementById("passwordValueInput"),
     resetFillSettingsButton: document.getElementById("resetFillSettingsButton"),
-    fillOutput: document.getElementById("fillOutput")
+    fillOutput: document.getElementById("fillOutput"),
+    accessTokensInput: document.getElementById("accessTokensInput"),
+    exportFormatSelect: document.getElementById("exportFormatSelect"),
+    exportButton: document.getElementById("exportButton"),
+    fetchCurrentTokenButton: document.getElementById("fetchCurrentTokenButton"),
+    exportOutput: document.getElementById("exportOutput")
   };
 
   const state = {
@@ -125,12 +131,15 @@
     webshareApiKey: "",
     proxyProtocol: "http",
     proxyCountry: "US",
+    checkoutRegion: "ID",
     lastCheckoutPaymentLink: "",
     removeElementSelector: DEFAULT_REMOVE_ELEMENT_SELECTOR,
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
     currentTab: null,
-    busy: new Set()
+    busy: new Set(),
+    accessTokens: "",
+    exportFormat: "sub2api"
   };
   let usZip3StateRangesPromise = null;
 
@@ -186,12 +195,27 @@
       elements.proxyCountrySelect.value = state.proxyCountry;
       persistState();
     });
+    elements.checkoutRegionSelect.addEventListener("change", () => {
+      state.checkoutRegion = normalizeCheckoutRegion(elements.checkoutRegionSelect.value);
+      elements.checkoutRegionSelect.value = state.checkoutRegion;
+      persistState();
+    });
     elements.removeElementSelectorInput.addEventListener("input", () => {
       state.removeElementSelector = String(elements.removeElementSelectorInput.value || "").trim();
       persistState();
     });
     elements.cardInput.addEventListener("input", () => {
       renderCardPreview();
+      persistState();
+    });
+    elements.exportButton.addEventListener("click", handleExport);
+    elements.fetchCurrentTokenButton.addEventListener("click", handleFetchCurrentToken);
+    elements.accessTokensInput.addEventListener("input", () => {
+      state.accessTokens = elements.accessTokensInput.value;
+      persistState();
+    });
+    elements.exportFormatSelect.addEventListener("change", () => {
+      state.exportFormat = elements.exportFormatSelect.value;
       persistState();
     });
     bindFillSettingsInputs();
@@ -214,16 +238,22 @@
       state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
       state.proxyProtocol = normalizeProxyProtocol(data.proxyProtocol);
       state.proxyCountry = normalizeProxyCountry(data.proxyCountry);
+      state.checkoutRegion = normalizeCheckoutRegion(data.checkoutRegion);
       state.lastCheckoutPaymentLink = typeof data.lastCheckoutPaymentLink === "string" ? data.lastCheckoutPaymentLink : "";
       state.removeElementSelector = normalizeRemoveElementSelector(data.removeElementSelector);
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
+      state.accessTokens = typeof data.accessTokens === "string" ? data.accessTokens : "";
+      state.exportFormat = typeof data.exportFormat === "string" ? data.exportFormat : "sub2api";
       elements.phoneKeyInput.value = state.phoneKeyInput;
       elements.webshareApiKeyInput.value = state.webshareApiKey;
       elements.proxyProtocolSelect.value = state.proxyProtocol;
       elements.proxyCountrySelect.value = state.proxyCountry;
+      elements.checkoutRegionSelect.value = state.checkoutRegion;
       elements.removeElementSelectorInput.value = state.removeElementSelector;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
+      elements.accessTokensInput.value = state.accessTokens;
+      elements.exportFormatSelect.value = state.exportFormat;
       state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
       renderFillSettings();
     } catch (error) {
@@ -251,11 +281,14 @@
           webshareApiKey: state.webshareApiKey,
           proxyProtocol: state.proxyProtocol,
           proxyCountry: state.proxyCountry,
+          checkoutRegion: state.checkoutRegion,
           lastCheckoutPaymentLink: state.lastCheckoutPaymentLink,
           removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
-          fillSettingsExpanded: state.fillSettingsExpanded
+          fillSettingsExpanded: state.fillSettingsExpanded,
+          accessTokens: state.accessTokens,
+          exportFormat: state.exportFormat
         }
       });
     } catch (error) {
@@ -1072,6 +1105,11 @@
     return country === "JP" ? "JP" : "US";
   }
 
+  function normalizeCheckoutRegion(value) {
+    const region = String(value || "").trim().toUpperCase();
+    return region === "IE" ? "IE" : "ID";
+  }
+
   function normalizeWebshareStatus(payload) {
     return String(
       (payload && (payload.state || payload.status)) ||
@@ -1174,7 +1212,8 @@
   }
 
   async function runCheckoutLinkOnlyInTab(tabId) {
-    const code = `(${requestChatGptCheckoutLinkOnly.toString()})()`;
+    const checkoutRegion = state.checkoutRegion || "ID";
+    const code = `(${requestChatGptCheckoutLinkOnly.toString()})("${checkoutRegion}")`;
     const results = await ext.tabs.executeScript(tabId, {
       code,
       allFrames: false,
@@ -1183,7 +1222,7 @@
     return Array.isArray(results) ? results[0] : results;
   }
 
-  async function requestChatGptCheckoutLinkOnly() {
+  async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
     try {
       const session = await fetch("https://chatgpt.com/api/auth/session", {
         cache: "no-store",
@@ -1200,11 +1239,17 @@
         };
       }
 
+      const regionConfig = {
+        ID: { country: "ID", currency: "IDR" },
+        IE: { country: "IE", currency: "EUR" }
+      };
+      const config = regionConfig[checkoutRegion] || regionConfig.ID;
+
       const payload = {
         plan_name: "chatgptplusplan",
         billing_details: {
-          country: "ID",
-          currency: "IDR"
+          country: config.country,
+          currency: config.currency
         },
         cancel_url: "https://chatgpt.com/#pricing",
         promo_campaign: {
@@ -2149,6 +2194,263 @@
     input.remove();
     if (!copied) {
       throw new Error("clipboard_write_failed");
+    }
+  }
+
+  function decodeBase64Url(base64url) {
+    let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function encodeBase64UrlJson(obj) {
+    const json = JSON.stringify(obj);
+    const bytes = new TextEncoder().encode(json);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+
+  function parseJWT(token) {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      const payload = decodeBase64Url(parts[1]);
+      return JSON.parse(payload);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function buildSyntheticIdToken(payload, accessToken) {
+    const header = { alg: 'none', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const exp = payload.exp || (now + 90 * 24 * 60 * 60);
+    const idTokenPayload = {
+      'https://api.openai.com/auth': payload['https://api.openai.com/auth'] || {},
+      'https://api.openai.com/profile': payload['https://api.openai.com/profile'] || {},
+      cpa_synthetic: true,
+      iat: now,
+      exp: exp
+    };
+    return `${encodeBase64UrlJson(header)}.${encodeBase64UrlJson(idTokenPayload)}.`;
+  }
+
+  function sanitizeFileName(name) {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '');
+  }
+
+  function toEmailKey(email) {
+    if (!email) return '';
+    return email
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  function getExpiresIn(expiresAt, now) {
+    if (!expiresAt) return undefined;
+    const expiresMs = new Date(expiresAt).getTime();
+    if (isNaN(expiresMs)) return undefined;
+    const nowMs = now ? now.getTime() : Date.now();
+    return Math.max(0, Math.floor((expiresMs - nowMs) / 1000));
+  }
+
+  function stripUnavailable(value) {
+    if (Array.isArray(value)) {
+      const filtered = value.map(stripUnavailable).filter((item) => item !== undefined);
+      return filtered.length > 0 ? filtered : undefined;
+    }
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value)
+        .map(([key, item]) => [key, stripUnavailable(item)])
+        .filter(([, item]) => item !== undefined);
+      return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+    }
+    if (value === undefined || value === null || value === '') return undefined;
+    return value;
+  }
+
+  function convertAccessTokenToCPA(accessToken) {
+    const payload = parseJWT(accessToken);
+    const now = new Date().toISOString();
+    const authSection = payload?.['https://api.openai.com/auth'];
+    const profileSection = payload?.['https://api.openai.com/profile'];
+    const accountId = authSection?.chatgpt_account_id || '';
+    const userId = authSection?.user_id || '';
+    const planType = authSection?.chatgpt_plan_type || 'free';
+    const email = profileSection?.email || '';
+    const expTimestamp = payload?.exp ? new Date(payload.exp * 1000).toISOString() : now;
+    const idToken = payload ? buildSyntheticIdToken(payload, accessToken) : '';
+    return {
+      type: 'codex',
+      account_id: accountId,
+      chatgpt_account_id: accountId,
+      email: email,
+      name: email,
+      plan_type: planType,
+      chatgpt_plan_type: planType,
+      id_token: idToken,
+      id_token_synthetic: true,
+      access_token: accessToken,
+      refresh_token: '',
+      session_token: '',
+      last_refresh: now,
+      expired: expTimestamp,
+      disabled: false
+    };
+  }
+
+  function convertAccessTokenToSub2API(accessToken) {
+    const payload = parseJWT(accessToken);
+    const now = new Date().toISOString();
+    const authSection = payload?.['https://api.openai.com/auth'];
+    const profileSection = payload?.['https://api.openai.com/profile'];
+    const accountId = authSection?.chatgpt_account_id || '';
+    const userId = authSection?.user_id || '';
+    const planType = authSection?.chatgpt_plan_type || 'free';
+    const email = profileSection?.email || '';
+    const expTimestamp = payload?.exp ? new Date(payload.exp * 1000).toISOString() : now;
+    const expiresIn = getExpiresIn(expTimestamp, new Date());
+    const name = email || accountId || 'ChatGPT Account';
+    const account = {
+      name: name,
+      platform: 'openai',
+      type: 'oauth',
+      concurrency: 10,
+      priority: 1,
+      credentials: {
+        access_token: accessToken,
+        chatgpt_account_id: accountId,
+        chatgpt_user_id: userId,
+        email: email,
+        expires_at: expTimestamp,
+        expires_in: expiresIn,
+        plan_type: planType,
+      },
+      extra: {
+        email: email,
+        email_key: toEmailKey(email),
+        name: name,
+        auth_provider: 'openai',
+        source: 'chatgpt_web_session',
+        last_refresh: now,
+      },
+    };
+    return stripUnavailable(account);
+  }
+
+  function generateCPAFileName(cpaAccount, index) {
+    const baseName = cpaAccount.email || cpaAccount.account_id || `account_${index}`;
+    const sanitized = sanitizeFileName(baseName);
+    const timestamp = Date.now();
+    return `${sanitized}_${timestamp}_${index}.json`;
+  }
+
+  function generateSub2apiExport(tokens) {
+    if (typeof fflate === 'undefined') {
+      throw new Error('fflate 库未加载，请刷新页面重试');
+    }
+    const now = new Date().toISOString();
+    const files = {};
+    tokens.forEach((token, index) => {
+      const sub2apiAccount = convertAccessTokenToSub2API(token);
+      const document = {
+        exported_at: now,
+        proxies: [],
+        accounts: [sub2apiAccount]
+      };
+      const email = sub2apiAccount.credentials.email || sub2apiAccount.name;
+      const sanitized = sanitizeFileName(email || `account_${index}`);
+      const fileName = `${sanitized}_${Date.now()}_${index}.json`;
+      const content = JSON.stringify(document, null, 2);
+      files[fileName] = new TextEncoder().encode(content);
+    });
+    return fflate.zipSync(files, { level: 6 });
+  }
+
+  function generateCPAExport(tokens) {
+    if (typeof fflate === 'undefined') {
+      throw new Error('fflate 库未加载，请刷新页面重试');
+    }
+    const files = {};
+    tokens.forEach((token, index) => {
+      const cpaAccount = convertAccessTokenToCPA(token);
+      const fileName = generateCPAFileName(cpaAccount, index);
+      const content = JSON.stringify(cpaAccount, null, 2);
+      files[fileName] = new TextEncoder().encode(content);
+    });
+    return fflate.zipSync(files, { level: 6 });
+  }
+
+  async function handleExport() {
+    const tokensText = elements.accessTokensInput.value.trim();
+    if (!tokensText) {
+      showOutput(elements.exportOutput, "error", "请输入至少一个 access token");
+      return;
+    }
+    const tokens = tokensText.split('\n')
+      .map(t => t.trim())
+      .filter(t => t.length > 0);
+    if (tokens.length === 0) {
+      showOutput(elements.exportOutput, "error", "没有有效的 access token");
+      return;
+    }
+    setBusy(elements.exportButton, true);
+    showOutput(elements.exportOutput, "info", `正在处理 ${tokens.length} 个 token...`);
+    try {
+      const format = elements.exportFormatSelect.value;
+      let zipData;
+      if (format === "sub2api") {
+        zipData = generateSub2apiExport(tokens);
+      } else {
+        zipData = generateCPAExport(tokens);
+      }
+      const blob = new Blob([zipData], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `${format}_export_${timestamp}.zip`;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showOutput(elements.exportOutput, "success", `成功导出 ${tokens.length} 个账号到 ${filename}`);
+    } catch (error) {
+      showOutput(elements.exportOutput, "error", `导出失败: ${formatError(error)}`);
+    } finally {
+      setBusy(elements.exportButton, false);
+    }
+  }
+
+  async function handleFetchCurrentToken() {
+    setBusy(elements.fetchCurrentTokenButton, true);
+    try {
+      const token = await fetchAccessTokenFromTab();
+      const current = elements.accessTokensInput.value.trim();
+      elements.accessTokensInput.value = current ? `${current}\n${token}` : token;
+      state.accessTokens = elements.accessTokensInput.value;
+      persistState();
+      showOutput(elements.exportOutput, "success", "已添加当前 ChatGPT token");
+    } catch (error) {
+      showOutput(elements.exportOutput, "error", `获取 token 失败: ${formatError(error)}`);
+    } finally {
+      setBusy(elements.fetchCurrentTokenButton, false);
     }
   }
 
