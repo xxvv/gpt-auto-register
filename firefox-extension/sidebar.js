@@ -21,6 +21,14 @@
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const IP_API_BASE = "http://ip-api.com/json/";
+  const MEIGUODIZHI_ADDRESS_API = "https://www.meiguodizhi.com/api/v1/dz";
+  const GENERATED_CARD = Object.freeze({
+    number: "1234561234568888",
+    expiry: "2030/03",
+    cvv: "996",
+    name: "James Smith",
+    phone: "1234567890"
+  });
   const STORAGE_KEY = "gptAutoRegisterSidebarState";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
@@ -77,6 +85,7 @@
     checkoutRegionSelect: document.getElementById("checkoutRegionSelect"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
+    generateCardButton: document.getElementById("generateCardButton"),
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
     setCountryButton: document.getElementById("setCountryButton"),
     fillCardButton: document.getElementById("fillCardButton"),
@@ -139,7 +148,7 @@
     currentTab: null,
     busy: new Set(),
     accessTokens: "",
-    exportFormat: "sub2api"
+    exportFormat: "cpa"
   };
   let usZip3StateRangesPromise = null;
 
@@ -176,6 +185,7 @@
     elements.fetchTokenButton.addEventListener("click", fetchAndCopyAccessToken);
     elements.checkoutLinkOnlyButton.addEventListener("click", checkoutLinkOnly);
     elements.copyCheckoutLinkButton.addEventListener("click", copyCheckoutPaymentLink);
+    elements.generateCardButton.addEventListener("click", generateCardInfo);
     elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
     elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
     elements.setCountryButton.addEventListener("click", setCountryInCurrentTab);
@@ -215,7 +225,8 @@
       persistState();
     });
     elements.exportFormatSelect.addEventListener("change", () => {
-      state.exportFormat = elements.exportFormatSelect.value;
+      state.exportFormat = normalizeExportFormat(elements.exportFormatSelect.value);
+      elements.exportFormatSelect.value = state.exportFormat;
       persistState();
     });
     bindFillSettingsInputs();
@@ -244,7 +255,7 @@
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
       state.accessTokens = typeof data.accessTokens === "string" ? data.accessTokens : "";
-      state.exportFormat = typeof data.exportFormat === "string" ? data.exportFormat : "sub2api";
+      state.exportFormat = normalizeExportFormat(data.exportFormat);
       elements.phoneKeyInput.value = state.phoneKeyInput;
       elements.webshareApiKeyInput.value = state.webshareApiKey;
       elements.proxyProtocolSelect.value = state.proxyProtocol;
@@ -1107,7 +1118,12 @@
 
   function normalizeCheckoutRegion(value) {
     const region = String(value || "").trim().toUpperCase();
-    return region === "IE" ? "IE" : "ID";
+    return ["ID", "IE", "JP", "US"].includes(region) ? region : "ID";
+  }
+
+  function normalizeExportFormat(value) {
+    const format = String(value || "").trim().toLowerCase();
+    return format === "sub2api" ? "sub2api" : "cpa";
   }
 
   function normalizeWebshareStatus(payload) {
@@ -1241,7 +1257,9 @@
 
       const regionConfig = {
         ID: { country: "ID", currency: "IDR" },
-        IE: { country: "IE", currency: "EUR" }
+        IE: { country: "IE", currency: "EUR" },
+        JP: { country: "JP", currency: "JPY" },
+        US: { country: "US", currency: "USD" }
       };
       const config = regionConfig[checkoutRegion] || regionConfig.ID;
 
@@ -1497,6 +1515,171 @@
     } finally {
       setBusy("removeElement", false);
     }
+  }
+
+  async function generateCardInfo() {
+    setBusy("generateCard", true);
+    showOutput(elements.fillOutput, "info", "正在生成卡片信息");
+
+    try {
+      const address = await fetchMeiguodizhiAddress();
+      const cardText = formatGeneratedCardInput(address);
+      elements.cardInput.value = cardText;
+      await renderCardPreview();
+      await persistState();
+      try {
+        await writeClipboard(cardText);
+        showOutput(elements.fillOutput, "success", `已生成卡片信息并复制：\n${cardText}`);
+      } catch (error) {
+        showOutput(elements.fillOutput, "success", `已生成卡片信息，复制失败：${formatError(error)}\n${cardText}`);
+      }
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `生成卡片信息失败：${formatError(error)}`);
+    } finally {
+      setBusy("generateCard", false);
+    }
+  }
+
+  async function fetchMeiguodizhiAddress() {
+    let payload = null;
+    try {
+      const response = await fetch(MEIGUODIZHI_ADDRESS_API, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        body: JSON.stringify({ path: "/", method: "address" }),
+        cache: "no-store"
+      });
+      payload = await readJsonResponse(response, "美国地址接口");
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn("Failed to fetch meiguodizhi address, using fallback", error);
+      payload = null;
+    }
+
+    return normalizeGeneratedAddress(payload);
+  }
+
+  function normalizeGeneratedAddress(payload) {
+    const addressPayload = payload && typeof payload === "object" ? (payload.address || payload) : {};
+    const street = firstNonEmpty(
+      addressPayload.Address,
+      addressPayload.address,
+      addressPayload.street,
+      addressPayload.Street
+    ) || "123 Main St";
+    const city = firstNonEmpty(addressPayload.City, addressPayload.city) || "New York";
+    const state = firstNonEmpty(
+      addressPayload.State,
+      addressPayload.state,
+      addressPayload.State_Full,
+      addressPayload.state_full
+    ) || "NY";
+    const zip = normalizeGeneratedZip(
+      firstNonEmpty(addressPayload.Zip_Code, addressPayload.zip, addressPayload.Zip, addressPayload.postcode)
+    );
+
+    return {
+      street: String(street).replace(/\s+/g, " ").trim(),
+      city: String(city).replace(/\s+/g, " ").trim(),
+      state: normalizeGeneratedState(state),
+      zip
+    };
+  }
+
+  function formatGeneratedCardInput(address) {
+    return [
+      GENERATED_CARD.number,
+      GENERATED_CARD.expiry,
+      GENERATED_CARD.cvv,
+      GENERATED_CARD.phone,
+      "",
+      GENERATED_CARD.name,
+      `${address.street},${address.city} ${address.state} ${address.zip},US`
+    ].join("----");
+  }
+
+  function firstNonEmpty(...values) {
+    for (const value of values) {
+      const text = String(value || "").trim();
+      if (text) {
+        return text;
+      }
+    }
+    return "";
+  }
+
+  function normalizeGeneratedZip(zip) {
+    const matched = String(zip || "").match(/\d{5}/);
+    return matched ? matched[0] : "10001";
+  }
+
+  function normalizeGeneratedState(state) {
+    const normalized = String(state || "").trim();
+    if (!normalized) {
+      return "NY";
+    }
+    const stateMap = {
+      ALABAMA: "AL",
+      ALASKA: "AK",
+      ARIZONA: "AZ",
+      ARKANSAS: "AR",
+      CALIFORNIA: "CA",
+      COLORADO: "CO",
+      CONNECTICUT: "CT",
+      DELAWARE: "DE",
+      FLORIDA: "FL",
+      GEORGIA: "GA",
+      HAWAII: "HI",
+      IDAHO: "ID",
+      ILLINOIS: "IL",
+      INDIANA: "IN",
+      IOWA: "IA",
+      KANSAS: "KS",
+      KENTUCKY: "KY",
+      LOUISIANA: "LA",
+      MAINE: "ME",
+      MARYLAND: "MD",
+      MASSACHUSETTS: "MA",
+      MICHIGAN: "MI",
+      MINNESOTA: "MN",
+      MISSISSIPPI: "MS",
+      MISSOURI: "MO",
+      MONTANA: "MT",
+      NEBRASKA: "NE",
+      NEVADA: "NV",
+      "NEW HAMPSHIRE": "NH",
+      "NEW JERSEY": "NJ",
+      "NEW MEXICO": "NM",
+      "NEW YORK": "NY",
+      "NORTH CAROLINA": "NC",
+      "NORTH DAKOTA": "ND",
+      OHIO: "OH",
+      OKLAHOMA: "OK",
+      OREGON: "OR",
+      PENNSYLVANIA: "PA",
+      "RHODE ISLAND": "RI",
+      "SOUTH CAROLINA": "SC",
+      "SOUTH DAKOTA": "SD",
+      TENNESSEE: "TN",
+      TEXAS: "TX",
+      UTAH: "UT",
+      VERMONT: "VT",
+      VIRGINIA: "VA",
+      WASHINGTON: "WA",
+      "WEST VIRGINIA": "WV",
+      WISCONSIN: "WI",
+      WYOMING: "WY"
+    };
+    const upper = normalized.toUpperCase();
+    if (/^[A-Z]{2}$/.test(upper)) {
+      return upper;
+    }
+    return stateMap[upper] || "NY";
   }
 
   async function parseCardInput(rawInput) {
@@ -2133,9 +2316,12 @@
     elements.fetchTokenButton.disabled = state.busy.has("token");
     elements.checkoutLinkOnlyButton.disabled = state.busy.has("checkoutLink");
     elements.copyCheckoutLinkButton.disabled = state.busy.has("checkoutLink");
+    elements.generateCardButton.disabled = state.busy.has("generateCard");
     elements.setCountryButton.disabled = state.busy.has("country");
     elements.fillCardButton.disabled = state.busy.has("fill");
     elements.removeElementButton.disabled = state.busy.has("removeElement");
+    elements.exportButton.disabled = state.busy.has("export");
+    elements.fetchCurrentTokenButton.disabled = state.busy.has("fetchCurrentToken");
   }
 
   function showOutput(element, type, message) {
@@ -2362,6 +2548,10 @@
     return `${sanitized}_${timestamp}_${index}.json`;
   }
 
+  function createAccountsExportFileName() {
+    return `accounts_${Date.now()}.zip`;
+  }
+
   function generateSub2apiExport(tokens) {
     if (typeof fflate === 'undefined') {
       throw new Error('fflate 库未加载，请刷新页面重试');
@@ -2411,10 +2601,10 @@
       showOutput(elements.exportOutput, "error", "没有有效的 access token");
       return;
     }
-    setBusy(elements.exportButton, true);
+    setBusy("export", true);
     showOutput(elements.exportOutput, "info", `正在处理 ${tokens.length} 个 token...`);
     try {
-      const format = elements.exportFormatSelect.value;
+      const format = normalizeExportFormat(elements.exportFormatSelect.value);
       let zipData;
       if (format === "sub2api") {
         zipData = generateSub2apiExport(tokens);
@@ -2423,8 +2613,7 @@
       }
       const blob = new Blob([zipData], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const filename = `${format}_export_${timestamp}.zip`;
+      const filename = createAccountsExportFileName();
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
@@ -2434,12 +2623,12 @@
     } catch (error) {
       showOutput(elements.exportOutput, "error", `导出失败: ${formatError(error)}`);
     } finally {
-      setBusy(elements.exportButton, false);
+      setBusy("export", false);
     }
   }
 
   async function handleFetchCurrentToken() {
-    setBusy(elements.fetchCurrentTokenButton, true);
+    setBusy("fetchCurrentToken", true);
     try {
       const token = await fetchAccessTokenFromTab();
       const current = elements.accessTokensInput.value.trim();
@@ -2450,7 +2639,7 @@
     } catch (error) {
       showOutput(elements.exportOutput, "error", `获取 token 失败: ${formatError(error)}`);
     } finally {
-      setBusy(elements.fetchCurrentTokenButton, false);
+      setBusy("fetchCurrentToken", false);
     }
   }
 

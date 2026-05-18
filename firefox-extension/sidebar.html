@@ -82,6 +82,8 @@
       <select id="checkoutRegionSelect" class="text-input">
         <option value="ID">印度尼西亚 (IDR)</option>
         <option value="IE">爱尔兰 (EUR)</option>
+        <option value="JP">日本 (JPY)</option>
+        <option value="US">美国 (USD)</option>
       </select>
       <output id="payUrlOutput" class="result-output" aria-live="polite"></output>
     </section>
@@ -99,8 +101,8 @@
       ></textarea>
       <label class="field-label" for="exportFormatSelect">导出格式</label>
       <select id="exportFormatSelect" class="text-input">
-        <option value="sub2api">Sub2API</option>
         <option value="cpa">CPA</option>
+        <option value="sub2api">Sub2API</option>
       </select>
       <div class="section-actions">
         <button id="exportButton" class="primary-button" type="button">导出 ZIP</button>
@@ -144,6 +146,9 @@
         </div>
         <output id="phoneCodeOutput" class="result-output" aria-live="polite"></output>
       </section>
+      <div class="section-actions">
+        <button id="generateCardButton" class="secondary-button" type="button">生成卡片信息</button>
+      </div>
       <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----2030/2----cvv----url----name----address,city postcode,US"></textarea>
       <div id="cardPreview" class="card-preview" aria-live="polite"></div>
       <label class="field-label" for="removeElementSelectorInput">删除元素 selector</label>
