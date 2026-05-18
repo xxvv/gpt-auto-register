@@ -1,99 +1,101 @@
-<!doctype html>
-<html lang="zh-CN">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GPT Helper v2</title>
-  <link rel="stylesheet" href="sidebar.css">
+  <meta charset="UTF-8">
+  <title>GPT Auto Register v2</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 10px; width: 360px; color: #222; }
+    .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 12px; }
+    .step { min-height: 32px; padding: 6px 4px; text-align: center; background: #f0f0f0; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+    .step.active { background: #4caf50; color: white; }
+    .panel { margin-bottom: 10px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    select, textarea, input { width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 8px; }
+    textarea { resize: vertical; }
+    button { width: 100%; padding: 10px; font-size: 14px; background: #2196f3; color: white; border: none; cursor: pointer; margin-bottom: 8px; }
+    button:hover { background: #1976d2; }
+    button.secondary { background: #607d8b; }
+    button.secondary:hover { background: #455a64; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .actions button { margin-bottom: 0; }
+    .settings { border: 1px solid #ddd; padding: 8px; background: #fafafa; margin-top: 8px; }
+    .settings-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .settings-field span { display: block; font-size: 12px; margin-bottom: 3px; font-weight: bold; }
+    .settings-field input { margin-bottom: 4px; }
+    .hint { color: #666; font-size: 12px; line-height: 1.35; margin: 0 0 8px; }
+    #logOutput { height: 210px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+    .log-line { margin-bottom: 4px; }
+  </style>
 </head>
 <body>
-  <main class="app-shell">
-    <header class="app-header">
-      <div>
-        <h1>GPT Helper v2</h1>
-        <p id="currentTabText">等待页面状态</p>
-      </div>
-      <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
-    </header>
+  <div class="steps">
+    <div id="step1" class="step active">1. 注册</div>
+    <div id="step2" class="step">2. PayURL</div>
+    <div id="step3" class="step">3. PP支付</div>
+    <div id="step4" class="step">4. PayPal</div>
+    <div id="step5" class="step">5. 短信</div>
+  </div>
 
-    <nav class="stepper" aria-label="执行步骤">
-      <div id="registerStep" class="step active">
-        <span class="step-index">1</span>
-        <span>注册</span>
-      </div>
-      <div id="paymentStep" class="step">
-        <span class="step-index">2</span>
-        <span>获取支付链接</span>
-      </div>
-    </nav>
+  <div class="panel">
+    <label for="country">获取支付链接的国家</label>
+    <select id="country">
+      <option value="JP">日本 (JP)</option>
+      <option value="US">美国 (US)</option>
+      <option value="ID">印度尼西亚 (ID)</option>
+      <option value="DE">德国 (DE)</option>
+    </select>
+  </div>
 
-    <section class="tool-section" aria-labelledby="registerTitle">
-      <div class="section-header">
-        <h2 id="registerTitle">注册辅助</h2>
-        <button id="startButton" class="primary-button" type="button">开始</button>
-      </div>
+  <div class="panel">
+    <label for="payUrlInput">PayURL</label>
+    <input id="payUrlInput" type="url" spellcheck="false" placeholder="https://...">
+    <button id="startPayUrlBtn" class="secondary" type="button">从 PayURL 开始支付</button>
+  </div>
 
-      <label class="field-label" for="emailInput">邮箱</label>
-      <input id="emailInput" class="text-input" type="email" autocomplete="email" spellcheck="false" placeholder="your-email@example.com">
+  <div class="panel">
+    <label for="phoneKeyInput">手机区域</label>
+    <input
+      id="phoneKeyInput"
+      type="text"
+      spellcheck="false"
+      placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=..."
+    >
+  </div>
 
-      <label class="field-label" for="codeInput">验证码</label>
-      <div class="inline-action">
-        <input id="codeInput" class="text-input" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" placeholder="输入邮件验证码">
-        <button id="fillCodeButton" class="secondary-button inline-button" type="button">填写验证码</button>
-      </div>
-
-      <div class="two-col">
-        <label class="field-label" for="nameInput">
-          <span>姓名</span>
-          <input id="nameInput" class="text-input" type="text" autocomplete="name" spellcheck="false" placeholder="Your Name">
-        </label>
-        <label class="field-label" for="ageInput">
-          <span>年龄</span>
-          <input id="ageInput" class="text-input" type="number" min="22" max="55" step="1" placeholder="22-55">
-        </label>
-      </div>
-    </section>
-
-    <section class="tool-section" aria-labelledby="paymentTitle">
-      <div class="section-header">
-        <h2 id="paymentTitle">支付链接</h2>
-        <button id="fetchCheckoutButton" class="primary-button" type="button">获取支付链接</button>
-      </div>
-
-      <label class="field-label" for="checkoutCountrySelect">获取支付链接的国家</label>
-      <select id="checkoutCountrySelect" class="text-input">
-        <option value="JP">日本 (JPY)</option>
-        <option value="US">美国 (USD)</option>
-        <option value="IN">印度 (INR)</option>
-        <option value="DE">德国 (EUR)</option>
-      </select>
-
-      <output id="paymentLinkOutput" class="result-output" aria-live="polite"></output>
-
-      <div class="section-actions">
-        <button id="copyPaymentLinkButton" class="secondary-button" type="button">复制支付链接</button>
+  <div class="panel">
+    <label for="cardInput">卡片信息</label>
+    <textarea id="cardInput" rows="6" spellcheck="false" placeholder="card----year/month----cvv----url----name----address,city state postcode,US"></textarea>
+    <div class="actions">
+      <button id="toggleFillSettingsButton" class="secondary" type="button" aria-expanded="false">设置</button>
+      <button id="resetFillSettingsButton" class="secondary" type="button">恢复默认</button>
+    </div>
+    <section id="fillSettingsPanel" class="settings" hidden>
+      <p class="hint">默认按页面字段 ID 填充，手机号优先取上面的手机区域，并自动去掉 +1。</p>
+      <div class="settings-grid">
+        <label class="settings-field"><span>手机号</span><input id="phoneSelectorInput" type="text" spellcheck="false"><input id="phoneSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>卡号</span><input id="cardNumberSelectorInput" type="text" spellcheck="false"><input id="cardNumberSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>过期时间</span><input id="cardExpirySelectorInput" type="text" spellcheck="false"><input id="cardExpirySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>CVV</span><input id="cardCvvSelectorInput" type="text" spellcheck="false"><input id="cardCvvSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Billing Name</span><input id="billingNameSelectorInput" type="text" spellcheck="false"><input id="billingNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>First Name</span><input id="firstNameSelectorInput" type="text" spellcheck="false"><input id="firstNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Last Name</span><input id="lastNameSelectorInput" type="text" spellcheck="false"><input id="lastNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Address</span><input id="billingLine1SelectorInput" type="text" spellcheck="false"><input id="billingLine1SelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>City</span><input id="billingCitySelectorInput" type="text" spellcheck="false"><input id="billingCitySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>State</span><input id="billingStateSelectorInput" type="text" spellcheck="false"><input id="billingStateSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Postcode</span><input id="billingPostalCodeSelectorInput" type="text" spellcheck="false"><input id="billingPostalCodeSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Country</span><input id="countrySelectorInput" type="text" spellcheck="false"><input id="countrySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>密码字段</span><input id="passwordSelectorInput" type="text" spellcheck="false"><input id="passwordSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>默认密码</span><input id="passwordValueInput" type="text" spellcheck="false"></label>
       </div>
     </section>
+  </div>
 
-    <section class="tool-section" aria-labelledby="cardTitle">
-      <div class="section-header">
-        <h2 id="cardTitle">卡片</h2>
-        <button id="fillCardButton" class="primary-button" type="button">填充卡片</button>
-      </div>
+  <button id="startBtn" type="button">开始完整流程</button>
 
-      <label class="field-label" for="cardInput">输入卡片信息</label>
-      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----2030/2----cvv----url----name----address,city state postcode,US"></textarea>
-      <div id="cardPreview" class="card-preview" aria-live="polite"></div>
-    </section>
-
-    <section class="log-section" aria-labelledby="logTitle">
-      <div class="section-header">
-        <h2 id="logTitle">执行记录</h2>
-        <button id="clearLogButton" class="section-button" type="button">清空</button>
-      </div>
-      <ol id="logList" class="log-list" aria-live="polite"></ol>
-    </section>
-  </main>
+  <div style="margin-top: 15px;">
+    <label>日志输出</label>
+    <div id="logOutput"></div>
+  </div>
 
   <script src="sidebar.js"></script>
 </body>

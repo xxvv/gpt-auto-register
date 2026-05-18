@@ -1,33 +1,16 @@
 (function () {
   "use strict";
 
-  function setNativeValue(element, value) {
-    if (!element) {
-      return false;
-    }
+  if (window.__gptAutoRegisterV2Loaded) {
+    return;
+  }
+  window.__gptAutoRegisterV2Loaded = true;
 
-    if (element instanceof HTMLSelectElement) {
-      element.value = String(value || "");
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    }
-
-    const prototype = element instanceof HTMLTextAreaElement
-      ? HTMLTextAreaElement.prototype
-      : HTMLInputElement.prototype;
-    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
-    if (descriptor && descriptor.set) {
-      descriptor.set.call(element, String(value || ""));
-    } else {
-      element.value = String(value || "");
-    }
-    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: String(value || "") }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  function selectorList(selectors) {
+  function normalizeSelectorList(selectors) {
     if (Array.isArray(selectors)) {
       return selectors.map((selector) => String(selector || "").trim()).filter(Boolean);
     }
@@ -35,131 +18,201 @@
     return single ? [single] : [];
   }
 
-  function findFirst(selectors) {
-    for (const selector of selectorList(selectors)) {
+  function getValueSetter(element) {
+    if (element instanceof HTMLTextAreaElement) {
+      return Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    }
+    if (element instanceof HTMLSelectElement) {
+      return Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    }
+    return Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  }
+
+  function setNativeValue(element, value) {
+    const nextValue = String(value || "");
+    const descriptor = getValueSetter(element);
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(element, nextValue);
+    } else {
+      element.value = nextValue;
+    }
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function typeNativeValue(element, value) {
+    const text = String(value || "");
+    element.focus();
+    setNativeValue(element, "");
+    const descriptor = getValueSetter(element);
+    for (const ch of text) {
+      if (descriptor && descriptor.set) {
+        descriptor.set.call(element, String(element.value || "") + ch);
+      } else {
+        element.value = String(element.value || "") + ch;
+      }
+      element.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: ch
+      }));
+    }
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function waitForSelector(selector, timeoutMs) {
+    const timeout = Number(timeoutMs || 60000);
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
       const element = document.querySelector(selector);
       if (element) {
-        return { element, selector };
+        return element;
       }
+      await delay(300);
     }
-    return { element: null, selector: selectorList(selectors)[0] || "" };
+    return null;
   }
 
-  function fillFirst(selectors, value) {
-    const result = findFirst(selectors);
-    if (!result.element) {
-      return { filled: false, selector: result.selector };
+  function fillSelector(selectors, value, options) {
+    const selectorList = normalizeSelectorList(selectors);
+    const shouldType = Boolean(options && options.type);
+    for (const selector of selectorList) {
+      const element = document.querySelector(selector);
+      if (!element) {
+        continue;
+      }
+      element.focus();
+      if (shouldType) {
+        typeNativeValue(element, value);
+      } else {
+        setNativeValue(element, value);
+      }
+      element.blur();
+      return { filled: true, selector };
     }
-    result.element.focus();
-    setNativeValue(result.element, value);
-    result.element.blur();
-    return { filled: true, selector: result.selector };
+    return { filled: false, selector: selectorList[0] || "" };
   }
 
-  function focusSubmit() {
-    const submit = document.querySelector("button[type='submit'], input[type='submit']");
-    if (submit instanceof HTMLElement) {
-      submit.focus();
-      return true;
-    }
-    return false;
+  function buildFieldMap(card, settings, phone) {
+    const billingName = [card.firstName, card.lastName]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(" ") || card.billingName || card.name;
+
+    return [
+      { selectors: settings.phoneSelector, value: phone },
+      { selectors: settings.cardNumberSelector, value: card.card },
+      { selectors: settings.cardExpirySelector, value: card.expiryInput },
+      { selectors: settings.cardCvvSelector, value: card.cvv },
+      { selectors: settings.billingNameSelector, value: billingName },
+      { selectors: settings.firstNameSelector, value: card.firstName },
+      { selectors: settings.lastNameSelector, value: card.lastName },
+      { selectors: settings.billingLine1Selector, value: card.address },
+      { selectors: settings.billingCitySelector, value: card.city },
+      { selectors: settings.billingStateSelector, value: card.state },
+      { selectors: settings.billingPostalCodeSelector, value: card.postcode },
+      { selectors: settings.countrySelector, value: card.country },
+      { selectors: settings.passwordSelector, value: settings.passwordValue }
+    ];
   }
 
-  function visibleText(element) {
-    return String((element && (element.innerText || element.textContent)) || "").replace(/\s+/g, " ").trim();
-  }
+  window.__gptAutoRegisterWaitForSelector = async function waitForSelectorExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    return { ok: Boolean(element), selector };
+  };
 
-  window.__gptV2TryOpenSignup = function tryOpenSignup() {
-    const candidates = Array.from(document.querySelectorAll("a, button"));
-    const matched = candidates.find((element) => {
-      const text = visibleText(element).toLowerCase();
-      const href = String(element.getAttribute("href") || "").toLowerCase();
-      return text === "sign up" ||
-        text.includes("sign up") ||
-        text.includes("注册") ||
-        href.includes("signup") ||
-        href.includes("sign-up");
-    });
-
-    if (!matched) {
-      return { ok: false, clicked: false, message: "未找到注册入口" };
+  window.__gptAutoRegisterClick = async function clickExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    if (!element) {
+      return { ok: false, selector, error: `Element not found: ${selector}` };
     }
-
-    matched.click();
-    return { ok: true, clicked: true, message: "已点击注册入口" };
+    element.click();
+    return { ok: true, selector };
   };
 
-  window.__gptV2FillEmail = function fillEmail(payload) {
-    const email = String((payload && payload.email) || "").trim();
-    const result = fillFirst(["#email", "input[type='email']"], email);
-    if (result.filled) {
-      return { ok: true, selector: result.selector, submitFocused: focusSubmit() };
+  window.__gptAutoRegisterSetValue = async function setValueExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    if (!element) {
+      return { ok: false, selector, error: `Element not found: ${selector}` };
     }
-    return { ok: false, selector: result.selector, error: "未找到邮箱输入框" };
-  };
-
-  window.__gptV2FillCode = function fillCode(payload) {
-    const code = String((payload && payload.code) || "").trim();
-    const result = fillFirst(["input[name='code']", "#code", "input[autocomplete='one-time-code']"], code);
-    if (result.filled) {
-      return { ok: true, selector: result.selector, submitFocused: focusSubmit() };
+    if (payload && payload.type) {
+      typeNativeValue(element, payload.value);
+    } else {
+      setNativeValue(element, payload && payload.value);
     }
-    return { ok: false, selector: result.selector, error: "未找到验证码输入框" };
+    return { ok: true, selector, value: String(element.value || "") };
   };
 
-  window.__gptV2FillAboutYou = function fillAboutYou(payload) {
-    const name = String((payload && payload.name) || "").trim();
-    const age = String((payload && payload.age) || "").trim();
-    const nameResult = fillFirst(["input[name='name']", "#name", "input[autocomplete='name']"], name);
-    const ageResult = fillFirst(["input[name='age']", "#age", "input[type='number']"], age);
-    return {
-      ok: nameResult.filled && ageResult.filled,
-      nameFilled: nameResult.filled,
-      ageFilled: ageResult.filled,
-      submitFocused: nameResult.filled && ageResult.filled ? focusSubmit() : false,
-      missing: [
-        nameResult.filled ? "" : (nameResult.selector || "input[name='name']"),
-        ageResult.filled ? "" : (ageResult.selector || "input[name='age']")
-      ].filter(Boolean)
-    };
+  window.__gptAutoRegisterGetValue = function getValueExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? document.querySelector(selector) : null;
+    if (!element) {
+      return { ok: false, selector, value: "" };
+    }
+    return { ok: true, selector, value: String(element.value || "") };
   };
 
-  window.__gptV2FillCard = function fillCard(payload) {
+  window.__gptAutoRegisterSetSelectIfNeeded = async function setSelectIfNeededExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const value = String((payload && payload.value) || "");
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    if (!element) {
+      return { ok: false, selector, changed: false, error: `Element not found: ${selector}` };
+    }
+    const currentValue = String(element.value || "");
+    if (currentValue === value) {
+      return { ok: true, selector, changed: false, value: currentValue };
+    }
+    setNativeValue(element, value);
+    return { ok: true, selector, changed: true, value: String(element.value || "") };
+  };
+
+  window.__gptAutoRegisterCheck = async function checkExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    if (!element) {
+      return { ok: false, selector, checked: false, error: `Element not found: ${selector}` };
+    }
+    if (!element.checked) {
+      element.click();
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return { ok: true, selector, checked: Boolean(element.checked) };
+  };
+
+  window.__gptAutoRegisterFillForm = function fillForm(payload) {
     try {
       const card = payload && payload.card ? payload.card : {};
+      const settings = payload && payload.settings ? payload.settings : {};
       const phone = String((payload && payload.phone) || card.phone || "").trim();
-      const fields = [
-        { selectors: ["#phone", "input[name='phone']", "input[type='tel']"], value: phone },
-        { selectors: ["#cardNumber", "input[name='cardnumber']", "input[autocomplete='cc-number']"], value: card.card },
-        { selectors: ["#cardExpiry", "#cardExpiryInput", "input[name='exp-date']", "input[autocomplete='cc-exp']"], value: card.expiryInput },
-        { selectors: ["#cardCvv", "#cardCvc", "input[name='cvc']", "input[autocomplete='cc-csc']"], value: card.cvv },
-        { selectors: ["#billingName", "input[name='billingName']", "input[autocomplete='cc-name']"], value: card.billingName || card.name },
-        { selectors: ["#firstName", "input[name='firstName']", "input[autocomplete='given-name']"], value: card.firstName },
-        { selectors: ["#lastName", "input[name='lastName']", "input[autocomplete='family-name']"], value: card.lastName },
-        { selectors: ["#billingLine1", "#billingAddressLine1", "input[name='addressLine1']", "input[autocomplete='billing address-line1']"], value: card.address },
-        { selectors: ["#billingCity", "#billingLocality", "input[name='locality']", "input[autocomplete='billing address-level2']"], value: card.city },
-        { selectors: ["#billingState", "input[name='administrativeArea']", "input[autocomplete='billing address-level1']"], value: card.state },
-        { selectors: ["#billingPostalCode", "input[name='postalCode']", "input[autocomplete='billing postal-code']"], value: card.postcode },
-        { selectors: ["#country", "select[name='country']", "select[autocomplete='billing country']"], value: card.country }
-      ];
-
+      const fields = buildFieldMap(card, settings, phone);
       const missing = [];
       let filled = 0;
-      fields.forEach((field) => {
-        if (!String(field.value || "").trim()) {
+
+      fields.forEach(({ selectors, value }) => {
+        const selectorList = normalizeSelectorList(selectors);
+        if (!selectorList.length || value === undefined || value === null) {
           return;
         }
-        const result = fillFirst(field.selectors, field.value);
+        const result = fillSelector(selectorList, value);
         if (result.filled) {
           filled += 1;
         } else {
-          missing.push(result.selector);
+          missing.push(result.selector || selectorList[0]);
         }
       });
 
-      return { ok: filled > 0, filled, missing };
+      return { ok: filled > 0, filled, missing, error: "" };
     } catch (error) {
-      return { ok: false, filled: 0, missing: [], error: error && error.message ? error.message : String(error) };
+      return {
+        ok: false,
+        filled: 0,
+        missing: [],
+        error: error && error.message ? error.message : String(error)
+      };
     }
   };
 }());
