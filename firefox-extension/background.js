@@ -18,13 +18,45 @@
 
   ext.webRequest.onAuthRequired.addListener(
     (details) => {
-      if (!details || !details.isProxy) {
+      if (!shouldUseProxyAuth(details)) {
         return {};
       }
 
-      return {};
+      return {
+        authCredentials: {
+          username: String(proxyAuth.username || ""),
+          password: String(proxyAuth.password || "")
+        }
+      };
     },
     { urls: ["<all_urls>"] },
     ["blocking"]
   );
+
+  function shouldUseProxyAuth(details) {
+    if (!details || !details.isProxy || !proxyAuth || !proxyAuth.enabled) {
+      return false;
+    }
+
+    const username = String(proxyAuth.username || "");
+    if (!username) {
+      return false;
+    }
+
+    const authHost = String(proxyAuth.host || "").trim();
+    const authPort = Number(proxyAuth.port || 0);
+    const challenger = details.challenger || {};
+    const challengerHost = String(challenger.host || "").trim();
+    const challengerPort = Number(challenger.port || 0);
+
+    if (authHost && challengerHost && authHost !== challengerHost) {
+      return false;
+    }
+
+    if (authPort > 0 && challengerPort > 0 && authPort !== challengerPort) {
+      return false;
+    }
+
+    return true;
+  }
 }());

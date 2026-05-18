@@ -677,7 +677,7 @@
 
     await ext.storage.local.set({
       [PROXY_AUTH_KEY]: {
-        enabled: false,
+        enabled: Boolean(runtimeProxy.username),
         host: runtimeProxy.host,
         port: runtimeProxy.port,
         username: runtimeProxy.username || "",
