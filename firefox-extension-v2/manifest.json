@@ -1,0 +1,39 @@
+{
+  "manifest_version": 2,
+  "name": "GPT Accessible Form Helper v2",
+  "version": "1.0.0",
+  "description": "Firefox sidebar accessibility helper for ChatGPT form filling, Checkout link creation, and Stripe card filling.",
+  "sidebar_action": {
+    "default_title": "GPT Helper v2",
+    "default_panel": "sidebar.html"
+  },
+  "permissions": [
+    "activeTab",
+    "clipboardWrite",
+    "storage",
+    "tabs",
+    "https://chatgpt.com/*",
+    "https://auth.openai.com/*",
+    "https://checkout.stripe.com/*",
+    "https://*.stripe.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://auth.openai.com/*",
+        "https://checkout.stripe.com/*",
+        "https://*.stripe.com/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "applications": {
+    "gecko": {
+      "id": "gpt-accessible-form-helper-v2@example.local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

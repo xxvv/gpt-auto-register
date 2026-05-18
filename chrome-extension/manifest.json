@@ -19,8 +19,10 @@
     "<all_urls>",
     "http://127.0.0.1:8888/*",
     "http://localhost:8888/*",
+    "http://ip-api.com/*",
     "https://chatgpt.com/*",
     "https://getemail.nnai.website/*",
+    "https://proxy.webshare.io/*",
     "https://payurl.779.chat/*",
     "https://checkout.stripe.com/*",
     "https://*.stripe.com/*"

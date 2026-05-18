@@ -33,7 +33,8 @@ body {
 
 button,
 textarea,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -50,6 +51,7 @@ button:disabled {
 button:focus-visible,
 textarea:focus-visible,
 input:focus-visible,
+select:focus-visible,
 .email-item:focus-within {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -82,6 +84,13 @@ input:focus-visible,
   color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .tool-section {
@@ -198,6 +207,15 @@ input:focus-visible,
   overflow: auto;
 }
 
+.email-config {
+  display: grid;
+  gap: 8px;
+}
+
+.email-account-input {
+  min-height: 86px;
+}
+
 .email-item {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -235,13 +253,18 @@ input:focus-visible,
 }
 
 .proxy-status {
+  display: grid;
+  gap: 8px;
   padding: 8px;
   background: #f4f7f2;
   border: 1px solid #d6e2d0;
   border-radius: 7px;
   color: #233423;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
+}
+
+.proxy-status.empty {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   overflow-wrap: anywhere;
 }
 
@@ -249,20 +272,6 @@ input:focus-visible,
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
-}
-
-.proxy-input {
-  width: 100%;
-  min-height: 72px;
-  resize: vertical;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--text);
-  background: #fbfcff;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .text-input {
@@ -292,10 +301,11 @@ input:focus-visible,
   line-height: 1.5;
 }
 
+.phone-preview,
 .card-preview {
   display: none;
   grid-template-columns: 1fr;
-  gap: 4px;
+  gap: 8px;
   padding: 8px;
   background: #f4f7f2;
   border: 1px solid #d6e2d0;
@@ -304,6 +314,7 @@ input:focus-visible,
   font-size: 12px;
 }
 
+.phone-preview.visible,
 .card-preview.visible {
   display: grid;
 }
@@ -366,17 +377,37 @@ input:focus-visible,
 
 .preview-row {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 6px;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: #fbfcff;
+  border: 1px solid #dce6d8;
+  border-radius: 7px;
 }
 
 .preview-label {
   color: var(--muted);
+  font-weight: 600;
 }
 
 .preview-value {
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.preview-copy-button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: #dce7f6;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.preview-copy-button:hover:not(:disabled) {
+  background: #cdddf3;
 }
 
 .result-output {

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT Helper v2</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <h1>GPT Helper v2</h1>
+        <p id="currentTabText">等待页面状态</p>
+      </div>
+      <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+    </header>
+
+    <nav class="stepper" aria-label="执行步骤">
+      <div id="registerStep" class="step active">
+        <span class="step-index">1</span>
+        <span>注册</span>
+      </div>
+      <div id="paymentStep" class="step">
+        <span class="step-index">2</span>
+        <span>获取支付链接</span>
+      </div>
+    </nav>
+
+    <section class="tool-section" aria-labelledby="registerTitle">
+      <div class="section-header">
+        <h2 id="registerTitle">注册辅助</h2>
+        <button id="startButton" class="primary-button" type="button">开始</button>
+      </div>
+
+      <label class="field-label" for="emailInput">邮箱</label>
+      <input id="emailInput" class="text-input" type="email" autocomplete="email" spellcheck="false" placeholder="your-email@example.com">
+
+      <label class="field-label" for="codeInput">验证码</label>
+      <div class="inline-action">
+        <input id="codeInput" class="text-input" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" placeholder="输入邮件验证码">
+        <button id="fillCodeButton" class="secondary-button inline-button" type="button">填写验证码</button>
+      </div>
+
+      <div class="two-col">
+        <label class="field-label" for="nameInput">
+          <span>姓名</span>
+          <input id="nameInput" class="text-input" type="text" autocomplete="name" spellcheck="false" placeholder="Your Name">
+        </label>
+        <label class="field-label" for="ageInput">
+          <span>年龄</span>
+          <input id="ageInput" class="text-input" type="number" min="22" max="55" step="1" placeholder="22-55">
+        </label>
+      </div>
+    </section>
+
+    <section class="tool-section" aria-labelledby="paymentTitle">
+      <div class="section-header">
+        <h2 id="paymentTitle">支付链接</h2>
+        <button id="fetchCheckoutButton" class="primary-button" type="button">获取支付链接</button>
+      </div>
+
+      <label class="field-label" for="checkoutCountrySelect">获取支付链接的国家</label>
+      <select id="checkoutCountrySelect" class="text-input">
+        <option value="JP">日本 (JPY)</option>
+        <option value="US">美国 (USD)</option>
+        <option value="IN">印度 (INR)</option>
+        <option value="DE">德国 (EUR)</option>
+      </select>
+
+      <output id="paymentLinkOutput" class="result-output" aria-live="polite"></output>
+
+      <div class="section-actions">
+        <button id="copyPaymentLinkButton" class="secondary-button" type="button">复制支付链接</button>
+      </div>
+    </section>
+
+    <section class="tool-section" aria-labelledby="cardTitle">
+      <div class="section-header">
+        <h2 id="cardTitle">卡片</h2>
+        <button id="fillCardButton" class="primary-button" type="button">填充卡片</button>
+      </div>
+
+      <label class="field-label" for="cardInput">输入卡片信息</label>
+      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----2030/2----cvv----url----name----address,city state postcode,US"></textarea>
+      <div id="cardPreview" class="card-preview" aria-live="polite"></div>
+    </section>
+
+    <section class="log-section" aria-labelledby="logTitle">
+      <div class="section-header">
+        <h2 id="logTitle">执行记录</h2>
+        <button id="clearLogButton" class="section-button" type="button">清空</button>
+      </div>
+      <ol id="logList" class="log-list" aria-live="polite"></ol>
+    </section>
+  </main>
+
+  <script src="sidebar.js"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  const ext = typeof browser !== "undefined" ? browser : chrome;
+
   const DOMAINS = [
     "minima.edu.kg",
     "watermelon.edu.kg",
@@ -16,28 +18,35 @@
 
   const CODE_API = "https://getemail.nnai.website/api/code";
   const PAYURL_API = "https://payurl.779.chat/api/request";
-  const LOCAL_API_BASE = "http://127.0.0.1:8888";
+  const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
+  const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
+  const IP_API_BASE = "http://ip-api.com/json/";
   const STORAGE_KEY = "gptAutoRegisterSidebarState";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
+  const DEFAULT_REMOVE_ELEMENT_SELECTOR = "#captchaComponent";
   const POLL_ATTEMPTS = 3;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
-    phoneSelector: "#phone",
-    cardNumberSelector: "#cardNumber",
-    cardExpirySelector: "#cardExpiry",
-    cardCvvSelector: "#cardCvv",
-    firstNameSelector: "#firstName",
-    lastNameSelector: "#lastName",
-    billingLine1Selector: "#billingLine1",
-    billingCitySelector: "#billingCity",
-    billingStateSelector: "#billingState",
-    billingPostalCodeSelector: "#billingPostalCode",
-    passwordSelector: "#password",
+    phoneSelector: ["#phone", ""],
+    cardNumberSelector: ["#cardNumber", ""],
+    cardExpirySelector: ["#cardExpiry", ""],
+    cardCvvSelector: ["#cardCvv", "#cardCvc"],
+    billingNameSelector: ["#billingName", ""],
+    firstNameSelector: ["#firstName", ""],
+    lastNameSelector: ["#lastName", ""],
+    billingLine1Selector: ["#billingLine1", "#billingAddressLine1"],
+    billingCitySelector: ["#billingCity", "#billingLocality"],
+    billingStateSelector: ["#billingState", ""],
+    billingPostalCodeSelector: ["#billingPostalCode", ""],
+    countrySelector: ["#country", ""],
+    passwordSelector: ["#password", ""],
     passwordValue: "Bb02911ss"
   });
 
   const elements = {
     currentTabText: document.getElementById("currentTabText"),
+    openChatGptButton: document.getElementById("openChatGptButton"),
     refreshTabButton: document.getElementById("refreshTabButton"),
     generateEmailsButton: document.getElementById("generateEmailsButton"),
     emailList: document.getElementById("emailList"),
@@ -45,83 +54,194 @@
     fetchCodeButton: document.getElementById("fetchCodeButton"),
     copyCodeButton: document.getElementById("copyCodeButton"),
     codeOutput: document.getElementById("codeOutput"),
+    phoneKeyInput: document.getElementById("phoneKeyInput"),
+    phonePreview: document.getElementById("phonePreview"),
+    copyPhoneButton: document.getElementById("copyPhoneButton"),
+    fetchPhoneCodeButton: document.getElementById("fetchPhoneCodeButton"),
+    copyPhoneCodeButton: document.getElementById("copyPhoneCodeButton"),
+    phoneCodeOutput: document.getElementById("phoneCodeOutput"),
     refreshProxyButton: document.getElementById("refreshProxyButton"),
     proxyStatus: document.getElementById("proxyStatus"),
-    manualProxyInput: document.getElementById("manualProxyInput"),
+    webshareApiKeyInput: document.getElementById("webshareApiKeyInput"),
+    proxyProtocolSelect: document.getElementById("proxyProtocolSelect"),
+    proxyCountrySelect: document.getElementById("proxyCountrySelect"),
     getWebshareProxyButton: document.getElementById("getWebshareProxyButton"),
     setProxyButton: document.getElementById("setProxyButton"),
-    applyManualProxyButton: document.getElementById("applyManualProxyButton"),
     replaceProxyButton: document.getElementById("replaceProxyButton"),
     clearProxyButton: document.getElementById("clearProxyButton"),
     proxyOutput: document.getElementById("proxyOutput"),
     fetchPayUrlButton: document.getElementById("fetchPayUrlButton"),
+    fetchTokenButton: document.getElementById("fetchTokenButton"),
+    checkoutLinkOnlyButton: document.getElementById("checkoutLinkOnlyButton"),
+    copyCheckoutLinkButton: document.getElementById("copyCheckoutLinkButton"),
+    checkoutRegionSelect: document.getElementById("checkoutRegionSelect"),
     payUrlOutput: document.getElementById("payUrlOutput"),
     cardInput: document.getElementById("cardInput"),
     toggleFillSettingsButton: document.getElementById("toggleFillSettingsButton"),
+    setCountryButton: document.getElementById("setCountryButton"),
     fillCardButton: document.getElementById("fillCardButton"),
     cardPreview: document.getElementById("cardPreview"),
     removeElementSelectorInput: document.getElementById("removeElementSelectorInput"),
     removeElementButton: document.getElementById("removeElementButton"),
     fillSettingsPanel: document.getElementById("fillSettingsPanel"),
     phoneSelectorInput: document.getElementById("phoneSelectorInput"),
+    phoneSelectorAltInput: document.getElementById("phoneSelectorAltInput"),
     cardNumberSelectorInput: document.getElementById("cardNumberSelectorInput"),
+    cardNumberSelectorAltInput: document.getElementById("cardNumberSelectorAltInput"),
     cardExpirySelectorInput: document.getElementById("cardExpirySelectorInput"),
+    cardExpirySelectorAltInput: document.getElementById("cardExpirySelectorAltInput"),
     cardCvvSelectorInput: document.getElementById("cardCvvSelectorInput"),
+    cardCvvSelectorAltInput: document.getElementById("cardCvvSelectorAltInput"),
+    billingNameSelectorInput: document.getElementById("billingNameSelectorInput"),
+    billingNameSelectorAltInput: document.getElementById("billingNameSelectorAltInput"),
     firstNameSelectorInput: document.getElementById("firstNameSelectorInput"),
+    firstNameSelectorAltInput: document.getElementById("firstNameSelectorAltInput"),
     lastNameSelectorInput: document.getElementById("lastNameSelectorInput"),
+    lastNameSelectorAltInput: document.getElementById("lastNameSelectorAltInput"),
     billingLine1SelectorInput: document.getElementById("billingLine1SelectorInput"),
+    billingLine1SelectorAltInput: document.getElementById("billingLine1SelectorAltInput"),
     billingCitySelectorInput: document.getElementById("billingCitySelectorInput"),
+    billingCitySelectorAltInput: document.getElementById("billingCitySelectorAltInput"),
     billingStateSelectorInput: document.getElementById("billingStateSelectorInput"),
+    billingStateSelectorAltInput: document.getElementById("billingStateSelectorAltInput"),
     billingPostalCodeSelectorInput: document.getElementById("billingPostalCodeSelectorInput"),
+    billingPostalCodeSelectorAltInput: document.getElementById("billingPostalCodeSelectorAltInput"),
+    countrySelectorInput: document.getElementById("countrySelectorInput"),
+    countrySelectorAltInput: document.getElementById("countrySelectorAltInput"),
     passwordSelectorInput: document.getElementById("passwordSelectorInput"),
+    passwordSelectorAltInput: document.getElementById("passwordSelectorAltInput"),
     passwordValueInput: document.getElementById("passwordValueInput"),
     resetFillSettingsButton: document.getElementById("resetFillSettingsButton"),
-    fillOutput: document.getElementById("fillOutput")
+    fillOutput: document.getElementById("fillOutput"),
+    accessTokensInput: document.getElementById("accessTokensInput"),
+    exportFormatSelect: document.getElementById("exportFormatSelect"),
+    exportButton: document.getElementById("exportButton"),
+    fetchCurrentTokenButton: document.getElementById("fetchCurrentTokenButton"),
+    exportOutput: document.getElementById("exportOutput")
   };
 
   const state = {
     emails: [],
     selectedEmail: "",
     lastCode: "",
+    phoneKeyInput: "",
+    phoneKey: null,
+    lastPhoneCode: "",
     currentProxy: null,
-    manualProxyText: "",
-    removeElementSelector: "",
+    webshareApiKey: "",
+    proxyProtocol: "http",
+    proxyCountry: "US",
+    checkoutRegion: "ID",
+    lastCheckoutPaymentLink: "",
+    removeElementSelector: DEFAULT_REMOVE_ELEMENT_SELECTOR,
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
     currentTab: null,
-    busy: new Set()
+    busy: new Set(),
+    accessTokens: "",
+    exportFormat: "cpa"
   };
+  let usZip3StateRangesPromise = null;
+
+  function normalizeScriptResults(results) {
+    if (!Array.isArray(results)) {
+      return results === undefined ? [] : [results];
+    }
+    return results.map((item) => (
+      item && Object.prototype.hasOwnProperty.call(item, "result")
+        ? item.result
+        : item
+    ));
+  }
+
+  async function executeScriptFile(tabId, file, options = {}) {
+    if (ext.scripting && typeof ext.scripting.executeScript === "function") {
+      return normalizeScriptResults(await ext.scripting.executeScript({
+        target: { tabId, allFrames: Boolean(options.allFrames) },
+        files: [file]
+      }));
+    }
+
+    return normalizeScriptResults(await ext.tabs.executeScript(tabId, {
+      file,
+      allFrames: Boolean(options.allFrames),
+      runAt: options.runAt || "document_idle"
+    }));
+  }
+
+  async function executeScriptFunction(tabId, func, args = [], options = {}) {
+    if (ext.scripting && typeof ext.scripting.executeScript === "function") {
+      return normalizeScriptResults(await ext.scripting.executeScript({
+        target: { tabId, allFrames: Boolean(options.allFrames) },
+        func,
+        args
+      }));
+    }
+
+    const serializedArgs = JSON.stringify(args);
+    const code = `(${func.toString()})(...${serializedArgs})`;
+    return normalizeScriptResults(await ext.tabs.executeScript(tabId, {
+      code,
+      allFrames: Boolean(options.allFrames),
+      runAt: options.runAt || "document_idle"
+    }));
+  }
 
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
     bindEvents();
+    await ensureUsZip3StateRanges();
     await restoreState();
     await refreshCurrentTab();
     renderEmails();
+    renderPhonePreview();
     renderProxyStatus();
-    renderCardPreview();
+    await renderCardPreview();
   }
 
   function bindEvents() {
+    elements.openChatGptButton.addEventListener("click", openChatGpt);
     elements.refreshTabButton.addEventListener("click", refreshCurrentTab);
     elements.generateEmailsButton.addEventListener("click", generateEmails);
     elements.copyEmailButton.addEventListener("click", copySelectedEmail);
     elements.fetchCodeButton.addEventListener("click", fetchVerificationCode);
     elements.copyCodeButton.addEventListener("click", copyLastCode);
+    elements.phoneKeyInput.addEventListener("input", handlePhoneKeyInput);
+    elements.copyPhoneButton.addEventListener("click", copyPhoneNumber);
+    elements.fetchPhoneCodeButton.addEventListener("click", fetchPhoneVerificationCode);
+    elements.copyPhoneCodeButton.addEventListener("click", copyLastPhoneCode);
     elements.refreshProxyButton.addEventListener("click", refreshProxyStatus);
     elements.getWebshareProxyButton.addEventListener("click", getCurrentWebshareProxy);
     elements.setProxyButton.addEventListener("click", setCurrentProxy);
-    elements.applyManualProxyButton.addEventListener("click", applyManualProxy);
     elements.replaceProxyButton.addEventListener("click", replaceWebshareProxy);
     elements.clearProxyButton.addEventListener("click", clearProxy);
     elements.fetchPayUrlButton.addEventListener("click", fetchPayUrl);
+    elements.fetchTokenButton.addEventListener("click", fetchAndCopyAccessToken);
+    elements.checkoutLinkOnlyButton.addEventListener("click", checkoutLinkOnly);
+    elements.copyCheckoutLinkButton.addEventListener("click", copyCheckoutPaymentLink);
     elements.toggleFillSettingsButton.addEventListener("click", toggleFillSettingsPanel);
     elements.resetFillSettingsButton.addEventListener("click", resetFillSettings);
+    elements.setCountryButton.addEventListener("click", setCountryInCurrentTab);
     elements.fillCardButton.addEventListener("click", fillCardInCurrentTab);
     elements.removeElementButton.addEventListener("click", removeElementInCurrentTab);
-    elements.manualProxyInput.addEventListener("input", () => {
-      state.manualProxyText = elements.manualProxyInput.value;
+    elements.cardPreview.addEventListener("click", handleCardPreviewCopy);
+    elements.webshareApiKeyInput.addEventListener("input", () => {
+      state.webshareApiKey = elements.webshareApiKeyInput.value;
+      persistState();
+    });
+    elements.proxyProtocolSelect.addEventListener("change", () => {
+      state.proxyProtocol = normalizeProxyProtocol(elements.proxyProtocolSelect.value);
+      persistState();
+    });
+    elements.proxyCountrySelect.addEventListener("change", () => {
+      state.proxyCountry = normalizeProxyCountry(elements.proxyCountrySelect.value);
+      elements.proxyCountrySelect.value = state.proxyCountry;
+      persistState();
+    });
+    elements.checkoutRegionSelect.addEventListener("change", () => {
+      state.checkoutRegion = normalizeCheckoutRegion(elements.checkoutRegionSelect.value);
+      elements.checkoutRegionSelect.value = state.checkoutRegion;
       persistState();
     });
     elements.removeElementSelectorInput.addEventListener("input", () => {
@@ -132,24 +252,54 @@
       renderCardPreview();
       persistState();
     });
+    elements.exportButton.addEventListener("click", handleExport);
+    elements.fetchCurrentTokenButton.addEventListener("click", handleFetchCurrentToken);
+    elements.accessTokensInput.addEventListener("input", () => {
+      state.accessTokens = elements.accessTokensInput.value;
+      persistState();
+    });
+    elements.exportFormatSelect.addEventListener("change", () => {
+      state.exportFormat = normalizeExportFormat(elements.exportFormatSelect.value);
+      elements.exportFormatSelect.value = state.exportFormat;
+      persistState();
+    });
     bindFillSettingsInputs();
+  }
+
+  async function openChatGpt() {
+    await ext.tabs.create({ url: "https://chatgpt.com", active: true });
   }
 
   async function restoreState() {
     try {
-      const saved = await chrome.storage.local.get(STORAGE_KEY);
+      const saved = await ext.storage.local.get(STORAGE_KEY);
       const data = saved && saved[STORAGE_KEY] ? saved[STORAGE_KEY] : {};
       state.emails = Array.isArray(data.emails) ? data.emails.filter(Boolean) : [];
       state.selectedEmail = typeof data.selectedEmail === "string" ? data.selectedEmail : "";
       state.lastCode = typeof data.lastCode === "string" ? data.lastCode : "";
+      state.phoneKeyInput = typeof data.phoneKeyInput === "string" ? data.phoneKeyInput : "";
+      state.lastPhoneCode = typeof data.lastPhoneCode === "string" ? data.lastPhoneCode : "";
       state.currentProxy = isRuntimeProxy(data.currentProxy) ? data.currentProxy : null;
-      state.manualProxyText = typeof data.manualProxyText === "string" ? data.manualProxyText : "";
-      state.removeElementSelector = typeof data.removeElementSelector === "string" ? data.removeElementSelector : "";
+      state.webshareApiKey = typeof data.webshareApiKey === "string" ? data.webshareApiKey : "";
+      state.proxyProtocol = normalizeProxyProtocol(data.proxyProtocol);
+      state.proxyCountry = normalizeProxyCountry(data.proxyCountry);
+      state.checkoutRegion = normalizeCheckoutRegion(data.checkoutRegion);
+      state.lastCheckoutPaymentLink = typeof data.lastCheckoutPaymentLink === "string" ? data.lastCheckoutPaymentLink : "";
+      state.removeElementSelector = normalizeRemoveElementSelector(data.removeElementSelector);
       state.fillSettings = sanitizeFillSettings(data.fillSettings);
       state.fillSettingsExpanded = Boolean(data.fillSettingsExpanded);
-      elements.manualProxyInput.value = state.manualProxyText;
+      state.accessTokens = typeof data.accessTokens === "string" ? data.accessTokens : "";
+      state.exportFormat = normalizeExportFormat(data.exportFormat);
+      elements.phoneKeyInput.value = state.phoneKeyInput;
+      elements.webshareApiKeyInput.value = state.webshareApiKey;
+      elements.proxyProtocolSelect.value = state.proxyProtocol;
+      elements.proxyCountrySelect.value = state.proxyCountry;
+      elements.checkoutRegionSelect.value = state.checkoutRegion;
       elements.removeElementSelectorInput.value = state.removeElementSelector;
       elements.cardInput.value = typeof data.cardInput === "string" ? data.cardInput : "";
+      elements.accessTokensInput.value = state.accessTokens;
+      elements.exportFormatSelect.value = state.exportFormat;
+      state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
       renderFillSettings();
     } catch (error) {
       showOutput(elements.codeOutput, "error", `读取本地状态失败：${formatError(error)}`);
@@ -165,27 +315,35 @@
 
   async function persistState() {
     try {
-      await chrome.storage.local.set({
+      await ext.storage.local.set({
         [STORAGE_KEY]: {
           emails: state.emails,
           selectedEmail: state.selectedEmail,
           lastCode: state.lastCode,
+          phoneKeyInput: state.phoneKeyInput,
+          lastPhoneCode: state.lastPhoneCode,
           currentProxy: state.currentProxy,
-          manualProxyText: state.manualProxyText,
+          webshareApiKey: state.webshareApiKey,
+          proxyProtocol: state.proxyProtocol,
+          proxyCountry: state.proxyCountry,
+          checkoutRegion: state.checkoutRegion,
+          lastCheckoutPaymentLink: state.lastCheckoutPaymentLink,
           removeElementSelector: state.removeElementSelector,
           cardInput: elements.cardInput.value,
           fillSettings: state.fillSettings,
-          fillSettingsExpanded: state.fillSettingsExpanded
+          fillSettingsExpanded: state.fillSettingsExpanded,
+          accessTokens: state.accessTokens,
+          exportFormat: state.exportFormat
         }
       });
     } catch (error) {
-      console.warn("Failed to persist side panel state", error);
+      console.warn("Failed to persist sidebar state", error);
     }
   }
 
   async function refreshCurrentTab() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const [tab] = await ext.tabs.query({ active: true, lastFocusedWindow: true });
       state.currentTab = tab || null;
       if (!tab) {
         elements.currentTabText.textContent = "未找到当前标签页";
@@ -332,15 +490,123 @@
     }
   }
 
+  function handlePhoneKeyInput() {
+    state.phoneKeyInput = String(elements.phoneKeyInput.value || "").trim();
+    state.lastPhoneCode = "";
+    try {
+      state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
+      renderPhonePreview();
+      if (state.phoneKeyInput && state.phoneKey) {
+        showOutput(
+          elements.phoneCodeOutput,
+          "success",
+          `已识别手机：${state.phoneKey.phone}\n短信地址：${state.phoneKey.smsUrl}`
+        );
+      } else {
+        elements.phoneCodeOutput.textContent = "";
+        elements.phoneCodeOutput.className = "result-output";
+      }
+    } catch (error) {
+      state.phoneKey = null;
+      renderPhonePreview();
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+    }
+    persistState();
+  }
+
+  async function copyPhoneNumber() {
+    let phoneKey;
+    try {
+      phoneKey = requirePhoneKey();
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+      return;
+    }
+
+    try {
+      await writeClipboard(phoneKey.phone);
+      showOutput(elements.phoneCodeOutput, "success", `已复制手机：${phoneKey.phone}`);
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", `复制手机失败：${formatError(error)}`);
+    }
+  }
+
+  async function fetchPhoneVerificationCode() {
+    let phoneKey;
+    try {
+      phoneKey = requirePhoneKey();
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", formatError(error));
+      return;
+    }
+
+    setBusy("phoneCode", true);
+    showOutput(elements.phoneCodeOutput, "info", `正在获取短信验证码：${phoneKey.phone}`);
+
+    let lastError = "";
+    try {
+      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetch(phoneKey.smsUrl, {
+            method: "GET",
+            cache: "no-store",
+            headers: { Accept: "text/plain,application/json,text/html,*/*" }
+          });
+          const body = await response.text();
+          const code = extractSixDigitCode(body);
+          if (response.ok && code) {
+            state.lastPhoneCode = code;
+            await persistState();
+            showOutput(
+              elements.phoneCodeOutput,
+              "success",
+              `短信验证码：${code}\n手机：${phoneKey.phone}\n来源：${phoneKey.smsUrl}`
+            );
+            return;
+          }
+          lastError = response.ok
+            ? "响应里没有匹配到 6 位验证码"
+            : `HTTP ${response.status} ${body.slice(0, 120)}`;
+        } catch (error) {
+          lastError = formatError(error);
+        }
+
+        if (attempt < POLL_ATTEMPTS) {
+          showOutput(elements.phoneCodeOutput, "info", `第 ${attempt}/${POLL_ATTEMPTS} 次未取到短信码，继续轮询`);
+          await delay(POLL_DELAY_MS);
+        }
+      }
+      showOutput(
+        elements.phoneCodeOutput,
+        "error",
+        `获取短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次：${lastError || "没有匹配到 6 位验证码"}`
+      );
+    } finally {
+      setBusy("phoneCode", false);
+    }
+  }
+
+  async function copyLastPhoneCode() {
+    const code = String(state.lastPhoneCode || "").trim();
+    if (!code) {
+      showOutput(elements.phoneCodeOutput, "error", "请先获取短信验证码");
+      return;
+    }
+    try {
+      await writeClipboard(code);
+      showOutput(elements.phoneCodeOutput, "success", `已复制短信验证码：${code}`);
+    } catch (error) {
+      showOutput(elements.phoneCodeOutput, "error", `复制短信验证码失败：${formatError(error)}`);
+    }
+  }
+
   async function refreshProxyStatus() {
     setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在读取本地代理设置");
+    showOutput(elements.proxyOutput, "info", "正在读取 Chrome 代理状态");
     try {
-      const settings = await requestLocalApi("/api/settings", { method: "GET" });
-      state.currentProxy = isRuntimeProxy(settings.proxy) ? settings.proxy : null;
       renderProxyStatus();
       await persistState();
-      showOutput(elements.proxyOutput, "success", `当前任务代理：${formatProxy(state.currentProxy)}`);
+      showOutput(elements.proxyOutput, "success", `当前 Chrome 代理：${formatProxy(state.currentProxy)}`);
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `读取代理状态失败：${formatError(error)}`);
       renderProxyStatus();
@@ -352,7 +618,7 @@
   async function getCurrentWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在获取当前 Webshare 代理",
-      endpoint: "/api/webshare-proxy/current?prefer_http=1",
+      action: "current",
       successPrefix: "已获取并设置 Chrome 代理"
     });
   }
@@ -360,22 +626,30 @@
   async function replaceWebshareProxy() {
     await fetchAndApplyProxy({
       busyLabel: "正在替换 Webshare 代理",
-      endpoint: "/api/webshare-proxy/replace?prefer_http=1",
+      action: "replace",
       successPrefix: "已替换并设置 Chrome 代理"
     });
   }
 
-  async function fetchAndApplyProxy({ busyLabel, endpoint, successPrefix }) {
+  async function fetchAndApplyProxy({ busyLabel, action, successPrefix }) {
+    const webshareApiKey = requireWebshareApiKey();
     setBusy("proxy", true);
     showOutput(elements.proxyOutput, "info", busyLabel);
     try {
-      const data = await requestLocalApi(endpoint, { method: "POST" });
-      const proxy = requireRuntimeProxy(data.proxy);
+      const proxy = action === "replace"
+        ? await replaceWebshareProxyDirect(webshareApiKey)
+        : await getCurrentWebshareProxyDirect(webshareApiKey);
       await applyChromeProxy(proxy);
+      const ipInfo = await fetchCurrentIpInfoSafely(proxy.host);
+      proxy.ipInfo = ipInfo;
       state.currentProxy = proxy;
       renderProxyStatus();
       await persistState();
-      showOutput(elements.proxyOutput, "success", `${successPrefix}：${formatProxy(proxy)}`);
+      showOutput(
+        elements.proxyOutput,
+        hasIpInfoAddress(ipInfo) ? "success" : "info",
+        `${successPrefix}：${formatProxy(proxy)}\n用户名: ${proxy.username || "-"}\n密码: ${proxy.password || "-"}\n${formatIpInfoForCopy(ipInfo)}`
+      );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `${busyLabel}失败：${formatError(error)}`);
     } finally {
@@ -396,8 +670,14 @@
     showOutput(elements.proxyOutput, "info", "正在设置 Chrome 代理");
     try {
       await applyChromeProxy(state.currentProxy);
+      state.currentProxy.ipInfo = await fetchCurrentIpInfoSafely(state.currentProxy.host);
       renderProxyStatus();
-      showOutput(elements.proxyOutput, "success", `已设置 Chrome 代理：${formatProxy(state.currentProxy)}`);
+      await persistState();
+      showOutput(
+        elements.proxyOutput,
+        hasIpInfoAddress(state.currentProxy.ipInfo) ? "success" : "info",
+        `已设置 Chrome 代理：${formatProxy(state.currentProxy)}\n用户名: ${state.currentProxy.username || "-"}\n密码: ${state.currentProxy.password || "-"}\n${formatIpInfoForCopy(state.currentProxy.ipInfo)}`
+      );
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `设置代理失败：${formatError(error)}`);
     } finally {
@@ -405,59 +685,19 @@
     }
   }
 
-  async function applyManualProxy() {
-    const raw = String(elements.manualProxyInput.value || "").trim();
-    if (!raw) {
-      showOutput(elements.proxyOutput, "error", "请先输入代理链接");
-      return;
-    }
-
-    setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在解析并应用手动代理");
-    try {
-      const proxy = parseManualProxy(raw);
-      await applyChromeProxy(proxy);
-      await requestLocalApi("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({ proxy })
-      });
-      state.currentProxy = proxy;
-      state.manualProxyText = raw;
-      renderProxyStatus();
-      await persistState();
-      showOutput(elements.proxyOutput, "success", `已应用手动代理：${formatProxy(proxy)}`);
-    } catch (error) {
-      showOutput(elements.proxyOutput, "error", `应用手动代理失败：${formatError(error)}`);
-    } finally {
-      setBusy("proxy", false);
-    }
-  }
-
   async function clearProxy() {
     setBusy("proxy", true);
-    showOutput(elements.proxyOutput, "info", "正在清除 Chrome 与本地任务代理");
+    showOutput(elements.proxyOutput, "info", "正在清除 Chrome 代理");
     try {
-      await chrome.proxy.settings.set({
+      await ext.proxy.settings.set({
         scope: "regular",
         value: { mode: "direct" }
       });
-      await chrome.storage.local.remove(PROXY_AUTH_KEY);
-
-      let localClearError = "";
-      try {
-        await requestLocalApi("/api/proxy/clear", { method: "POST" });
-      } catch (error) {
-        localClearError = formatError(error);
-        console.warn("Failed to clear local task proxy", error);
-      }
-
+      await ext.storage.local.remove(PROXY_AUTH_KEY);
       state.currentProxy = null;
       renderProxyStatus();
       await persistState();
-      const message = localClearError
-        ? `已清除 Chrome 代理；本地任务代理清除失败：${localClearError}`
-        : "已清除 Chrome 与本地任务代理";
-      showOutput(elements.proxyOutput, localClearError ? "info" : "success", message);
+      showOutput(elements.proxyOutput, "success", "已清除 Chrome 代理");
     } catch (error) {
       showOutput(elements.proxyOutput, "error", `清除代理失败：${formatError(error)}`);
     } finally {
@@ -467,9 +707,9 @@
 
   async function applyChromeProxy(proxy) {
     const runtimeProxy = requireRuntimeProxy(proxy);
-    const scheme = normalizeChromeProxyScheme(runtimeProxy.type);
+    const proxyType = normalizeChromeProxyScheme(runtimeProxy.type);
 
-    await chrome.storage.local.set({
+    await ext.storage.local.set({
       [PROXY_AUTH_KEY]: {
         enabled: Boolean(runtimeProxy.use_auth && runtimeProxy.username),
         host: runtimeProxy.host,
@@ -479,13 +719,13 @@
       }
     });
 
-    await chrome.proxy.settings.set({
+    await ext.proxy.settings.set({
       scope: "regular",
       value: {
         mode: "fixed_servers",
         rules: {
           singleProxy: {
-            scheme,
+            scheme: proxyType,
             host: runtimeProxy.host,
             port: Number(runtimeProxy.port)
           },
@@ -495,31 +735,18 @@
     });
   }
 
-  function normalizeChromeProxyScheme(type) {
-    const proxyType = String(type || "http").toLowerCase();
-    if (proxyType === "socks") {
+  function normalizeChromeProxyScheme(value) {
+    const scheme = String(value || "http").toLowerCase();
+    if (scheme === "socks5") {
       return "socks5";
     }
-    if (!["http", "https", "socks4", "socks5"].includes(proxyType)) {
-      throw new Error(`Chrome 不支持的代理类型：${type}`);
+    if (scheme === "socks4") {
+      return "socks4";
     }
-    return proxyType;
-  }
-
-  async function requestLocalApi(path, options = {}) {
-    const response = await fetch(`${LOCAL_API_BASE}${path}`, {
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {})
-      },
-      ...options
-    });
-    const data = await readJsonResponse(response, "本地服务");
-    if (!response.ok) {
-      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    if (scheme === "https") {
+      return "https";
     }
-    return data;
+    return "http";
   }
 
   function requireRuntimeProxy(proxy) {
@@ -539,7 +766,242 @@
   }
 
   function renderProxyStatus() {
-    elements.proxyStatus.textContent = formatProxy(state.currentProxy);
+    const proxy = state.currentProxy;
+    if (!isRuntimeProxy(proxy)) {
+      elements.proxyStatus.classList.add("empty");
+      elements.proxyStatus.textContent = "未启用";
+      return;
+    }
+
+    elements.proxyStatus.classList.remove("empty");
+    elements.proxyStatus.textContent = "";
+
+    const rows = [
+      { label: "类型", value: String(proxy.type || "http").toLowerCase() },
+      { label: "地址", value: proxy.host, copyValue: proxy.host },
+      { label: "端口", value: String(proxy.port || "") },
+      { label: "城市", value: String(proxy.city_name || proxy.city || "-") },
+      { label: "国家", value: String(proxy.country_code || proxy.country || "-").toUpperCase() },
+      { label: "用户名", value: proxy.username || "-", copyValue: proxy.username || "" },
+      { label: "密码", value: proxy.password || "-", copyValue: proxy.password || "" },
+      { label: "鉴权", value: "手动输入" }
+    ];
+
+    rows.forEach(({ label, value, copyValue }) => {
+      const row = document.createElement("div");
+      row.className = "preview-row";
+
+      const labelNode = document.createElement("span");
+      labelNode.className = "preview-label";
+      labelNode.textContent = label;
+
+      const valueNode = document.createElement("span");
+      valueNode.className = "preview-value";
+      valueNode.textContent = value;
+
+      row.append(labelNode, valueNode);
+
+      if (copyValue !== undefined) {
+        const copyButton = document.createElement("button");
+        copyButton.className = "preview-copy-button";
+        copyButton.type = "button";
+        copyButton.textContent = "复制";
+        copyButton.disabled = !String(copyValue || "").trim();
+        copyButton.addEventListener("click", async () => {
+          try {
+            await writeClipboard(copyValue);
+            showOutput(elements.proxyOutput, "success", `已复制${label}：${copyValue}`);
+          } catch (error) {
+            showOutput(elements.proxyOutput, "error", `复制${label}失败：${formatError(error)}`);
+          }
+        });
+        row.append(copyButton);
+      }
+
+      elements.proxyStatus.append(row);
+    });
+
+    renderProxyIpInfo(proxy.ipInfo);
+  }
+
+  function renderProxyIpInfo(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo);
+    const titleRow = document.createElement("div");
+    titleRow.className = "preview-row proxy-ip-title-row";
+
+    const labelNode = document.createElement("span");
+    labelNode.className = "preview-label";
+    labelNode.textContent = "IP信息";
+
+    const valueNode = document.createElement("span");
+    valueNode.className = "preview-value";
+    valueNode.textContent = hasIpInfoAddress(normalizedIpInfo)
+      ? "当前出口"
+      : normalizedIpInfo && normalizedIpInfo.error
+        ? "查询失败"
+        : "未查询";
+
+    const copyButton = document.createElement("button");
+    copyButton.className = "preview-copy-button";
+    copyButton.type = "button";
+    copyButton.textContent = "复制";
+    copyButton.disabled = !normalizedIpInfo;
+    copyButton.addEventListener("click", async () => {
+      try {
+        const copyText = formatIpInfoForCopy(normalizedIpInfo);
+        await writeClipboard(copyText);
+        showOutput(elements.proxyOutput, "success", `已复制IP信息：\n${copyText}`);
+      } catch (error) {
+        showOutput(elements.proxyOutput, "error", `复制IP信息失败：${formatError(error)}`);
+      }
+    });
+
+    titleRow.append(labelNode, valueNode, copyButton);
+    elements.proxyStatus.append(titleRow);
+
+    const rows = normalizedIpInfo
+      ? [
+          { label: "address", value: normalizedIpInfo.address },
+          { label: "city", value: normalizedIpInfo.city },
+          { label: "state", value: normalizedIpInfo.state },
+          { label: "邮编", value: normalizedIpInfo.postcode }
+        ]
+      : [
+          { label: "address", value: "-" },
+          { label: "city", value: "-" },
+          { label: "state", value: "-" },
+          { label: "邮编", value: "-" }
+        ];
+
+    rows.forEach(({ label, value }) => {
+      const row = document.createElement("div");
+      row.className = "preview-row proxy-ip-row";
+
+      const rowLabel = document.createElement("span");
+      rowLabel.className = "preview-label";
+      rowLabel.textContent = label;
+
+      const rowValue = document.createElement("span");
+      rowValue.className = "preview-value";
+      rowValue.textContent = value || "-";
+
+      const rowCopyButton = document.createElement("button");
+      rowCopyButton.className = "preview-copy-button";
+      rowCopyButton.type = "button";
+      rowCopyButton.textContent = "复制";
+      rowCopyButton.disabled = !String(value || "").trim() || value === "-";
+      rowCopyButton.addEventListener("click", async () => {
+        try {
+          await writeClipboard(value);
+          showOutput(elements.proxyOutput, "success", `已复制${label}：${value}`);
+        } catch (error) {
+          showOutput(elements.proxyOutput, "error", `复制${label}失败：${formatError(error)}`);
+        }
+      });
+
+      row.append(rowLabel, rowValue, rowCopyButton);
+      elements.proxyStatus.append(row);
+    });
+  }
+
+  async function fetchCurrentIpInfo(ipAddress) {
+    const address = String(ipAddress || "").trim();
+    if (!address) {
+      throw new Error("缺少要查询的 IP 地址");
+    }
+    const apiUrl = `${IP_API_BASE}${encodeURIComponent(address)}`;
+    const payload = await fetchJsonWithTimeout(apiUrl, 12000);
+    if (String(payload.status || "").toLowerCase() !== "success") {
+      throw new Error(payload.message || "IP 查询失败");
+    }
+    const ipInfo = normalizeIpInfo(payload);
+    if (!ipInfo || !ipInfo.address) {
+      throw new Error("响应缺少 IP 地址");
+    }
+    return ipInfo;
+  }
+
+  async function fetchCurrentIpInfoSafely(ipAddress) {
+    try {
+      return await fetchCurrentIpInfo(ipAddress);
+    } catch (error) {
+      return {
+        address: String(ipAddress || "").trim(),
+        city: "",
+        state: "",
+        postcode: "",
+        error: formatError(error)
+      };
+    }
+  }
+
+  async function fetchJsonWithTimeout(url, timeoutMs) {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      const payload = await readJsonResponse(response, "当前 IP 信息");
+      if (!response.ok) {
+        throw new Error(payload.reason || payload.error || payload.message || `HTTP ${response.status}`);
+      }
+      return payload;
+    } finally {
+      clearTimeout(timerId);
+    }
+  }
+
+  function normalizeIpInfo(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const address = String(payload.address || payload.query || payload.ip || "").trim();
+    const city = String(payload.city || payload.city_name || "").trim();
+    const state = String(
+      payload.state ||
+      payload.state_code ||
+      payload.region ||
+      payload.region_code ||
+      payload.regionName ||
+      payload.region_name ||
+      ""
+    ).trim();
+    const postcode = String(payload.postcode || payload.zip || payload.postal || "").trim();
+    const error = payload.error || String(payload.status || "").toLowerCase() === "fail"
+      ? String(payload.reason || payload.message || payload.error || "").trim()
+      : "";
+    if (!address && !city && !state && !postcode && !error) {
+      return null;
+    }
+    return {
+      address,
+      city,
+      state,
+      postcode,
+      error
+    };
+  }
+
+  function formatIpInfoForCopy(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo) || {};
+    const lines = [
+      `address: ${normalizedIpInfo.address || "-"}`,
+      `city: ${normalizedIpInfo.city || "-"}`,
+      `state: ${normalizedIpInfo.state || "-"}`,
+      `邮编: ${normalizedIpInfo.postcode || "-"}`
+    ];
+    if (normalizedIpInfo.error) {
+      lines.push(`error: ${normalizedIpInfo.error}`);
+    }
+    return lines.join("\n");
+  }
+
+  function hasIpInfoAddress(ipInfo) {
+    const normalizedIpInfo = normalizeIpInfo(ipInfo);
+    return Boolean(normalizedIpInfo && normalizedIpInfo.address);
   }
 
   function formatProxy(proxy) {
@@ -551,38 +1013,176 @@
     return `${type}://${proxy.host}:${proxy.port}${auth}`;
   }
 
-  function parseManualProxy(raw) {
-    let parsed;
-    try {
-      parsed = new URL(raw);
-    } catch (error) {
-      throw new Error("代理格式无效，请使用 http://username:password@host:port");
+  function requireWebshareApiKey() {
+    const apiKey = String(elements.webshareApiKeyInput.value || "").trim();
+    if (!apiKey) {
+      throw new Error("请先输入 Webshare API Key");
+    }
+    state.webshareApiKey = apiKey;
+    return apiKey;
+  }
+
+  async function getCurrentWebshareProxyDirect(apiKey) {
+    const items = await fetchWebshareProxyList(apiKey);
+    const proxy = mapWebshareItemToProxy(items[0], state.proxyProtocol);
+    return requireRuntimeProxy(proxy);
+  }
+
+  async function replaceWebshareProxyDirect(apiKey) {
+    const currentItems = await fetchWebshareProxyList(apiKey);
+    const currentProxy = mapWebshareItemToProxy(currentItems[0], state.proxyProtocol);
+    const response = await fetch(WEBSHARE_REPLACE_API, {
+      method: "POST",
+      headers: buildWebshareHeaders(apiKey),
+      body: JSON.stringify({
+        to_replace: { type: "ip_address", ip_addresses: [currentProxy.host] },
+        replace_with: [{ type: "country", country_code: state.proxyCountry, count: 1 }],
+        dry_run: false
+      })
+    });
+    const payload = await readJsonResponse(response, "Webshare 替换接口");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
     }
 
-    const protocol = String(parsed.protocol || "").replace(/:$/, "").toLowerCase();
-    if (!["http", "https", "socks", "socks4", "socks5"].includes(protocol)) {
-      throw new Error(`不支持的代理协议：${protocol || "unknown"}`);
+    const replacementId = String(
+      payload.id ||
+      payload.uuid ||
+      payload.replacement_id ||
+      ((payload.data || {}).id) ||
+      ((payload.data || {}).uuid) ||
+      ((payload.data || {}).replacement_id) ||
+      ""
+    ).trim();
+    if (!replacementId) {
+      throw new Error("Webshare 替换响应缺少任务 ID");
     }
 
-    const host = String(parsed.hostname || "").trim();
-    const port = Number(parsed.port || 0);
-    if (!host || port <= 0) {
-      throw new Error("代理缺少有效的 host 或 port");
+    const deadline = Date.now() + 30000;
+    let lastStatus = normalizeWebshareStatus(payload);
+    while (Date.now() < deadline) {
+      if (isWebshareTerminalSuccess(lastStatus)) {
+        break;
+      }
+      if (isWebshareTerminalFailure(lastStatus)) {
+        throw new Error(`Webshare 代理替换失败: status=${lastStatus || "unknown"}`);
+      }
+
+      await delay(1200);
+      const detailResponse = await fetch(`${WEBSHARE_REPLACE_API}${replacementId}/`, {
+        method: "GET",
+        headers: buildWebshareHeaders(apiKey)
+      });
+      const detailPayload = await readJsonResponse(detailResponse, "Webshare 替换查询接口");
+      if (!detailResponse.ok) {
+        throw new Error(detailPayload.detail || detailPayload.error || detailPayload.message || `HTTP ${detailResponse.status}`);
+      }
+      lastStatus = normalizeWebshareStatus(detailPayload);
     }
 
-    const username = decodeURIComponent(parsed.username || "");
-    const password = decodeURIComponent(parsed.password || "");
-    const useAuth = Boolean(username);
+    if (!isWebshareTerminalSuccess(lastStatus)) {
+      throw new Error(`Webshare 代理替换超时: status=${lastStatus || "unknown"}`);
+    }
 
+    return getCurrentWebshareProxyDirect(apiKey);
+  }
+
+  async function fetchWebshareProxyList(apiKey) {
+    const response = await fetch(`${WEBSHARE_LIST_API}?mode=direct&page=1&page_size=25`, {
+      method: "GET",
+      headers: buildWebshareHeaders(apiKey),
+      cache: "no-store"
+    });
+    const payload = await readJsonResponse(response, "Webshare 代理列表");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
+    }
+    const items = extractWebshareItems(payload);
+    if (!items.length) {
+      throw new Error("Webshare 代理列表为空");
+    }
+    return items;
+  }
+
+  function buildWebshareHeaders(apiKey) {
+    return {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Token ${apiKey}`
+    };
+  }
+
+  function extractWebshareItems(payload) {
+    let rawItems = payload && payload.results;
+    if (rawItems === undefined || rawItems === null) {
+      rawItems = (payload && (payload.items || payload.data)) || [];
+    }
+    if (rawItems && typeof rawItems === "object" && !Array.isArray(rawItems)) {
+      rawItems = rawItems.results || rawItems.items || [];
+    }
+    return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
+  }
+
+  function mapWebshareItemToProxy(item, protocol) {
+    if (!item || typeof item !== "object") {
+      throw new Error("Webshare 代理数据无效");
+    }
+    const host = String(item.proxy_address || item.host || item.ip || item.ip_address || "").trim();
+    if (!host) {
+      throw new Error("Webshare 代理缺少 host");
+    }
+    const portValue = item.port || 0;
+    const port = Number(portValue || 0);
+    if (!port || port <= 0) {
+      throw new Error("Webshare 代理缺少有效的 port");
+    }
+    const username = String(item.username || item.user || "");
+    const password = String(item.password || "");
     return {
       enabled: true,
-      type: protocol,
+      type: normalizeProxyProtocol(protocol),
       host,
       port,
-      use_auth: useAuth,
-      username: useAuth ? username : "",
-      password: useAuth ? password : ""
+      city_name: String(item.city_name || item.city || ""),
+      country_code: String(item.country_code || item.country || "").toUpperCase(),
+      use_auth: Boolean(username),
+      username: username || "",
+      password: username ? password : ""
     };
+  }
+
+  function normalizeProxyProtocol(value) {
+    return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
+  }
+
+  function normalizeProxyCountry(value) {
+    const country = String(value || "").trim().toUpperCase();
+    return country === "JP" ? "JP" : "US";
+  }
+
+  function normalizeCheckoutRegion(value) {
+    const region = String(value || "").trim().toUpperCase();
+    return region === "IE" ? "IE" : "ID";
+  }
+
+  function normalizeExportFormat(value) {
+    const format = String(value || "").trim().toLowerCase();
+    return format === "sub2api" ? "sub2api" : "cpa";
+  }
+
+  function normalizeWebshareStatus(payload) {
+    return String(
+      (payload && (payload.state || payload.status)) ||
+      ((payload && payload.data && (payload.data.state || payload.data.status)) || "")
+    ).trim().toLowerCase();
+  }
+
+  function isWebshareTerminalSuccess(status) {
+    return ["completed", "complete", "succeeded", "success", "done"].includes(String(status || "").toLowerCase());
+  }
+
+  function isWebshareTerminalFailure(status) {
+    return ["failed", "failure", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
   }
 
   async function fetchPayUrl() {
@@ -595,7 +1195,7 @@
       showOutput(elements.payUrlOutput, "info", "已读取 accessToken，正在请求 PayURL");
       const payUrl = await requestPayUrl(accessToken);
       showOutput(elements.payUrlOutput, "success", `PayURL：${payUrl}`);
-      await chrome.tabs.create({ url: payUrl, active: true });
+      await ext.tabs.create({ url: payUrl, active: true });
     } catch (error) {
       showOutput(elements.payUrlOutput, "error", `获取 PayURL 失败：${formatError(error)}`);
     } finally {
@@ -603,13 +1203,167 @@
     }
   }
 
+  async function fetchAndCopyAccessToken() {
+    setBusy("token", true);
+    showOutput(elements.payUrlOutput, "info", "正在读取 ChatGPT accessToken");
+
+    try {
+      const tab = await requireCurrentTab("chatgpt.com");
+      const accessToken = await fetchAccessTokenFromTab(tab.id);
+      await writeClipboard(accessToken);
+      console.log("accessToken:", accessToken);
+      showOutput(elements.payUrlOutput, "success", `accessToken 已复制：${accessToken}`);
+    } catch (error) {
+      console.log("accessToken: null");
+      showOutput(elements.payUrlOutput, "error", `获取 accessToken 失败：${formatError(error)}`);
+    } finally {
+      setBusy("token", false);
+    }
+  }
+
+  async function checkoutLinkOnly() {
+    setBusy("checkoutLink", true);
+    showOutput(elements.payUrlOutput, "info", "正在请求 ChatGPT Checkout 链接");
+
+    try {
+      const tab = await requireCurrentTab("chatgpt.com");
+      const result = await runCheckoutLinkOnlyInTab(tab.id);
+      if (!result || !result.ok) {
+        throw new Error((result && (result.error || result.detail)) || "checkout 请求失败");
+      }
+
+      console.log("accessToken:", result.accessToken);
+      console.log("paymentLink:", result.paymentLink);
+      const paymentLink = String(result.paymentLink || "").trim();
+      state.lastCheckoutPaymentLink = paymentLink;
+      await persistState();
+
+      let copyStatus = "已复制";
+      try {
+        await writeClipboard(paymentLink);
+      } catch (error) {
+        copyStatus = `复制失败：${formatError(error)}`;
+      }
+
+      await ext.tabs.create({ url: paymentLink, active: true });
+      showOutput(elements.payUrlOutput, "success", `paymentLink：${paymentLink}\n已打开，${copyStatus}`);
+    } catch (error) {
+      console.log("accessToken: null");
+      console.log("paymentLink: null");
+      showOutput(elements.payUrlOutput, "error", `获取 Checkout 链接失败：${formatError(error)}`);
+    } finally {
+      setBusy("checkoutLink", false);
+    }
+  }
+
+  async function copyCheckoutPaymentLink() {
+    const paymentLink = String(state.lastCheckoutPaymentLink || "").trim();
+    if (!paymentLink) {
+      showOutput(elements.payUrlOutput, "error", "请先获取 Checkout 链接");
+      return;
+    }
+
+    try {
+      await writeClipboard(paymentLink);
+      showOutput(elements.payUrlOutput, "success", `已复制 Checkout 链接：${paymentLink}`);
+    } catch (error) {
+      showOutput(elements.payUrlOutput, "error", `复制 Checkout 链接失败：${formatError(error)}`);
+    }
+  }
+
+  async function runCheckoutLinkOnlyInTab(tabId) {
+    const checkoutRegion = state.checkoutRegion || "ID";
+    const results = await executeScriptFunction(
+      tabId,
+      requestChatGptCheckoutLinkOnly,
+      [checkoutRegion],
+      { allFrames: false, runAt: "document_idle" }
+    );
+    return Array.isArray(results) ? results[0] : results;
+  }
+
+  async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
+    try {
+      const session = await fetch("https://chatgpt.com/api/auth/session", {
+        cache: "no-store",
+        credentials: "include"
+      }).then((response) => response.json());
+      const accessToken = session && session.accessToken;
+      if (!accessToken) {
+        console.log("accessToken: null");
+        return {
+          ok: false,
+          accessToken: "",
+          paymentLink: "",
+          error: "accessToken: null"
+        };
+      }
+
+      const regionConfig = {
+        ID: { country: "ID", currency: "IDR" },
+        IE: { country: "IE", currency: "EUR" }
+      };
+      const config = regionConfig[checkoutRegion] || regionConfig.ID;
+
+      const payload = {
+        plan_name: "chatgptplusplan",
+        billing_details: {
+          country: config.country,
+          currency: config.currency
+        },
+        cancel_url: "https://chatgpt.com/#pricing",
+        promo_campaign: {
+          promo_campaign_id: "plus-1-month-free",
+          is_coupon_from_query_param: false
+        },
+        checkout_ui_mode: "hosted"
+      };
+
+      const response = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      const paymentLink = data && (data.url || data.stripe_hosted_url || data.checkout_url) || null;
+
+      console.log("accessToken:", accessToken);
+      console.log("paymentLink:", paymentLink);
+
+      return {
+        ok: response.ok && Boolean(paymentLink),
+        status: response.status,
+        accessToken,
+        paymentLink,
+        error: response.ok ? "" : `HTTP ${response.status}`,
+        detail: paymentLink ? "" : "paymentLink: null"
+      };
+    } catch (error) {
+      console.log("accessToken: null");
+      console.log("paymentLink: null");
+      return {
+        ok: false,
+        accessToken: "",
+        paymentLink: "",
+        error: error && error.message ? error.message : "checkout_fetch_failed"
+      };
+    }
+  }
+
   async function fetchAccessTokenFromTab(tabId) {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: readChatGptSession
+    if (!tabId) {
+      const tab = await requireCurrentTab("chatgpt.com");
+      tabId = tab.id;
+    }
+    const results = await executeScriptFunction(tabId, readChatGptSession, [], {
+      allFrames: false,
+      runAt: "document_idle"
     });
-    const result = Array.isArray(results) && results[0] ? results[0].result : null;
+    const result = Array.isArray(results) ? results[0] : results;
     if (!result || !result.ok) {
       throw new Error((result && (result.error || result.detail)) || "session 接口返回异常");
     }
@@ -685,38 +1439,40 @@
   async function fillCardInCurrentTab() {
     let card;
     try {
-      card = parseCardInput(elements.cardInput.value);
+      card = await parseCardInput(elements.cardInput.value);
     } catch (error) {
       showOutput(elements.fillOutput, "error", formatError(error));
-      renderCardPreview(null);
+      await renderCardPreview(null);
       return;
     }
 
-    renderCardPreview(card);
+    await renderCardPreview(card);
     setBusy("fill", true);
     showOutput(elements.fillOutput, "info", "正在填充当前支付页面");
 
     try {
       const tab = await requireCurrentTab();
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        files: ["content-script.js"]
+      await executeScriptFile(tab.id, "content-script.js", {
+        allFrames: true,
+        runAt: "document_idle"
       });
       const payload = {
         card,
+        phone: getFillPhoneNumber(card),
         settings: state.fillSettings
       };
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        func: (injectedPayload) => {
+      const results = await executeScriptFunction(
+        tab.id,
+        (injectedPayload) => {
           if (typeof window.__gptAutoRegisterFillForm !== "function") {
             return null;
           }
           return window.__gptAutoRegisterFillForm(injectedPayload);
         },
-        args: [payload]
-      });
-      const summary = summarizeFillResults(results.map((item) => item.result));
+        [payload],
+        { allFrames: true, runAt: "document_idle" }
+      );
+      const summary = summarizeFillResults(results);
       if (!summary.success) {
         throw new Error(summary.message);
       }
@@ -726,6 +1482,53 @@
       showOutput(elements.fillOutput, "error", `填充失败：${formatError(error)}`);
     } finally {
       setBusy("fill", false);
+    }
+  }
+
+  async function setCountryInCurrentTab() {
+    let country = "US";
+    if (elements.cardInput.value.trim()) {
+      try {
+        country = (await parseCardInput(elements.cardInput.value)).country || "US";
+      } catch (error) {
+        country = "US";
+      }
+    }
+
+    setBusy("country", true);
+    showOutput(elements.fillOutput, "info", `正在设置 Country：${country}`);
+
+    try {
+      const tab = await requireCurrentTab();
+      await executeScriptFile(tab.id, "content-script.js", {
+        allFrames: true,
+        runAt: "document_idle"
+      });
+      const payload = {
+        country,
+        settings: state.fillSettings
+      };
+      const results = await executeScriptFunction(
+        tab.id,
+        (injectedPayload) => {
+          if (typeof window.__gptAutoRegisterSetCountry !== "function") {
+            return null;
+          }
+          return window.__gptAutoRegisterSetCountry(injectedPayload);
+        },
+        [payload],
+        { allFrames: true, runAt: "document_idle" }
+      );
+      const summary = summarizeFillResults(results);
+      if (!summary.success) {
+        throw new Error(summary.message);
+      }
+      showOutput(elements.fillOutput, "success", `Country 已设置为 ${country}`);
+      await persistState();
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `设置 Country 失败：${formatError(error)}`);
+    } finally {
+      setBusy("country", false);
     }
   }
 
@@ -742,21 +1545,22 @@
 
     try {
       const tab = await requireCurrentTab();
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        files: ["content-script.js"]
+      await executeScriptFile(tab.id, "content-script.js", {
+        allFrames: true,
+        runAt: "document_idle"
       });
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
-        func: (injectedPayload) => {
+      const results = await executeScriptFunction(
+        tab.id,
+        (injectedPayload) => {
           if (typeof window.__gptAutoRegisterRemoveElement !== "function") {
             return null;
           }
           return window.__gptAutoRegisterRemoveElement(injectedPayload);
         },
-        args: [{ selector }]
-      });
-      const summary = summarizeRemoveElementResults(results.map((item) => item.result), selector);
+        [{ selector }],
+        { allFrames: true, runAt: "document_idle" }
+      );
+      const summary = summarizeRemoveElementResults(results, selector);
       if (!summary.success) {
         throw new Error(summary.message);
       }
@@ -769,52 +1573,44 @@
     }
   }
 
-  function parseCardInput(rawInput) {
+  async function parseCardInput(rawInput) {
     const text = String(rawInput || "").trim();
     const parts = text.split("----").map((part) => part.trim());
-    if (parts.length !== 7) {
-      throw new Error("卡片格式错误，必须是 card----年/月----cvv----phone----url----name----address,city state postcode,US");
+    if (parts.length !== 6 && parts.length !== 7) {
+      throw new Error("卡片格式错误，必须是 card----年/月----cvv----url----name----address,city postcode,US");
     }
 
-    const [card, expiry, cvv, phone, url, name, addressBlob] = parts;
-    const expiryParts = expiry.split("/", 2).map((part) => part.trim());
-    if (expiryParts.length !== 2 || !expiryParts[0] || !expiryParts[1]) {
-      throw new Error("年/月格式错误");
-    }
-    const [year, month] = expiryParts;
-    const addressParts = rsplit(addressBlob, ",", 2);
-    const normalizedAddressParts = addressParts.map((part) => part.trim());
-    if (normalizedAddressParts.length !== 3) {
-      throw new Error("地址格式错误，必须是 address,city state postcode,US");
-    }
-    const [address, cityStatePostcode, country] = normalizedAddressParts;
-    const cityStatePostcodeParts = cityStatePostcode.split(/\s+/);
-    if (cityStatePostcodeParts.length < 3) {
-      throw new Error("city state postcode 格式错误");
-    }
-    const postcode = cityStatePostcodeParts.pop().trim();
-    const stateName = cityStatePostcodeParts.pop().trim();
-    const city = cityStatePostcodeParts.join(" ").trim();
-    if (!/^[A-Za-z]{2}$/.test(stateName)) {
-      throw new Error("city state postcode 格式错误");
-    }
+    const hasEmbeddedPhone = parts.length === 7;
+    const [card, expiry, cvv] = parts;
+    const phone = hasEmbeddedPhone ? parts[3] : "";
+    const url = hasEmbeddedPhone ? parts[4] : parts[3];
+    const name = hasEmbeddedPhone ? parts[5] : parts[4];
+    const addressBlob = hasEmbeddedPhone ? parts[6] : parts[5];
+    const normalizedCard = String(card || "").replace(/\s+/g, "");
+    const expiryInfo = parseExpiry(expiry);
+    const addressInfo = await parseAddressBlob(addressBlob);
+    const firstName = extractFirstName(name);
+    const lastName = extractLastName(name);
+    const billingName = [firstName, lastName].filter(Boolean).join(" ");
 
     const parsed = {
-      card,
-      year,
-      month,
+      card: normalizedCard,
+      year: expiryInfo.year,
+      month: expiryInfo.month,
       cvv,
       phone: normalizeUsPhone(phone),
       url,
       name,
-      firstName: extractFirstName(name),
-      lastName: extractLastName(name),
-      address,
-      city,
-      state: stateName,
-      postcode,
-      country,
-      expiryInput: `${String(month).padStart(2, "0")}${String(year).slice(-2)}`
+      billingName,
+      firstName,
+      lastName,
+      address: addressInfo.address,
+      city: addressInfo.city,
+      state: addressInfo.state,
+      postcode: addressInfo.postcode,
+      country: addressInfo.country,
+      expiryDisplay: expiryInfo.display,
+      expiryInput: expiryInfo.input
     };
 
     const required = ["card", "year", "month", "cvv", "name", "address", "city", "state", "postcode"];
@@ -834,11 +1630,11 @@
     return [head].concat(parts.slice(parts.length - limit));
   }
 
-  function renderCardPreview(card) {
+  async function renderCardPreview(card) {
     let parsed = card;
     if (!parsed) {
       try {
-        parsed = elements.cardInput.value.trim() ? parseCardInput(elements.cardInput.value) : null;
+        parsed = elements.cardInput.value.trim() ? await parseCardInput(elements.cardInput.value) : null;
       } catch (error) {
         parsed = null;
       }
@@ -851,12 +1647,71 @@
     }
 
     [
-      ["卡号", maskCard(parsed.card)],
-      ["有效期", parsed.expiryInput],
+      ["卡号", parsed.card],
+      ["有效期", parsed.expiryDisplay],
       ["CVV", parsed.cvv],
-      ["手机", parsed.phone],
-      ["姓名", parsed.name],
-      ["地址", `${parsed.address}, ${parsed.city} ${parsed.state} ${parsed.postcode}, ${parsed.country}`]
+      ["Billing Name", parsed.billingName],
+      ["First Name", parsed.firstName],
+      ["Last Name", parsed.lastName],
+      ["Address", parsed.address],
+      ["City", parsed.city],
+      ["State", parsed.state],
+      ["Postcode", parsed.postcode],
+      ["Country", parsed.country]
+    ].forEach(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "preview-row";
+      const labelNode = document.createElement("span");
+      labelNode.className = "preview-label";
+      labelNode.textContent = label;
+      const valueNode = document.createElement("span");
+      valueNode.className = "preview-value";
+      valueNode.textContent = value;
+      const copyButton = document.createElement("button");
+      copyButton.className = "preview-copy-button";
+      copyButton.type = "button";
+      copyButton.textContent = "复制";
+      copyButton.dataset.copyLabel = label;
+      copyButton.dataset.copyValue = String(value || "");
+      copyButton.disabled = !String(value || "").trim();
+      row.append(labelNode, valueNode, copyButton);
+      elements.cardPreview.append(row);
+    });
+  }
+
+  async function handleCardPreviewCopy(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest(".preview-copy-button");
+    if (!button) {
+      return;
+    }
+    const value = String(button.dataset.copyValue || "");
+    const label = String(button.dataset.copyLabel || "字段");
+    if (!value.trim()) {
+      return;
+    }
+    try {
+      await writeClipboard(value);
+      showOutput(elements.fillOutput, "success", `已复制${label}：${value}`);
+    } catch (error) {
+      showOutput(elements.fillOutput, "error", `复制${label}失败：${formatError(error)}`);
+    }
+  }
+
+  function renderPhonePreview() {
+    const phoneKey = state.phoneKey;
+    elements.phonePreview.textContent = "";
+    elements.phonePreview.classList.toggle("visible", Boolean(phoneKey));
+    if (!phoneKey) {
+      return;
+    }
+
+    [
+      ["手机", phoneKey.phone],
+      ["短信地址", phoneKey.smsUrl]
     ].forEach(([label, value]) => {
       const row = document.createElement("div");
       row.className = "preview-row";
@@ -867,7 +1722,7 @@
       valueNode.className = "preview-value";
       valueNode.textContent = value;
       row.append(labelNode, valueNode);
-      elements.cardPreview.append(row);
+      elements.phonePreview.append(row);
     });
   }
 
@@ -885,23 +1740,44 @@
 
   function bindFillSettingsInputs() {
     const entries = [
-      ["phoneSelectorInput", "phoneSelector"],
-      ["cardNumberSelectorInput", "cardNumberSelector"],
-      ["cardExpirySelectorInput", "cardExpirySelector"],
-      ["cardCvvSelectorInput", "cardCvvSelector"],
-      ["firstNameSelectorInput", "firstNameSelector"],
-      ["lastNameSelectorInput", "lastNameSelector"],
-      ["billingLine1SelectorInput", "billingLine1Selector"],
-      ["billingCitySelectorInput", "billingCitySelector"],
-      ["billingStateSelectorInput", "billingStateSelector"],
-      ["billingPostalCodeSelectorInput", "billingPostalCodeSelector"],
-      ["passwordSelectorInput", "passwordSelector"],
+      ["phoneSelectorInput", "phoneSelector", 0],
+      ["phoneSelectorAltInput", "phoneSelector", 1],
+      ["cardNumberSelectorInput", "cardNumberSelector", 0],
+      ["cardNumberSelectorAltInput", "cardNumberSelector", 1],
+      ["cardExpirySelectorInput", "cardExpirySelector", 0],
+      ["cardExpirySelectorAltInput", "cardExpirySelector", 1],
+      ["cardCvvSelectorInput", "cardCvvSelector", 0],
+      ["cardCvvSelectorAltInput", "cardCvvSelector", 1],
+      ["billingNameSelectorInput", "billingNameSelector", 0],
+      ["billingNameSelectorAltInput", "billingNameSelector", 1],
+      ["firstNameSelectorInput", "firstNameSelector", 0],
+      ["firstNameSelectorAltInput", "firstNameSelector", 1],
+      ["lastNameSelectorInput", "lastNameSelector", 0],
+      ["lastNameSelectorAltInput", "lastNameSelector", 1],
+      ["billingLine1SelectorInput", "billingLine1Selector", 0],
+      ["billingLine1SelectorAltInput", "billingLine1Selector", 1],
+      ["billingCitySelectorInput", "billingCitySelector", 0],
+      ["billingCitySelectorAltInput", "billingCitySelector", 1],
+      ["billingStateSelectorInput", "billingStateSelector", 0],
+      ["billingStateSelectorAltInput", "billingStateSelector", 1],
+      ["billingPostalCodeSelectorInput", "billingPostalCodeSelector", 0],
+      ["billingPostalCodeSelectorAltInput", "billingPostalCodeSelector", 1],
+      ["countrySelectorInput", "countrySelector", 0],
+      ["countrySelectorAltInput", "countrySelector", 1],
+      ["passwordSelectorInput", "passwordSelector", 0],
+      ["passwordSelectorAltInput", "passwordSelector", 1],
       ["passwordValueInput", "passwordValue"]
     ];
 
-    entries.forEach(([elementKey, stateKey]) => {
+    entries.forEach(([elementKey, stateKey, selectorIndex]) => {
       elements[elementKey].addEventListener("input", () => {
-        state.fillSettings[stateKey] = String(elements[elementKey].value || "").trim();
+        if (typeof selectorIndex === "number") {
+          const nextSelectors = normalizeSelectorList(state.fillSettings[stateKey], DEFAULT_FILL_SETTINGS[stateKey]);
+          nextSelectors[selectorIndex] = String(elements[elementKey].value || "").trim();
+          state.fillSettings[stateKey] = nextSelectors;
+        } else {
+          state.fillSettings[stateKey] = String(elements[elementKey].value || "").trim();
+        }
         persistState();
       });
     });
@@ -926,17 +1802,32 @@
     elements.fillSettingsPanel.hidden = !state.fillSettingsExpanded;
     elements.toggleFillSettingsButton.setAttribute("aria-expanded", String(state.fillSettingsExpanded));
     elements.toggleFillSettingsButton.textContent = state.fillSettingsExpanded ? "收起" : "设置";
-    elements.phoneSelectorInput.value = settings.phoneSelector;
-    elements.cardNumberSelectorInput.value = settings.cardNumberSelector;
-    elements.cardExpirySelectorInput.value = settings.cardExpirySelector;
-    elements.cardCvvSelectorInput.value = settings.cardCvvSelector;
-    elements.firstNameSelectorInput.value = settings.firstNameSelector;
-    elements.lastNameSelectorInput.value = settings.lastNameSelector;
-    elements.billingLine1SelectorInput.value = settings.billingLine1Selector;
-    elements.billingCitySelectorInput.value = settings.billingCitySelector;
-    elements.billingStateSelectorInput.value = settings.billingStateSelector;
-    elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector;
-    elements.passwordSelectorInput.value = settings.passwordSelector;
+    elements.phoneSelectorInput.value = settings.phoneSelector[0];
+    elements.phoneSelectorAltInput.value = settings.phoneSelector[1];
+    elements.cardNumberSelectorInput.value = settings.cardNumberSelector[0];
+    elements.cardNumberSelectorAltInput.value = settings.cardNumberSelector[1];
+    elements.cardExpirySelectorInput.value = settings.cardExpirySelector[0];
+    elements.cardExpirySelectorAltInput.value = settings.cardExpirySelector[1];
+    elements.cardCvvSelectorInput.value = settings.cardCvvSelector[0];
+    elements.cardCvvSelectorAltInput.value = settings.cardCvvSelector[1];
+    elements.billingNameSelectorInput.value = settings.billingNameSelector[0];
+    elements.billingNameSelectorAltInput.value = settings.billingNameSelector[1];
+    elements.firstNameSelectorInput.value = settings.firstNameSelector[0];
+    elements.firstNameSelectorAltInput.value = settings.firstNameSelector[1];
+    elements.lastNameSelectorInput.value = settings.lastNameSelector[0];
+    elements.lastNameSelectorAltInput.value = settings.lastNameSelector[1];
+    elements.billingLine1SelectorInput.value = settings.billingLine1Selector[0];
+    elements.billingLine1SelectorAltInput.value = settings.billingLine1Selector[1];
+    elements.billingCitySelectorInput.value = settings.billingCitySelector[0];
+    elements.billingCitySelectorAltInput.value = settings.billingCitySelector[1];
+    elements.billingStateSelectorInput.value = settings.billingStateSelector[0];
+    elements.billingStateSelectorAltInput.value = settings.billingStateSelector[1];
+    elements.billingPostalCodeSelectorInput.value = settings.billingPostalCodeSelector[0];
+    elements.billingPostalCodeSelectorAltInput.value = settings.billingPostalCodeSelector[1];
+    elements.countrySelectorInput.value = settings.countrySelector[0];
+    elements.countrySelectorAltInput.value = settings.countrySelector[1];
+    elements.passwordSelectorInput.value = settings.passwordSelector[0];
+    elements.passwordSelectorAltInput.value = settings.passwordSelector[1];
     elements.passwordValueInput.value = settings.passwordValue;
   }
 
@@ -947,17 +1838,19 @@
   function sanitizeFillSettings(raw) {
     const input = raw && typeof raw === "object" ? raw : {};
     return {
-      phoneSelector: normalizeSelector(input.phoneSelector, DEFAULT_FILL_SETTINGS.phoneSelector),
-      cardNumberSelector: normalizeSelector(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
-      cardExpirySelector: normalizeSelector(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
-      cardCvvSelector: normalizeSelector(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
-      firstNameSelector: normalizeSelector(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
-      lastNameSelector: normalizeSelector(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
-      billingLine1Selector: normalizeSelector(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
-      billingCitySelector: normalizeSelector(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
-      billingStateSelector: normalizeSelector(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
-      billingPostalCodeSelector: normalizeSelector(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
-      passwordSelector: normalizeSelector(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
+      phoneSelector: normalizeSelectorList(input.phoneSelector, DEFAULT_FILL_SETTINGS.phoneSelector),
+      cardNumberSelector: normalizeSelectorList(input.cardNumberSelector, DEFAULT_FILL_SETTINGS.cardNumberSelector),
+      cardExpirySelector: normalizeSelectorList(input.cardExpirySelector, DEFAULT_FILL_SETTINGS.cardExpirySelector),
+      cardCvvSelector: normalizeSelectorList(input.cardCvvSelector, DEFAULT_FILL_SETTINGS.cardCvvSelector),
+      billingNameSelector: normalizeSelectorList(input.billingNameSelector, DEFAULT_FILL_SETTINGS.billingNameSelector),
+      firstNameSelector: normalizeSelectorList(input.firstNameSelector, DEFAULT_FILL_SETTINGS.firstNameSelector),
+      lastNameSelector: normalizeSelectorList(input.lastNameSelector, DEFAULT_FILL_SETTINGS.lastNameSelector),
+      billingLine1Selector: normalizeSelectorList(input.billingLine1Selector, DEFAULT_FILL_SETTINGS.billingLine1Selector),
+      billingCitySelector: normalizeSelectorList(input.billingCitySelector, DEFAULT_FILL_SETTINGS.billingCitySelector),
+      billingStateSelector: normalizeSelectorList(input.billingStateSelector, DEFAULT_FILL_SETTINGS.billingStateSelector),
+      billingPostalCodeSelector: normalizeSelectorList(input.billingPostalCodeSelector, DEFAULT_FILL_SETTINGS.billingPostalCodeSelector),
+      countrySelector: normalizeSelectorList(input.countrySelector, DEFAULT_FILL_SETTINGS.countrySelector),
+      passwordSelector: normalizeSelectorList(input.passwordSelector, DEFAULT_FILL_SETTINGS.passwordSelector),
       passwordValue: String(input.passwordValue || DEFAULT_FILL_SETTINGS.passwordValue).trim() || DEFAULT_FILL_SETTINGS.passwordValue
     };
   }
@@ -967,13 +1860,246 @@
     return normalized || fallback;
   }
 
+  function normalizeRemoveElementSelector(value) {
+    return normalizeSelector(value, DEFAULT_REMOVE_ELEMENT_SELECTOR);
+  }
+
+  function normalizeSelectorList(value, fallback) {
+    const fallbackList = Array.isArray(fallback) ? fallback : [String(fallback || ""), ""];
+    const rawList = Array.isArray(value)
+      ? value
+      : value
+        ? [value]
+        : [];
+    const normalized = [0, 1].map((index) => {
+      const candidate = index < rawList.length ? rawList[index] : "";
+      return String(candidate || fallbackList[index] || "").trim();
+    });
+    if (!normalized[0]) {
+      normalized[0] = String(fallbackList[0] || "").trim();
+    }
+    return normalized;
+  }
+
   function normalizeUsPhone(phone) {
     let normalized = String(phone || "").trim();
     if (normalized.startsWith("+1")) {
       normalized = normalized.slice(2).trim();
     }
-    normalized = normalized.replace(/^[\s()-]+/, "");
+    normalized = normalized.replace(/\D+/g, "");
     return normalized;
+  }
+
+  function getFillPhoneNumber(card) {
+    if (state.phoneKey && state.phoneKey.phone) {
+      return state.phoneKey.phone;
+    }
+
+    const rawPhoneInput = String(elements.phoneKeyInput.value || "").trim();
+    if (rawPhoneInput) {
+      try {
+        const phoneKey = parsePhoneKeyInput(rawPhoneInput, { allowEmpty: true });
+        if (phoneKey && phoneKey.phone) {
+          state.phoneKey = phoneKey;
+          state.phoneKeyInput = phoneKey.raw;
+          renderPhonePreview();
+          return phoneKey.phone;
+        }
+      } catch (error) {
+        console.warn("Failed to parse phone key for fill", error);
+      }
+    }
+
+    return normalizeUsPhone(card && card.phone ? card.phone : "");
+  }
+
+  function parseExpiry(rawExpiry) {
+    const parts = String(rawExpiry || "").split("/", 2).map((part) => part.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error("年/月格式错误");
+    }
+
+    const [left, right] = parts;
+    let year = "";
+    let month = "";
+
+    if (/^\d{4}$/.test(left) && /^\d{1,2}$/.test(right)) {
+      year = left;
+      month = right;
+    } else if (/^\d{1,2}$/.test(left) && /^\d{2,4}$/.test(right)) {
+      month = left;
+      year = right.length === 2 ? `20${right}` : right;
+    } else {
+      throw new Error("年/月格式错误");
+    }
+
+    const monthNumber = Number(month);
+    if (!Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+      throw new Error("月份格式错误");
+    }
+
+    const yearDigits = String(year).replace(/\D+/g, "");
+    if (yearDigits.length !== 4) {
+      throw new Error("年份格式错误");
+    }
+
+    const shortYear = yearDigits.slice(-2);
+    return {
+      year: yearDigits,
+      month: String(monthNumber),
+      display: `${monthNumber}/${shortYear}`,
+      input: `${String(monthNumber).padStart(2, "0")}${shortYear}`
+    };
+  }
+
+  async function parseAddressBlob(addressBlob) {
+    const addressParts = addressBlob.rsplit ? addressBlob.rsplit(",", 2) : rsplit(addressBlob, ",", 2);
+    const normalizedAddressParts = addressParts.map((part) => part.trim());
+    if (normalizedAddressParts.length !== 3) {
+      throw new Error("地址格式错误，必须是 address,city state postcode,US");
+    }
+
+    const [address, cityStatePostcode, country] = normalizedAddressParts;
+    const normalizedCityBlob = String(cityStatePostcode || "").replace(/\s+/g, " ").trim();
+    const withStateMatch = normalizedCityBlob.match(
+      /^(?<city>.+?)\s+(?<state>[A-Za-z]{2})\s+(?<postcode>\d{5}(?:-\d{4})?)$/
+    );
+    const withoutStateMatch = normalizedCityBlob.match(
+      /^(?<city>.+?)\s+(?<postcode>\d{5}(?:-\d{4})?)$/
+    );
+
+    if (withStateMatch && withStateMatch.groups) {
+      return {
+        address,
+        city: String(withStateMatch.groups.city || "").trim(),
+        state: String(withStateMatch.groups.state || "").trim().toUpperCase(),
+        postcode: normalizeUsPostcode(withStateMatch.groups.postcode),
+        country: normalizeCountry(country)
+      };
+    }
+
+    if (withoutStateMatch && withoutStateMatch.groups) {
+      const postcode = normalizeUsPostcode(withoutStateMatch.groups.postcode);
+      return {
+        address,
+        city: String(withoutStateMatch.groups.city || "").trim(),
+        state: await lookupUsStateFromPostcode(postcode),
+        postcode,
+        country: normalizeCountry(country)
+      };
+    }
+
+    throw new Error("city state postcode 格式错误");
+  }
+
+  function normalizeCountry(country) {
+    return String(country || "").trim().toUpperCase();
+  }
+
+  function normalizeUsPostcode(postcode) {
+    const normalized = String(postcode || "").trim();
+    const matched = normalized.match(/^(\d{5})(?:-\d{4})?$/);
+    if (!matched) {
+      throw new Error(`无效的美国邮编：${postcode}`);
+    }
+    return matched[1];
+  }
+
+  async function lookupUsStateFromPostcode(postcode) {
+    const zip5 = normalizeUsPostcode(postcode);
+    const prefix = Number(zip5.slice(0, 3));
+    const ranges = await ensureUsZip3StateRanges();
+    const matched = ranges.find((item) => prefix >= item.start && prefix <= item.end);
+    if (!matched) {
+      throw new Error(`无法根据美国邮编匹配州：${postcode}`);
+    }
+    return matched.state;
+  }
+
+  async function ensureUsZip3StateRanges() {
+    if (!usZip3StateRangesPromise) {
+      usZip3StateRangesPromise = fetch(ext.runtime.getURL(US_ZIP3_STATE_RANGES_PATH), {
+        cache: "no-store"
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const payload = await response.json();
+          if (!Array.isArray(payload) || !payload.length) {
+            throw new Error("empty_ranges");
+          }
+          return payload
+            .map((item) => ({
+              start: Number(item && item.start),
+              end: Number(item && item.end),
+              state: String((item && item.state) || "").trim().toUpperCase()
+            }))
+            .filter((item) => Number.isInteger(item.start) && Number.isInteger(item.end) && item.state);
+        })
+        .catch((error) => {
+          usZip3StateRangesPromise = null;
+          throw new Error(`读取美国邮编映射失败：${formatError(error)}`);
+        });
+    }
+    return usZip3StateRangesPromise;
+  }
+
+  function parsePhoneKeyInput(rawInput, options = {}) {
+    const allowEmpty = Boolean(options.allowEmpty);
+    const text = String(rawInput || "").trim();
+    if (!text) {
+      if (allowEmpty) {
+        return null;
+      }
+      throw new Error("请先输入手机区");
+    }
+
+    const parts = text.split("|");
+    if (parts.length !== 2) {
+      throw new Error("手机区格式错误，必须是 +14484490908|http://a.62-us.com/api/get_sms?key=...");
+    }
+
+    const rawPhone = String(parts[0] || "").trim();
+    const smsUrl = String(parts[1] || "").trim();
+    if (!rawPhone || !smsUrl) {
+      throw new Error("手机区格式错误，手机号和短信地址都不能为空");
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(smsUrl);
+    } catch (error) {
+      throw new Error("短信地址不是有效 URL");
+    }
+    if (!/^https?:$/i.test(parsedUrl.protocol)) {
+      throw new Error("短信地址只支持 http 或 https");
+    }
+
+    const phone = normalizeUsPhone(rawPhone);
+    if (!/^\d{10,15}$/.test(phone)) {
+      throw new Error("手机号格式不正确");
+    }
+
+    return {
+      raw: text,
+      rawPhone,
+      phone,
+      smsUrl: parsedUrl.toString()
+    };
+  }
+
+  function requirePhoneKey() {
+    const phoneKey = state.phoneKey || parsePhoneKeyInput(elements.phoneKeyInput.value);
+    state.phoneKey = phoneKey;
+    state.phoneKeyInput = phoneKey.raw;
+    renderPhonePreview();
+    return phoneKey;
+  }
+
+  function extractSixDigitCode(text) {
+    const match = String(text || "").match(/(?:^|\D)(\d{6})(?!\d)/);
+    return match ? match[1] : "";
   }
 
   function extractFirstName(name) {
@@ -1069,15 +2195,23 @@
 
     elements.fetchCodeButton.disabled = state.busy.has("code");
     elements.copyCodeButton.disabled = state.busy.has("code");
+    elements.copyPhoneButton.disabled = state.busy.has("phoneCode");
+    elements.fetchPhoneCodeButton.disabled = state.busy.has("phoneCode");
+    elements.copyPhoneCodeButton.disabled = state.busy.has("phoneCode");
     elements.refreshProxyButton.disabled = state.busy.has("proxy");
     elements.getWebshareProxyButton.disabled = state.busy.has("proxy");
     elements.setProxyButton.disabled = state.busy.has("proxy");
-    elements.applyManualProxyButton.disabled = state.busy.has("proxy");
     elements.replaceProxyButton.disabled = state.busy.has("proxy");
     elements.clearProxyButton.disabled = state.busy.has("proxy");
     elements.fetchPayUrlButton.disabled = state.busy.has("payurl");
+    elements.fetchTokenButton.disabled = state.busy.has("token");
+    elements.checkoutLinkOnlyButton.disabled = state.busy.has("checkoutLink");
+    elements.copyCheckoutLinkButton.disabled = state.busy.has("checkoutLink");
+    elements.setCountryButton.disabled = state.busy.has("country");
     elements.fillCardButton.disabled = state.busy.has("fill");
     elements.removeElementButton.disabled = state.busy.has("removeElement");
+    elements.exportButton.disabled = state.busy.has("export");
+    elements.fetchCurrentTokenButton.disabled = state.busy.has("fetchCurrentToken");
   }
 
   function showOutput(element, type, message) {
@@ -1136,6 +2270,266 @@
     input.remove();
     if (!copied) {
       throw new Error("clipboard_write_failed");
+    }
+  }
+
+  function decodeBase64Url(base64url) {
+    let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function encodeBase64UrlJson(obj) {
+    const json = JSON.stringify(obj);
+    const bytes = new TextEncoder().encode(json);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+
+  function parseJWT(token) {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      const payload = decodeBase64Url(parts[1]);
+      return JSON.parse(payload);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function buildSyntheticIdToken(payload, accessToken) {
+    const header = { alg: 'none', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const exp = payload.exp || (now + 90 * 24 * 60 * 60);
+    const idTokenPayload = {
+      'https://api.openai.com/auth': payload['https://api.openai.com/auth'] || {},
+      'https://api.openai.com/profile': payload['https://api.openai.com/profile'] || {},
+      cpa_synthetic: true,
+      iat: now,
+      exp: exp
+    };
+    return `${encodeBase64UrlJson(header)}.${encodeBase64UrlJson(idTokenPayload)}.`;
+  }
+
+  function sanitizeFileName(name) {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '');
+  }
+
+  function toEmailKey(email) {
+    if (!email) return '';
+    return email
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  function getExpiresIn(expiresAt, now) {
+    if (!expiresAt) return undefined;
+    const expiresMs = new Date(expiresAt).getTime();
+    if (isNaN(expiresMs)) return undefined;
+    const nowMs = now ? now.getTime() : Date.now();
+    return Math.max(0, Math.floor((expiresMs - nowMs) / 1000));
+  }
+
+  function stripUnavailable(value) {
+    if (Array.isArray(value)) {
+      const filtered = value.map(stripUnavailable).filter((item) => item !== undefined);
+      return filtered.length > 0 ? filtered : undefined;
+    }
+    if (value !== null && typeof value === 'object') {
+      const entries = Object.entries(value)
+        .map(([key, item]) => [key, stripUnavailable(item)])
+        .filter(([, item]) => item !== undefined);
+      return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+    }
+    if (value === undefined || value === null || value === '') return undefined;
+    return value;
+  }
+
+  function convertAccessTokenToCPA(accessToken) {
+    const payload = parseJWT(accessToken);
+    const now = new Date().toISOString();
+    const authSection = payload?.['https://api.openai.com/auth'];
+    const profileSection = payload?.['https://api.openai.com/profile'];
+    const accountId = authSection?.chatgpt_account_id || '';
+    const userId = authSection?.user_id || '';
+    const planType = authSection?.chatgpt_plan_type || 'free';
+    const email = profileSection?.email || '';
+    const expTimestamp = payload?.exp ? new Date(payload.exp * 1000).toISOString() : now;
+    const idToken = payload ? buildSyntheticIdToken(payload, accessToken) : '';
+    return {
+      type: 'codex',
+      account_id: accountId,
+      chatgpt_account_id: accountId,
+      email: email,
+      name: email,
+      plan_type: planType,
+      chatgpt_plan_type: planType,
+      id_token: idToken,
+      id_token_synthetic: true,
+      access_token: accessToken,
+      refresh_token: '',
+      session_token: '',
+      last_refresh: now,
+      expired: expTimestamp,
+      disabled: false
+    };
+  }
+
+  function convertAccessTokenToSub2API(accessToken) {
+    const payload = parseJWT(accessToken);
+    const now = new Date().toISOString();
+    const authSection = payload?.['https://api.openai.com/auth'];
+    const profileSection = payload?.['https://api.openai.com/profile'];
+    const accountId = authSection?.chatgpt_account_id || '';
+    const userId = authSection?.user_id || '';
+    const planType = authSection?.chatgpt_plan_type || 'free';
+    const email = profileSection?.email || '';
+    const expTimestamp = payload?.exp ? new Date(payload.exp * 1000).toISOString() : now;
+    const expiresIn = getExpiresIn(expTimestamp, new Date());
+    const name = email || accountId || 'ChatGPT Account';
+    const account = {
+      name: name,
+      platform: 'openai',
+      type: 'oauth',
+      concurrency: 10,
+      priority: 1,
+      credentials: {
+        access_token: accessToken,
+        chatgpt_account_id: accountId,
+        chatgpt_user_id: userId,
+        email: email,
+        expires_at: expTimestamp,
+        expires_in: expiresIn,
+        plan_type: planType,
+      },
+      extra: {
+        email: email,
+        email_key: toEmailKey(email),
+        name: name,
+        auth_provider: 'openai',
+        source: 'chatgpt_web_session',
+        last_refresh: now,
+      },
+    };
+    return stripUnavailable(account);
+  }
+
+  function generateCPAFileName(cpaAccount, index) {
+    const baseName = cpaAccount.email || cpaAccount.account_id || `account_${index}`;
+    const sanitized = sanitizeFileName(baseName);
+    const timestamp = Date.now();
+    return `${sanitized}_${timestamp}_${index}.json`;
+  }
+
+  function createAccountsExportFileName() {
+    return `accounts_${Date.now()}.zip`;
+  }
+
+  function generateSub2apiExport(tokens) {
+    if (typeof fflate === 'undefined') {
+      throw new Error('fflate 库未加载，请刷新页面重试');
+    }
+    const now = new Date().toISOString();
+    const files = {};
+    tokens.forEach((token, index) => {
+      const sub2apiAccount = convertAccessTokenToSub2API(token);
+      const document = {
+        exported_at: now,
+        proxies: [],
+        accounts: [sub2apiAccount]
+      };
+      const email = sub2apiAccount.credentials.email || sub2apiAccount.name;
+      const sanitized = sanitizeFileName(email || `account_${index}`);
+      const fileName = `${sanitized}_${Date.now()}_${index}.json`;
+      const content = JSON.stringify(document, null, 2);
+      files[fileName] = new TextEncoder().encode(content);
+    });
+    return fflate.zipSync(files, { level: 6 });
+  }
+
+  function generateCPAExport(tokens) {
+    if (typeof fflate === 'undefined') {
+      throw new Error('fflate 库未加载，请刷新页面重试');
+    }
+    const files = {};
+    tokens.forEach((token, index) => {
+      const cpaAccount = convertAccessTokenToCPA(token);
+      const fileName = generateCPAFileName(cpaAccount, index);
+      const content = JSON.stringify(cpaAccount, null, 2);
+      files[fileName] = new TextEncoder().encode(content);
+    });
+    return fflate.zipSync(files, { level: 6 });
+  }
+
+  async function handleExport() {
+    const tokensText = elements.accessTokensInput.value.trim();
+    if (!tokensText) {
+      showOutput(elements.exportOutput, "error", "请输入至少一个 access token");
+      return;
+    }
+    const tokens = tokensText.split('\n')
+      .map(t => t.trim())
+      .filter(t => t.length > 0);
+    if (tokens.length === 0) {
+      showOutput(elements.exportOutput, "error", "没有有效的 access token");
+      return;
+    }
+    setBusy("export", true);
+    showOutput(elements.exportOutput, "info", `正在处理 ${tokens.length} 个 token...`);
+    try {
+      const format = normalizeExportFormat(elements.exportFormatSelect.value);
+      let zipData;
+      if (format === "sub2api") {
+        zipData = generateSub2apiExport(tokens);
+      } else {
+        zipData = generateCPAExport(tokens);
+      }
+      const blob = new Blob([zipData], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const filename = createAccountsExportFileName();
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showOutput(elements.exportOutput, "success", `成功导出 ${tokens.length} 个账号到 ${filename}`);
+    } catch (error) {
+      showOutput(elements.exportOutput, "error", `导出失败: ${formatError(error)}`);
+    } finally {
+      setBusy("export", false);
+    }
+  }
+
+  async function handleFetchCurrentToken() {
+    setBusy("fetchCurrentToken", true);
+    try {
+      const token = await fetchAccessTokenFromTab();
+      const current = elements.accessTokensInput.value.trim();
+      elements.accessTokensInput.value = current ? `${current}\n${token}` : token;
+      state.accessTokens = elements.accessTokensInput.value;
+      persistState();
+      showOutput(elements.exportOutput, "success", "已添加当前 ChatGPT token");
+    } catch (error) {
+      showOutput(elements.exportOutput, "error", `获取 token 失败: ${formatError(error)}`);
+    } finally {
+      setBusy("fetchCurrentToken", false);
     }
   }
 

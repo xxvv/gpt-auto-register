@@ -22,15 +22,27 @@
     element.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function fillSelector(selector, value) {
-    const element = document.querySelector(selector);
-    if (!element) {
-      return false;
+  function normalizeSelectorList(selectors) {
+    if (Array.isArray(selectors)) {
+      return selectors.map((selector) => String(selector || "").trim()).filter(Boolean);
     }
-    element.focus();
-    setNativeValue(element, value);
-    element.blur();
-    return true;
+    const single = String(selectors || "").trim();
+    return single ? [single] : [];
+  }
+
+  function fillSelector(selectors, value) {
+    const selectorList = normalizeSelectorList(selectors);
+    for (const selector of selectorList) {
+      const element = document.querySelector(selector);
+      if (!element) {
+        continue;
+      }
+      element.focus();
+      setNativeValue(element, value);
+      element.blur();
+      return { filled: true, selector };
+    }
+    return { filled: false, selector: selectorList[0] || "" };
   }
 
   function removeSelector(selector) {
@@ -42,39 +54,60 @@
     return { removed: true, selector };
   }
 
-  function buildFieldMap(card, settings) {
-    return {
-      [settings.phoneSelector]: card.phone,
-      [settings.cardNumberSelector]: card.card,
-      [settings.cardExpirySelector]: card.expiryInput,
-      [settings.cardCvvSelector]: card.cvv,
-      [settings.firstNameSelector]: card.firstName,
-      [settings.lastNameSelector]: card.lastName,
-      [settings.billingLine1Selector]: card.address,
-      [settings.billingCitySelector]: card.city,
-      [settings.billingStateSelector]: card.state,
-      [settings.billingPostalCodeSelector]: card.postcode,
-      [settings.passwordSelector]: settings.passwordValue
-    };
+  function checkSelector(selector) {
+    const element = document.querySelector(selector);
+    if (!element) {
+      return false;
+    }
+    if (!element.checked) {
+      element.click();
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return true;
+  }
+
+  function buildFieldMap(card, settings, phone) {
+    const billingName = [card.firstName, card.lastName]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(" ") || card.name;
+
+    return [
+      { selectors: settings.phoneSelector, value: phone },
+      { selectors: settings.cardNumberSelector, value: card.card },
+      { selectors: settings.cardExpirySelector, value: card.expiryInput },
+      { selectors: settings.cardCvvSelector, value: card.cvv },
+      { selectors: settings.billingNameSelector, value: billingName },
+      { selectors: settings.firstNameSelector, value: card.firstName },
+      { selectors: settings.lastNameSelector, value: card.lastName },
+      { selectors: settings.billingLine1Selector, value: card.address },
+      { selectors: settings.billingCitySelector, value: card.city },
+      { selectors: settings.billingStateSelector, value: card.state },
+      { selectors: settings.billingPostalCodeSelector, value: card.postcode },
+      { selectors: settings.passwordSelector, value: settings.passwordValue }
+    ];
   }
 
   window.__gptAutoRegisterFillForm = function fillForm(payload) {
     try {
       const card = payload && payload.card ? payload.card : {};
       const settings = payload && payload.settings ? payload.settings : {};
-      const fields = buildFieldMap(card, settings);
+      const phone = String((payload && payload.phone) || card.phone || "").trim();
+      const fields = buildFieldMap(card, settings, phone);
 
       const missing = [];
       let filled = 0;
 
-      Object.entries(fields).forEach(([selector, value]) => {
-        if (!selector) {
+      fields.forEach(({ selectors, value }) => {
+        const selectorList = normalizeSelectorList(selectors);
+        if (!selectorList.length) {
           return;
         }
-        if (fillSelector(selector, value)) {
+        const result = fillSelector(selectorList, value);
+        if (result.filled) {
           filled += 1;
         } else {
-          missing.push(selector);
+          missing.push(result.selector || selectorList[0]);
         }
       });
 
@@ -89,6 +122,37 @@
         ok: false,
         filled: 0,
         checked: 0,
+        missing: [],
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  };
+
+  window.__gptAutoRegisterSetCountry = function setCountry(payload) {
+    try {
+      const settings = payload && payload.settings ? payload.settings : {};
+      const country = String((payload && payload.country) || "US").trim() || "US";
+      const selectorList = normalizeSelectorList(settings.countrySelector);
+      if (!selectorList.length) {
+        return {
+          ok: false,
+          filled: 0,
+          missing: [],
+          error: "country selector 不能为空"
+        };
+      }
+
+      const result = fillSelector(selectorList, country);
+      return {
+        ok: result.filled,
+        filled: result.filled ? 1 : 0,
+        missing: result.filled ? [] : [result.selector || selectorList[0]],
+        error: ""
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        filled: 0,
         missing: [],
         error: error && error.message ? error.message : String(error)
       };

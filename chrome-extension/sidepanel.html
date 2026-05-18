@@ -13,8 +13,46 @@
         <h1>GPT Helper</h1>
         <p id="currentTabText">等待页面状态</p>
       </div>
-      <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+      <div class="header-actions">
+        <button id="openChatGptButton" class="section-button" type="button">打开 ChatGPT</button>
+        <button id="refreshTabButton" class="icon-button" type="button" title="刷新当前标签页状态" aria-label="刷新当前标签页状态">↻</button>
+      </div>
     </header>
+
+    <section class="tool-section" aria-labelledby="proxyTitle">
+      <div class="section-header">
+        <h2 id="proxyTitle">代理</h2>
+        <button id="refreshProxyButton" class="icon-button" type="button" title="刷新代理状态" aria-label="刷新代理状态">↻</button>
+      </div>
+      <div id="proxyStatus" class="proxy-status" aria-live="polite">读取代理状态中</div>
+      <label class="field-label" for="webshareApiKeyInput">Webshare Key</label>
+      <input
+        id="webshareApiKeyInput"
+        class="text-input"
+        type="password"
+        spellcheck="false"
+        placeholder="输入 Webshare API Key"
+      >
+      <label class="field-label" for="proxyProtocolSelect">代理协议</label>
+      <select id="proxyProtocolSelect" class="text-input">
+        <option value="http">http</option>
+        <option value="socks5">socks5</option>
+      </select>
+      <label class="field-label" for="proxyCountrySelect">替换国家</label>
+      <select id="proxyCountrySelect" class="text-input">
+        <option value="US">美国 (US)</option>
+        <option value="JP">日本 (JP)</option>
+      </select>
+      <div class="section-actions proxy-actions">
+        <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
+        <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
+      </div>
+      <div class="section-actions proxy-actions">
+        <button id="replaceProxyButton" class="secondary-button" type="button">替换代理</button>
+        <button id="clearProxyButton" class="danger-button" type="button">清除代理</button>
+      </div>
+      <output id="proxyOutput" class="result-output" aria-live="polite"></output>
+    </section>
 
     <section class="tool-section" aria-labelledby="emailTitle">
       <div class="section-header">
@@ -30,39 +68,45 @@
       <output id="codeOutput" class="result-output" aria-live="polite"></output>
     </section>
 
-    <section class="tool-section" aria-labelledby="proxyTitle">
-      <div class="section-header">
-        <h2 id="proxyTitle">代理</h2>
-        <button id="refreshProxyButton" class="icon-button" type="button" title="刷新代理状态" aria-label="刷新代理状态">↻</button>
-      </div>
-      <div id="proxyStatus" class="proxy-status">读取代理状态中</div>
-      <label class="field-label" for="manualProxyInput">手动代理</label>
-      <textarea
-        id="manualProxyInput"
-        class="proxy-input"
-        spellcheck="false"
-        placeholder="http://username:password@host:port"
-      ></textarea>
-      <div class="section-actions proxy-actions">
-        <button id="getWebshareProxyButton" class="secondary-button" type="button">获取当前</button>
-        <button id="setProxyButton" class="secondary-button" type="button">设置代理</button>
-      </div>
-      <div class="section-actions proxy-actions">
-        <button id="applyManualProxyButton" class="secondary-button" type="button">应用手动代理</button>
-      </div>
-      <div class="section-actions proxy-actions">
-        <button id="replaceProxyButton" class="secondary-button" type="button">替换代理</button>
-        <button id="clearProxyButton" class="danger-button" type="button">清除代理</button>
-      </div>
-      <output id="proxyOutput" class="result-output" aria-live="polite"></output>
-    </section>
-
     <section class="tool-section" aria-labelledby="payUrlTitle">
       <div class="section-header">
         <h2 id="payUrlTitle">PayURL</h2>
-        <button id="fetchPayUrlButton" class="primary-button" type="button">获取并打开</button>
+        <div class="section-header-actions">
+          <button id="fetchPayUrlButton" class="primary-button" type="button">获取并打开</button>
+          <button id="fetchTokenButton" class="secondary-button" type="button">获取Token</button>
+          <button id="checkoutLinkOnlyButton" class="secondary-button" type="button">Checkout链接</button>
+          <button id="copyCheckoutLinkButton" class="secondary-button" type="button">复制Checkout</button>
+        </div>
       </div>
+      <label class="field-label" for="checkoutRegionSelect">支付地区</label>
+      <select id="checkoutRegionSelect" class="text-input">
+        <option value="ID">印度尼西亚 (IDR)</option>
+        <option value="IE">爱尔兰 (EUR)</option>
+      </select>
       <output id="payUrlOutput" class="result-output" aria-live="polite"></output>
+    </section>
+
+    <section class="tool-section" aria-labelledby="exportTitle">
+      <div class="section-header">
+        <h2 id="exportTitle">账号导出</h2>
+      </div>
+      <label class="field-label" for="accessTokensInput">Access Tokens (每行一个)</label>
+      <textarea
+        id="accessTokensInput"
+        class="card-input"
+        spellcheck="false"
+        placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ik1UaEVOVUpHTkVNMVFURTRNMEZCTWpkQ05UZzVNRFUxUlRVd1FVSkRNRU13UmtGRVFrRXpSZyJ9...&#10;eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ik1UaEVOVUpHTkVNMVFURTRNMEZCTWpkQ05UZzVNRFUxUlRVd1FVSkRNRU13UmtGRVFrRXpSZyJ9..."
+      ></textarea>
+      <label class="field-label" for="exportFormatSelect">导出格式</label>
+      <select id="exportFormatSelect" class="text-input">
+        <option value="cpa">CPA</option>
+        <option value="sub2api">Sub2API</option>
+      </select>
+      <div class="section-actions">
+        <button id="exportButton" class="primary-button" type="button">导出 ZIP</button>
+        <button id="fetchCurrentTokenButton" class="secondary-button" type="button">从 ChatGPT 获取</button>
+      </div>
+      <output id="exportOutput" class="result-output" aria-live="polite"></output>
     </section>
 
     <section class="tool-section" aria-labelledby="cardTitle">
@@ -76,10 +120,31 @@
             aria-expanded="false"
             aria-controls="fillSettingsPanel"
           >设置</button>
+          <button id="setCountryButton" class="secondary-button" type="button">设置Country</button>
           <button id="fillCardButton" class="primary-button" type="button">输出/填充</button>
         </div>
       </div>
-      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----年/月----cvv----phone----url----name----address,city state postcode,US"></textarea>
+      <section class="tool-section" aria-labelledby="phoneTitle">
+        <div class="section-header">
+          <h2 id="phoneTitle">手机</h2>
+        </div>
+        <label class="field-label" for="phoneKeyInput">手机区</label>
+        <input
+          id="phoneKeyInput"
+          class="text-input"
+          type="text"
+          spellcheck="false"
+          placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=31129bd848ebf521d4743c0dc537c12a"
+        >
+        <div id="phonePreview" class="phone-preview" aria-live="polite"></div>
+        <div class="section-actions">
+          <button id="copyPhoneButton" class="secondary-button" type="button">复制手机</button>
+          <button id="fetchPhoneCodeButton" class="secondary-button" type="button">获取短信</button>
+          <button id="copyPhoneCodeButton" class="secondary-button" type="button">复制短信码</button>
+        </div>
+        <output id="phoneCodeOutput" class="result-output" aria-live="polite"></output>
+      </section>
+      <textarea id="cardInput" class="card-input" spellcheck="false" placeholder="card----2030/2----cvv----url----name----address,city postcode,US"></textarea>
       <div id="cardPreview" class="card-preview" aria-live="polite"></div>
       <label class="field-label" for="removeElementSelectorInput">删除元素 selector</label>
       <div class="selector-action">
@@ -93,51 +158,72 @@
         <button id="removeElementButton" class="danger-button selector-action-button" type="button">删除元素</button>
       </div>
       <section id="fillSettingsPanel" class="fill-settings" hidden aria-label="填充设置">
-        <p class="settings-hint">默认按当前页面这些字段 ID 填充，手机号会自动去掉前缀 +1。</p>
+        <p class="settings-hint">默认按当前页面这些字段 ID 填充，手机号优先取上面的手机区，并自动去掉前缀 +1。</p>
         <div class="settings-grid">
           <label class="settings-field" for="phoneSelectorInput">
             <span>手机号</span>
             <input id="phoneSelectorInput" type="text" spellcheck="false" placeholder="#phone">
+            <input id="phoneSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="cardNumberSelectorInput">
             <span>卡号</span>
             <input id="cardNumberSelectorInput" type="text" spellcheck="false" placeholder="#cardNumber">
+            <input id="cardNumberSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="cardExpirySelectorInput">
             <span>过期时间</span>
             <input id="cardExpirySelectorInput" type="text" spellcheck="false" placeholder="#cardExpiry">
+            <input id="cardExpirySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="cardCvvSelectorInput">
             <span>CVV</span>
             <input id="cardCvvSelectorInput" type="text" spellcheck="false" placeholder="#cardCvv">
+            <input id="cardCvvSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
+          </label>
+          <label class="settings-field" for="billingNameSelectorInput">
+            <span>Billing Name</span>
+            <input id="billingNameSelectorInput" type="text" spellcheck="false" placeholder="#billingName">
+            <input id="billingNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="firstNameSelectorInput">
             <span>First Name</span>
             <input id="firstNameSelectorInput" type="text" spellcheck="false" placeholder="#firstName">
+            <input id="firstNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="lastNameSelectorInput">
             <span>Last Name</span>
             <input id="lastNameSelectorInput" type="text" spellcheck="false" placeholder="#lastName">
+            <input id="lastNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="billingLine1SelectorInput">
             <span>Address</span>
             <input id="billingLine1SelectorInput" type="text" spellcheck="false" placeholder="#billingLine1">
+            <input id="billingLine1SelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="billingCitySelectorInput">
             <span>City</span>
             <input id="billingCitySelectorInput" type="text" spellcheck="false" placeholder="#billingCity">
+            <input id="billingCitySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="billingStateSelectorInput">
             <span>State</span>
             <input id="billingStateSelectorInput" type="text" spellcheck="false" placeholder="#billingState">
+            <input id="billingStateSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="billingPostalCodeSelectorInput">
             <span>Postcode</span>
             <input id="billingPostalCodeSelectorInput" type="text" spellcheck="false" placeholder="#billingPostalCode">
+            <input id="billingPostalCodeSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
+          </label>
+          <label class="settings-field" for="countrySelectorInput">
+            <span>Country</span>
+            <input id="countrySelectorInput" type="text" spellcheck="false" placeholder="#country">
+            <input id="countrySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="passwordSelectorInput">
             <span>密码字段</span>
             <input id="passwordSelectorInput" type="text" spellcheck="false" placeholder="#password">
+            <input id="passwordSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器">
           </label>
           <label class="settings-field" for="passwordValueInput">
             <span>默认密码</span>
@@ -152,6 +238,7 @@
     </section>
   </main>
 
+  <script src="fflate.min.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>
