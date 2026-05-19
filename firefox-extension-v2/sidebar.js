@@ -1016,9 +1016,9 @@
         throw new Error("PayURL 不是有效 URL");
       }
     }
-    const phoneKey = parsePhoneKeyInput(document.getElementById("phoneKeyInput").value);
+    const phoneKey = pickRandomPhoneKey(document.getElementById("phoneKeyInput").value);
     state.phoneKey = phoneKey;
-    state.phoneKeyInput = phoneKey.raw;
+    state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();
     const paypalEmail = options.reusePaypalEmail && state.lastPaypalEmail
       ? state.lastPaypalEmail
       : generateGmailAddress();
@@ -1844,6 +1844,26 @@
     return usZip3StateRangesPromise;
   }
 
+  function pickRandomPhoneKey(rawInput, options = {}) {
+    const allowEmpty = Boolean(options.allowEmpty);
+    const text = String(rawInput || "").trim();
+    if (!text) {
+      if (allowEmpty) {
+        return null;
+      }
+      return parsePhoneKeyInput(rawInput, options);
+    }
+    const phoneKeys = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => parsePhoneKeyInput(line));
+    if (!phoneKeys.length) {
+      return null;
+    }
+    return phoneKeys[Math.floor(Math.random() * phoneKeys.length)];
+  }
+
   function parsePhoneKeyInput(rawInput, options = {}) {
     const allowEmpty = Boolean(options.allowEmpty);
     const text = String(rawInput || "").trim();
@@ -1900,10 +1920,10 @@
     const rawPhoneInput = String(document.getElementById("phoneKeyInput").value || "").trim();
     if (rawPhoneInput) {
       try {
-        const phoneKey = parsePhoneKeyInput(rawPhoneInput, { allowEmpty: true });
+        const phoneKey = pickRandomPhoneKey(rawPhoneInput, { allowEmpty: true });
         if (phoneKey && phoneKey.phone) {
           state.phoneKey = phoneKey;
-          state.phoneKeyInput = phoneKey.raw;
+          state.phoneKeyInput = rawPhoneInput;
           return phoneKey.phone;
         }
       } catch (error) {
@@ -2087,7 +2107,7 @@
       document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
       try {
-        state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
+        state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
       } catch (_) {
         state.phoneKey = null;
       }
@@ -2159,7 +2179,7 @@
     document.getElementById("phoneKeyInput").addEventListener("input", () => {
       state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();
       try {
-        state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
+        state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
       } catch (_) {
         state.phoneKey = null;
       }
