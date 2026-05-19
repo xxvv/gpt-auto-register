@@ -905,11 +905,16 @@
     return Boolean((await executeScriptAfterPageReady(tabId, { code: clickTryAgainCode }, "检测并点击 Try again"))[0]);
   }
 
+  async function getCurrentWindowActiveTab() {
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    return tabs && tabs[0] ? tabs[0] : null;
+  }
+
   async function createTabInActiveWindow(url) {
     try {
-      const win = await ext.windows.getLastFocused({ windowTypes: ["normal"] });
-      if (win && win.id !== undefined) {
-        return await ext.tabs.create({ windowId: win.id, url, active: true });
+      const currentTab = await getCurrentWindowActiveTab();
+      if (currentTab && currentTab.windowId !== undefined) {
+        return await ext.tabs.create({ windowId: currentTab.windowId, url, active: true });
       }
     } catch (error) {
       console.warn("Failed to get active browser window", error);
@@ -1016,8 +1021,7 @@
       return;
     }
 
-    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs && tabs[0];
+    const tab = await getCurrentWindowActiveTab();
     if (!tab || !tab.id) {
       logMessage("错误: 未找到当前标签页");
       return;
@@ -1042,8 +1046,7 @@
       return;
     }
 
-    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs && tabs[0];
+    const tab = await getCurrentWindowActiveTab();
     if (!tab || !tab.id) {
       logMessage("错误: 未找到当前标签页");
       return;
@@ -1112,16 +1115,62 @@
   }
 
   async function runPayPalFlowFromCurrentPayUrl(tabId, prepared) {
-    await runPayUrlPage(tabId, prepared);
+    const payUrlReady = await runPayUrlPage(tabId, prepared);
+    if (!payUrlReady) {
+      return;
+    }
     await runPayPalLoginPage(tabId, prepared);
     await runPayPalSignupPage(tabId, prepared);
     logMessage("PayPal 步骤已完成，短信验证码已输入");
+  }
+
+  function parseCurrencyAmountText(text) {
+    const normalized = String(text || "").replace(/\s+/g, "");
+    const numericText = normalized.replace(/[^0-9.,-]/g, "").replace(/,/g, "");
+    const amount = Number(numericText);
+    return Number.isFinite(amount) ? amount : null;
+  }
+
+  function isZeroCurrencyAmount(text) {
+    const amount = parseCurrencyAmountText(text);
+    return amount !== null && Math.abs(amount) < 0.000001;
+  }
+
+  async function getPayUrlCurrencyAmountText(tabId) {
+    const results = await executePageFunction(tabId, "__gptAutoRegisterGetText", {
+      selector: ".CurrencyAmount",
+      timeoutMs: 30000
+    }, {
+      allFrames: true
+    });
+    const matched = (Array.isArray(results) ? results : [results])
+      .filter(Boolean)
+      .find((result) => result.ok && String(result.text || "").trim());
+    return matched ? String(matched.text || "").trim() : "";
+  }
+
+  async function ensurePayUrlAmountIsZero(tabId) {
+    logMessage("检查 PayURL 金额是否为 0 元");
+    const amountText = await getPayUrlCurrencyAmountText(tabId);
+    if (!amountText) {
+      throw new Error("未找到 PayURL 金额元素 .CurrencyAmount，停止当前任务");
+    }
+    logMessage(`PayURL 当前金额: ${amountText}`);
+    if (!isZeroCurrencyAmount(amountText)) {
+      logMessage(`PayURL 金额不是 0 元，停止当前任务: ${amountText}`);
+      return false;
+    }
+    return true;
   }
 
   async function runPayUrlPage(tabId, prepared) {
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
+    const shouldContinue = await ensurePayUrlAmountIsZero(tabId);
+    if (!shouldContinue) {
+      return false;
+    }
     await clickPageElement(tabId, {
       selector: 'button[data-testid="paypal-accordion-item-button"]',
       timeoutMs: 60000
@@ -1142,6 +1191,7 @@
       timeoutMs: 30000
     }, "未找到提交按钮");
     logMessage("PayURL 页面已提交");
+    return true;
   }
 
   async function runPayPalLoginPage(tabId, prepared) {

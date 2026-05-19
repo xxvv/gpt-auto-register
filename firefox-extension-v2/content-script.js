@@ -548,6 +548,19 @@
     return { ok: true, selector, value: String(element.value || "") };
   };
 
+  window.__gptAutoRegisterGetText = async function getTextExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    if (!element) {
+      return { ok: false, selector, text: "", error: `Element not found: ${selector}` };
+    }
+    return {
+      ok: true,
+      selector,
+      text: String(element.innerText || element.textContent || "").trim()
+    };
+  };
+
   window.__gptAutoRegisterSetSelectIfNeeded = async function setSelectIfNeededExport(payload) {
     const selector = String((payload && payload.selector) || "").trim();
     const value = String((payload && payload.value) || "");
