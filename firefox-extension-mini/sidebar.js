@@ -4,25 +4,14 @@
   const ext = typeof browser !== "undefined" ? browser : chrome;
 
   const DOMAINS = [
-    "xvmit.edu.kg",
-    "watermelon.edu.kg",
-    "ciat.edu.kg",
-    "cars.edu.kg",
-    "damahou.edu.kg",
-    "xymit.edu.kg"
+   
   ];
-  const CODE_API = "https://getemail.nnai.website/api/code";
-  const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.website/api/third-party/accounts";
-  const THIRD_PARTY_API_KEY = "pvxxvv";
-  const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
-  const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
-  const STORAGE_KEY = "gptAutoRegisterV2State";
-  const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const CODE_API = "";
+  const STORAGE_KEY = "gptAutoRegisterMiniState";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 5;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_RUN_COUNT = 1;
-  const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
     cardNumberSelector: ["#cardNumber", ""],
@@ -47,13 +36,7 @@
     phoneKeyInput: "",
     phoneKey: null,
     lastPhoneCode: "",
-    lastPaypalEmail: "",
-    proxyEnabled: true,
-    webshareApiKey: "",
-    proxyProtocol: "http",
-    step1ProxyCountry: "US",
-    step3ProxyCountry: "US",
-    currentProxy: null
+    lastPaypalEmail: ""
   };
   let usZip3StateRangesPromise = null;
 
@@ -102,7 +85,7 @@
   }
 
   function generateRandomBirthday() {
-    const year = Math.floor(Math.random() * 15) + 1981;
+    const year = Math.floor(Math.random() * 34) + 1971;
     const month = String(Math.floor(Math.random() * 12) + 1).padStart(2, "0");
     const day = String(Math.floor(Math.random() * 28) + 1).padStart(2, "0");
     return `${year}-${month}-${day}`;
@@ -128,347 +111,6 @@
     }
   }
 
-  async function ensureProxyForStage(stage) {
-    if (!isProxyEnabled()) {
-      logMessage(`代理未开启，跳过${stage}代理设置`);
-      return false;
-    }
-
-    const country = stage === "第一步" ? getStep1ProxyCountry() : getStep3ProxyCountry();
-    const protocol = getProxyProtocol();
-    const apiKey = requireWebshareApiKey();
-    logMessage(`${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
-    logMessage(`${stage}: 正在先清除当前 Firefox 代理`);
-    await clearFirefoxProxyState();
-    state.currentProxy = null;
-    renderProxyStatus();
-    await persistState();
-    logMessage(`${stage}: 当前 Firefox 代理已清除，开始替换对应国家代理`);
-    const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
-    await applyFirefoxProxy(proxy);
-    state.currentProxy = proxy;
-    renderProxyStatus();
-    await persistState();
-    logMessage(`${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
-    return true;
-  }
-
-  async function getCurrentWebshareProxy() {
-    try {
-      const apiKey = requireWebshareApiKey();
-      const proxy = await getCurrentWebshareProxyDirect(apiKey, getProxyProtocol());
-      state.currentProxy = proxy;
-      renderProxyStatus();
-      await persistState();
-      logMessage(`已获取当前 Webshare 代理: ${formatProxy(proxy)}`);
-    } catch (error) {
-      logMessage(`获取当前 Webshare 代理失败: ${formatError(error)}`);
-    }
-  }
-
-  async function setCurrentProxy() {
-    try {
-      if (!isRuntimeProxy(state.currentProxy)) {
-        const apiKey = requireWebshareApiKey();
-        state.currentProxy = await getCurrentWebshareProxyDirect(apiKey, getProxyProtocol());
-      }
-      await applyFirefoxProxy(state.currentProxy);
-      renderProxyStatus();
-      await persistState();
-      logMessage(`代理设置成功，Firefox 已写入 ${formatProxy(state.currentProxy)}`);
-    } catch (error) {
-      logMessage(`设置代理失败: ${formatError(error)}`);
-    }
-  }
-
-  async function replaceWebshareProxy() {
-    try {
-      const apiKey = requireWebshareApiKey();
-      const proxy = await replaceWebshareProxyDirect(apiKey, getStep3ProxyCountry(), getProxyProtocol());
-      await applyFirefoxProxy(proxy);
-      state.currentProxy = proxy;
-      renderProxyStatus();
-      await persistState();
-      logMessage(`已替换并设置代理: 国家 ${getStep3ProxyCountry()}，${formatProxy(proxy)}`);
-    } catch (error) {
-      logMessage(`替换代理失败: ${formatError(error)}`);
-    }
-  }
-
-  async function clearProxy() {
-    try {
-      await clearFirefoxProxyState();
-      state.currentProxy = null;
-      renderProxyStatus();
-      await persistState();
-      logMessage("已清除 Firefox 代理");
-    } catch (error) {
-      logMessage(`清除代理失败: ${formatError(error)}`);
-    }
-  }
-
-  async function applyFirefoxProxy(proxy) {
-    const runtimeProxy = requireRuntimeProxy(proxy);
-    const proxyType = String(runtimeProxy.type || "http").toLowerCase();
-    if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
-      throw new Error(`Firefox 不支持的代理类型: ${runtimeProxy.type}`);
-    }
-
-    await sendProxyMessage({ action: "apply", proxy: runtimeProxy });
-  }
-
-  async function clearFirefoxProxyState() {
-    await sendProxyMessage({ action: "clear" });
-  }
-
-  async function sendProxyMessage(payload) {
-    const response = await ext.runtime.sendMessage({
-      type: "gptAutoRegisterProxy",
-      ...payload
-    });
-    if (!response || !response.ok) {
-      throw new Error((response && response.error) || "background 代理设置失败");
-    }
-    return response;
-  }
-
-  async function getCurrentWebshareProxyDirect(apiKey, protocol) {
-    const items = await fetchWebshareProxyList(apiKey);
-    return requireRuntimeProxy(mapWebshareItemToProxy(items[0], protocol));
-  }
-
-  async function replaceWebshareProxyDirect(apiKey, country, protocol) {
-    const currentItems = await fetchWebshareProxyList(apiKey);
-    const currentProxy = mapWebshareItemToProxy(currentItems[0], protocol);
-    const response = await fetch(WEBSHARE_REPLACE_API, {
-      method: "POST",
-      headers: buildWebshareHeaders(apiKey),
-      body: JSON.stringify({
-        to_replace: { type: "ip_address", ip_addresses: [currentProxy.host] },
-        replace_with: [{ type: "country", country_code: normalizeProxyCountry(country), count: 1 }],
-        dry_run: false
-      })
-    });
-    const payload = await readJsonResponse(response, "Webshare 替换接口");
-    if (!response.ok) {
-      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
-    }
-
-    const replacementId = String(
-      payload.id ||
-      payload.uuid ||
-      payload.replacement_id ||
-      ((payload.data || {}).id) ||
-      ((payload.data || {}).uuid) ||
-      ((payload.data || {}).replacement_id) ||
-      ""
-    ).trim();
-    if (!replacementId) {
-      throw new Error("Webshare 替换响应缺少任务 ID");
-    }
-
-    const deadline = Date.now() + 30000;
-    let lastStatus = normalizeWebshareStatus(payload);
-    while (Date.now() < deadline) {
-      if (isWebshareTerminalSuccess(lastStatus)) {
-        break;
-      }
-      if (isWebshareTerminalFailure(lastStatus)) {
-        throw new Error(`Webshare 代理替换失败: status=${lastStatus || "unknown"}`);
-      }
-
-      await delay(1200);
-      const detailResponse = await fetch(`${WEBSHARE_REPLACE_API}${replacementId}/`, {
-        method: "GET",
-        headers: buildWebshareHeaders(apiKey)
-      });
-      const detailPayload = await readJsonResponse(detailResponse, "Webshare 替换查询接口");
-      if (!detailResponse.ok) {
-        throw new Error(detailPayload.detail || detailPayload.error || detailPayload.message || `HTTP ${detailResponse.status}`);
-      }
-      lastStatus = normalizeWebshareStatus(detailPayload);
-    }
-
-    if (!isWebshareTerminalSuccess(lastStatus)) {
-      throw new Error(`Webshare 代理替换超时: status=${lastStatus || "unknown"}`);
-    }
-
-    return getCurrentWebshareProxyDirect(apiKey, protocol);
-  }
-
-  async function fetchWebshareProxyList(apiKey) {
-    const response = await fetch(`${WEBSHARE_LIST_API}?mode=direct&page=1&page_size=25`, {
-      method: "GET",
-      headers: buildWebshareHeaders(apiKey),
-      cache: "no-store"
-    });
-    const payload = await readJsonResponse(response, "Webshare 代理列表");
-    if (!response.ok) {
-      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
-    }
-    const items = extractWebshareItems(payload);
-    if (!items.length) {
-      throw new Error("Webshare 代理列表为空");
-    }
-    return items;
-  }
-
-  function buildWebshareHeaders(apiKey) {
-    return {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: `Token ${apiKey}`
-    };
-  }
-
-  function extractWebshareItems(payload) {
-    let rawItems = payload && payload.results;
-    if (rawItems === undefined || rawItems === null) {
-      rawItems = (payload && (payload.items || payload.data)) || [];
-    }
-    if (rawItems && typeof rawItems === "object" && !Array.isArray(rawItems)) {
-      rawItems = rawItems.results || rawItems.items || [];
-    }
-    return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
-  }
-
-  function mapWebshareItemToProxy(item, protocol) {
-    if (!item || typeof item !== "object") {
-      throw new Error("Webshare 代理数据无效");
-    }
-    const host = String(item.proxy_address || item.host || item.ip || item.ip_address || "").trim();
-    if (!host) {
-      throw new Error("Webshare 代理缺少 host");
-    }
-    const port = Number(item.port || 0);
-    if (!port || port <= 0) {
-      throw new Error("Webshare 代理缺少有效的 port");
-    }
-    const username = String(item.username || item.user || "");
-    const password = String(item.password || "");
-    return {
-      enabled: true,
-      type: normalizeProxyProtocol(protocol),
-      host,
-      port,
-      city_name: String(item.city_name || item.city || ""),
-      country_code: String(item.country_code || item.country || "").toUpperCase(),
-      use_auth: Boolean(username),
-      username: username || "",
-      password: username ? password : ""
-    };
-  }
-
-  function requireRuntimeProxy(proxy) {
-    if (!isRuntimeProxy(proxy)) {
-      throw new Error("代理数据缺少 host/port");
-    }
-    return proxy;
-  }
-
-  function isRuntimeProxy(proxy) {
-    if (!proxy || !proxy.enabled) {
-      return false;
-    }
-    const host = String(proxy.host || "").trim();
-    const port = Number(proxy.port || 0);
-    return Boolean(host && port > 0);
-  }
-
-  function renderProxyStatus() {
-    const proxyStatus = document.getElementById("proxyStatus");
-    if (!proxyStatus) return;
-    const proxy = state.currentProxy;
-    if (!isRuntimeProxy(proxy)) {
-      proxyStatus.classList.add("empty");
-      proxyStatus.textContent = "代理状态: 未设置";
-      return;
-    }
-    proxyStatus.classList.remove("empty");
-    proxyStatus.textContent = [
-      `代理状态: 已设置`,
-      `类型: ${String(proxy.type || "http").toLowerCase()}`,
-      `地址: ${proxy.host}:${proxy.port}`,
-      `国家: ${String(proxy.country_code || proxy.country || "-").toUpperCase()}`,
-      `用户名: ${proxy.username || "-"}`
-    ].join("\n");
-  }
-
-  function formatProxy(proxy) {
-    if (!isRuntimeProxy(proxy)) {
-      return "未启用";
-    }
-    const type = String(proxy.type || "http").toLowerCase();
-    const auth = proxy.use_auth && proxy.username ? ` (auth: ${proxy.username})` : "";
-    return `${type}://${proxy.host}:${proxy.port}${auth}`;
-  }
-
-  function requireWebshareApiKey() {
-    const apiKey = String(document.getElementById("webshareApiKeyInput").value || "").trim();
-    if (!apiKey) {
-      throw new Error("请先输入 Webshare API Key");
-    }
-    state.webshareApiKey = apiKey;
-    return apiKey;
-  }
-
-  function isProxyEnabled() {
-    const input = document.getElementById("proxyEnabledCheckbox");
-    state.proxyEnabled = input ? Boolean(input.checked) : true;
-    return state.proxyEnabled;
-  }
-
-  function getProxyProtocol() {
-    const value = document.getElementById("proxyProtocolSelect").value;
-    state.proxyProtocol = normalizeProxyProtocol(value);
-    return state.proxyProtocol;
-  }
-
-  function getStep1ProxyCountry() {
-    const value = document.getElementById("step1ProxyCountrySelect").value;
-    state.step1ProxyCountry = normalizeProxyCountry(value);
-    return state.step1ProxyCountry;
-  }
-
-  function getStep3ProxyCountry() {
-    const value = document.getElementById("step3ProxyCountrySelect").value;
-    state.step3ProxyCountry = normalizeProxyCountry(value);
-    return state.step3ProxyCountry;
-  }
-
-  function normalizeProxyProtocol(value) {
-    return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
-  }
-
-  function normalizeProxyCountry(value) {
-    const country = String(value || "").trim().toUpperCase();
-    return country === "JP" ? "JP" : "US";
-  }
-
-  function normalizeWebshareStatus(payload) {
-    return String(
-      (payload && (payload.state || payload.status)) ||
-      ((payload && payload.data && (payload.data.state || payload.data.status)) || "")
-    ).trim().toLowerCase();
-  }
-
-  function isWebshareTerminalSuccess(status) {
-    return ["completed", "complete", "success", "succeeded", "done"].includes(String(status || "").toLowerCase());
-  }
-
-  function isWebshareTerminalFailure(status) {
-    return ["failed", "failure", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
-  }
-
-  async function readJsonResponse(response, label) {
-    const text = await response.text();
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch (error) {
-      throw new Error(`${label}返回不是 JSON: HTTP ${response.status} ${text.slice(0, 200)}`);
-    }
-  }
-
   async function fetchVerificationCode(email) {
     try {
       const resp = await fetch(`${CODE_API}?email=${encodeURIComponent(email)}&format=json`);
@@ -488,13 +130,6 @@
 
   async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
     try {
-      const checkoutRegionConfig = {
-        ID: { country: "ID", currency: "IDR" },
-        IE: { country: "IE", currency: "EUR" },
-        JP: { country: "JP", currency: "JPY" },
-        US: { country: "US", currency: "USD" },
-        DE: { country: "DE", currency: "EUR" }
-      };
       const session = await fetch("https://chatgpt.com/api/auth/session", {
         cache: "no-store",
         credentials: "include"
@@ -502,7 +137,7 @@
       const accessToken = session && session.accessToken;
       if (!accessToken) return { ok: false, error: "accessToken: null" };
 
-      const config = checkoutRegionConfig[checkoutRegion] || checkoutRegionConfig.ID;
+      const config = regionConfig[checkoutRegion] || regionConfig.ID;
       const payload = {
         plan_name: "chatgptplusplan",
         billing_details: { country: config.country, currency: config.currency },
@@ -524,41 +159,11 @@
       const paymentLink = data && (data.url || data.stripe_hosted_url || data.checkout_url) || null;
       return {
         ok: resp.ok && Boolean(paymentLink),
-        accessToken,
         paymentLink,
         error: resp.ok ? "" : `HTTP ${resp.status}`
       };
     } catch (e) {
       return { ok: false, error: e.message || "checkout failed" };
-    }
-  }
-
-  async function submitThirdPartyAccount(accountInfo) {
-    try {
-      const resp = await fetch(THIRD_PARTY_ACCOUNTS_API, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": THIRD_PARTY_API_KEY
-        },
-        body: JSON.stringify({
-          account: accountInfo.account,
-          accessToken: accountInfo.accessToken,
-          payurl: accountInfo.payurl
-        })
-      });
-      let data = null;
-      try {
-        data = await resp.json();
-      } catch (_) {}
-      return {
-        ok: resp.ok,
-        status: resp.status,
-        data,
-        error: resp.ok ? "" : `HTTP ${resp.status}`
-      };
-    } catch (e) {
-      return { ok: false, status: 0, data: null, error: e.message || "third-party submit failed" };
     }
   }
 
@@ -802,7 +407,7 @@
       }
     }
     logMessage("已提交邮箱，轮询验证码...");
-
+    await delay();
     let code = null;
     for (let i = 0; i < 25; i += 1) {
       code = await fetchVerificationCode(email);
@@ -837,8 +442,6 @@
       })();
     `;
     await executeScriptAfterPageReady(tabId, { code: fillCodeOnly }, "填写验证码");
-    await delay(3000);
-
     const submitCodeBtn = `
       (function() {
         function simulateClick(el) {
@@ -865,8 +468,8 @@
       })();
     `;
     await scrollTabToBottom(tabId);
+    await delay();
     await executeScriptAfterPageReady(tabId, { code: submitCodeBtn }, "提交验证码");
-
     if (!nameAgeFilledOnEmailPage) {
       logMessage("验证码已提交，等待姓名和年龄输入框...");
       const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, submitCodeBtn, clickTryAgainCode);
@@ -915,90 +518,16 @@
     return Boolean((await executeScriptAfterPageReady(tabId, { code: clickTryAgainCode }, "检测并点击 Try again"))[0]);
   }
 
-  async function getCurrentWindowActiveTab() {
-    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
-    return tabs && tabs[0] ? tabs[0] : null;
-  }
-
-  async function createPrivateAutomationWindow(url) {
-    const createdWindow = await ext.windows.create({
-      url: "about:blank",
-      incognito: true,
-      focused: true
-    });
-    const tab = createdWindow && createdWindow.tabs && createdWindow.tabs[0];
-    if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
-      throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
-    }
-    await prepareRandomUserAgentForTab(tab.id, url);
-    await ext.tabs.update(tab.id, { url, active: true });
-    return {
-      windowId: createdWindow.id,
-      tab: await ext.tabs.get(tab.id)
-    };
-  }
-
-  async function closeAutomationWindow(windowId) {
-    if (windowId === undefined || windowId === null) {
-      return;
-    }
-    try {
-      await delay(AUTOMATION_WINDOW_CLOSE_DELAY_MS);
-      await ext.windows.remove(windowId);
-    } catch (error) {
-      console.warn("Failed to close automation private window", error);
-    }
-  }
-
-  async function requestChatGptCheckoutLinkFromTab(tabId, checkoutRegion) {
-    try {
-      const results = await executeScriptAfterPageReady(tabId, {
-        code: `(${requestChatGptCheckoutLinkOnly.toString()})(${JSON.stringify(checkoutRegion)})`,
-        runAt: "document_idle"
-      }, "隐私窗口获取支付链接");
-      const result = Array.isArray(results) ? results[0] : results;
-      return result || { ok: false, error: "隐私窗口未返回支付链接任务结果" };
-    } catch (error) {
-      return {
-        ok: false,
-        error: "隐私窗口支付链接任务失败: " + formatError(error)
-      };
-    }
-  }
-
   async function createTabInActiveWindow(url) {
-    let tab = null;
     try {
-      const currentTab = await getCurrentWindowActiveTab();
-      if (currentTab && currentTab.windowId !== undefined) {
-        tab = await ext.tabs.create({ windowId: currentTab.windowId, active: true });
+      const win = await ext.windows.getLastFocused({ windowTypes: ["normal"] });
+      if (win && win.id !== undefined) {
+        return await ext.tabs.create({ windowId: win.id, url, active: true });
       }
     } catch (error) {
       console.warn("Failed to get active browser window", error);
     }
-    if (!tab) {
-      tab = await ext.tabs.create({ active: true });
-    }
-    await prepareRandomUserAgentForTab(tab.id, url);
-    await ext.tabs.update(tab.id, { url, active: true });
-    return ext.tabs.get(tab.id);
-  }
-
-  async function prepareRandomUserAgentForTab(tabId, url) {
-    try {
-      const response = await ext.runtime.sendMessage({
-        type: "gptAutoRegisterUserAgent",
-        action: "prepare",
-        tabId,
-        url
-      });
-      if (response && response.userAgent) {
-        logMessage(`User-Agent 已随机化: ${response.userAgent}`);
-      }
-    } catch (error) {
-      console.warn("Failed to prepare random User-Agent", error);
-      logMessage("User-Agent 随机化失败: " + formatError(error));
-    }
+    return ext.tabs.create({ url, active: true });
   }
 
   function getRunCount() {
@@ -1039,17 +568,7 @@
     }
 
     logMessage("开始完整自动化流程...");
-    try {
-      await ensureProxyForStage("第一步");
-    } catch (error) {
-      logMessage("第一步代理设置失败，流程终止: " + formatError(error));
-      return;
-    }
-    let automationWindowId = null;
-    try {
-      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
-      automationWindowId = automationWindow.windowId;
-      const tab = automationWindow.tab;
+    const tab = await createTabInActiveWindow("https://chatgpt.com");
     logMessage("步骤1: 打开 chatgpt.com");
 
     const registration = await runRegistration(tab.id);
@@ -1077,7 +596,7 @@
 
     setActiveStep(2);
     logMessage("步骤2: 获取支付链接");
-    const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+    const result = await requestChatGptCheckoutLinkOnly(countrySel);
     if (!result.ok || !result.paymentLink) {
       logMessage("获取支付链接失败: " + (result.error || "未知错误"));
       return;
@@ -1086,23 +605,9 @@
     document.getElementById("payUrlInput").value = result.paymentLink;
     await persistState();
     logMessage("支付链接获取成功: " + result.paymentLink);
-    logMessage("正在提交到第三方接口...");
-    const thirdPartyResult = await submitThirdPartyAccount({
-      account: registration.email,
-      accessToken: result.accessToken,
-      payurl: result.paymentLink
-    });
-    if (thirdPartyResult.ok) {
-      logMessage("第三方接口提交成功");
-    } else {
-      logMessage("第三方接口提交失败: " + (thirdPartyResult.error || "未知错误"));
-    }
 
     prepared.payUrl = result.paymentLink;
     await runPayPalFlow(tab.id, prepared);
-    } finally {
-      await closeAutomationWindow(automationWindowId);
-    }
   }
 
   async function startFromPayUrl() {
@@ -1115,20 +620,8 @@
     }
 
     logMessage("从 PayURL 开始支付流程...");
-    try {
-      await ensureProxyForStage("第三步");
-    } catch (error) {
-      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-      return;
-    }
-    let automationWindowId = null;
-    try {
-      const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
-      automationWindowId = automationWindow.windowId;
-      await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
-    } finally {
-      await closeAutomationWindow(automationWindowId);
-    }
+    const tab = await createTabInActiveWindow(prepared.payUrl);
+    await runPayPalFlow(tab.id, prepared);
   }
 
   async function startFromStep3() {
@@ -1140,19 +633,14 @@
       return;
     }
 
-    const tab = await getCurrentWindowActiveTab();
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
     if (!tab || !tab.id) {
       logMessage("错误: 未找到当前标签页");
       return;
     }
 
     logMessage("从当前页面第3步开始支付流程...");
-    try {
-      await ensureProxyForStage("第三步");
-    } catch (error) {
-      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-      return;
-    }
     await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
   }
 
@@ -1165,7 +653,8 @@
       return;
     }
 
-    const tab = await getCurrentWindowActiveTab();
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
     if (!tab || !tab.id) {
       logMessage("错误: 未找到当前标签页");
       return;
@@ -1217,79 +706,25 @@
     };
   }
 
-  async function runPayPalFlow(tabId, prepared, options = {}) {
+  async function runPayPalFlow(tabId, prepared) {
     if (!prepared.payUrl) {
       throw new Error("PayURL 不能为空");
-    }
-    if (!options.proxyReady) {
-      try {
-        await ensureProxyForStage("第三步");
-      } catch (error) {
-        logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-        return;
-      }
     }
     await updateTabUrl(tabId, prepared.payUrl);
     await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
 
   async function runPayPalFlowFromCurrentPayUrl(tabId, prepared) {
-    const payUrlReady = await runPayUrlPage(tabId, prepared);
-    if (!payUrlReady) {
-      return;
-    }
+    await runPayUrlPage(tabId, prepared);
     await runPayPalLoginPage(tabId, prepared);
     await runPayPalSignupPage(tabId, prepared);
     logMessage("PayPal 步骤已完成，短信验证码已输入");
-  }
-
-  function parseCurrencyAmountText(text) {
-    const normalized = String(text || "").replace(/\s+/g, "");
-    const numericText = normalized.replace(/[^0-9.,-]/g, "").replace(/,/g, "");
-    const amount = Number(numericText);
-    return Number.isFinite(amount) ? amount : null;
-  }
-
-  function isZeroCurrencyAmount(text) {
-    const amount = parseCurrencyAmountText(text);
-    return amount !== null && Math.abs(amount) < 0.000001;
-  }
-
-  async function getPayUrlCurrencyAmountText(tabId) {
-    const results = await executePageFunction(tabId, "__gptAutoRegisterGetText", {
-      selector: ".CurrencyAmount",
-      timeoutMs: 10000
-    }, {
-      allFrames: true
-    });
-    const matched = (Array.isArray(results) ? results : [results])
-      .filter(Boolean)
-      .find((result) => result.ok && String(result.text || "").trim());
-    return matched ? String(matched.text || "").trim() : "";
-  }
-
-  async function ensurePayUrlAmountIsZero(tabId) {
-    logMessage("检查 PayURL 金额是否为 0 元");
-    const amountText = await getPayUrlCurrencyAmountText(tabId);
-    if (!amountText) {
-      throw new Error("未找到 PayURL 金额元素 .CurrencyAmount，停止当前任务");
-    }
-    logMessage(`PayURL 当前金额: ${amountText}`);
-    if (!isZeroCurrencyAmount(amountText)) {
-      logMessage(`PayURL 金额不是 0 元，停止当前任务: ${amountText}`);
-      return false;
-    }
-    return true;
   }
 
   async function runPayUrlPage(tabId, prepared) {
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
-    const shouldContinue = await ensurePayUrlAmountIsZero(tabId);
-    if (!shouldContinue) {
-      return false;
-    }
     await clickPageElement(tabId, {
       selector: 'button[data-testid="paypal-accordion-item-button"]',
       timeoutMs: 60000
@@ -1310,7 +745,6 @@
       timeoutMs: 30000
     }, "未找到提交按钮");
     logMessage("PayURL 页面已提交");
-    return true;
   }
 
   async function runPayPalLoginPage(tabId, prepared) {
@@ -1417,7 +851,7 @@
       timeoutMs: 60000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
-    const finalUrl = await waitForUrlExact(tabId, "https://chatgpt.com/", 120000);
+    const finalUrl = await waitForUrlPrefix(tabId, "https://chatgpt.com/", 120000);
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
   }
 
@@ -1551,7 +985,6 @@
   async function updateTabUrl(tabId, url) {
     const tab = await ext.tabs.get(tabId);
     if (!String(tab.url || "").startsWith(url)) {
-      await prepareRandomUserAgentForTab(tabId, url);
       await ext.tabs.update(tabId, { url, active: true });
     }
     const loaded = await waitForPageComplete(tabId, 45000);
@@ -1571,18 +1004,6 @@
       await delay(1000);
     }
     throw new Error(`等待 URL 超时: ${prefix}`);
-  }
-
-  async function waitForUrlExact(tabId, expectedUrl, timeoutMs) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const tab = await ext.tabs.get(tabId);
-      if (String(tab.url || "") === expectedUrl) {
-        return tab.url;
-      }
-      await delay(1000);
-    }
-    throw new Error(`绛夊緟 URL 瓒呮椂: ${expectedUrl}`);
   }
 
   async function waitForPageComplete(tabId, timeoutMs) {
@@ -2339,18 +1760,6 @@
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
-      state.proxyEnabled = saved.proxyEnabled === undefined ? true : Boolean(saved.proxyEnabled);
-      document.getElementById("proxyEnabledCheckbox").checked = state.proxyEnabled;
-      state.webshareApiKey = typeof saved.webshareApiKey === "string" ? saved.webshareApiKey : "";
-      document.getElementById("webshareApiKeyInput").value = state.webshareApiKey;
-      state.proxyProtocol = normalizeProxyProtocol(saved.proxyProtocol);
-      document.getElementById("proxyProtocolSelect").value = state.proxyProtocol;
-      state.step1ProxyCountry = normalizeProxyCountry(saved.step1ProxyCountry);
-      document.getElementById("step1ProxyCountrySelect").value = state.step1ProxyCountry;
-      state.step3ProxyCountry = normalizeProxyCountry(saved.step3ProxyCountry);
-      document.getElementById("step3ProxyCountrySelect").value = state.step3ProxyCountry;
-      state.currentProxy = isRuntimeProxy(saved.currentProxy) ? saved.currentProxy : null;
-      renderProxyStatus();
       state.randomCardEnabled = Boolean(saved.randomCardEnabled);
       document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
@@ -2374,12 +1783,6 @@
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       payUrlInput: document.getElementById("payUrlInput").value,
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
-      proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
-      webshareApiKey: document.getElementById("webshareApiKeyInput").value,
-      proxyProtocol: normalizeProxyProtocol(document.getElementById("proxyProtocolSelect").value),
-      step1ProxyCountry: normalizeProxyCountry(document.getElementById("step1ProxyCountrySelect").value),
-      step3ProxyCountry: normalizeProxyCountry(document.getElementById("step3ProxyCountrySelect").value),
-      currentProxy: state.currentProxy,
       fillSettings: sanitizeFillSettings(state.fillSettings),
       fillSettingsExpanded: state.fillSettingsExpanded,
       lastPhoneCode: state.lastPhoneCode,
@@ -2393,31 +1796,6 @@
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
     document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
-    document.getElementById("getWebshareProxyButton").addEventListener("click", () => runWithErrorHandling(getCurrentWebshareProxy));
-    document.getElementById("setProxyButton").addEventListener("click", () => runWithErrorHandling(setCurrentProxy));
-    document.getElementById("replaceProxyButton").addEventListener("click", () => runWithErrorHandling(replaceWebshareProxy));
-    document.getElementById("clearProxyButton").addEventListener("click", () => runWithErrorHandling(clearProxy));
-    document.getElementById("proxyEnabledCheckbox").addEventListener("change", () => {
-      state.proxyEnabled = document.getElementById("proxyEnabledCheckbox").checked;
-      persistState();
-      logMessage(state.proxyEnabled ? "代理已开启" : "代理已关闭");
-    });
-    document.getElementById("webshareApiKeyInput").addEventListener("input", () => {
-      state.webshareApiKey = document.getElementById("webshareApiKeyInput").value.trim();
-      persistState();
-    });
-    document.getElementById("proxyProtocolSelect").addEventListener("change", () => {
-      document.getElementById("proxyProtocolSelect").value = getProxyProtocol();
-      persistState();
-    });
-    document.getElementById("step1ProxyCountrySelect").addEventListener("change", () => {
-      document.getElementById("step1ProxyCountrySelect").value = getStep1ProxyCountry();
-      persistState();
-    });
-    document.getElementById("step3ProxyCountrySelect").addEventListener("change", () => {
-      document.getElementById("step3ProxyCountrySelect").value = getStep3ProxyCountry();
-      persistState();
-    });
     document.getElementById("country").addEventListener("change", persistState);
     document.getElementById("runCountInput").addEventListener("input", persistState);
     document.getElementById("cardInput").addEventListener("input", persistState);

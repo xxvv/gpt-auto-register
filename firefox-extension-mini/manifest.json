@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "name": "GPT Auto Register Mini",
+  "version": "2.0.0",
+  "description": "Simplified GPT registration, PayURL, and PayPal payment automation wizard",
+  "permissions": [
+    "tabs",
+    "storage",
+    "scripting",
+    "activeTab",
+    "<all_urls>"
+  ],
+  "sidebar_action": {
+    "default_panel": "sidebar.html",
+    "default_title": "GPT Auto Register Mini"
+  },
+  "applications": {
+    "gecko": {
+      "id": "gpt-auto-register-mini@example.local",
+      "strict_min_version": "109.0"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png"
+  }
+}

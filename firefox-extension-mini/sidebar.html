@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>GPT Auto Register v2</title>
+  <title>GPT Auto Register Mini</title>
   <style>
     body { font-family: sans-serif; margin: 0; padding: 10px; width: 360px; color: #222; }
     .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 12px; }
@@ -19,8 +19,6 @@
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .actions button { margin-bottom: 0; }
     .actions .wide { grid-column: 1 / -1; }
-    .proxy-status { border: 1px solid #ddd; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; margin-bottom: 8px; }
-    .proxy-status.empty { color: #666; }
     .settings { border: 1px solid #ddd; padding: 8px; background: #fafafa; margin-top: 8px; }
     .settings-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
     .settings-field span { display: block; font-size: 12px; margin-bottom: 3px; font-weight: bold; }
@@ -40,37 +38,6 @@
     <div id="step3" class="step">3. PP支付</div>
     <div id="step4" class="step">4. PayPal</div>
     <div id="step5" class="step">5. 短信</div>
-  </div>
-
-  <div class="panel">
-    <label class="checkbox-option" for="proxyEnabledCheckbox">
-      <input id="proxyEnabledCheckbox" type="checkbox" checked>
-      <span>开启代理</span>
-    </label>
-    <label for="webshareApiKeyInput">Webshare API Key</label>
-    <input id="webshareApiKeyInput" type="password" spellcheck="false" placeholder="输入 Webshare API Key">
-    <label for="proxyProtocolSelect">代理协议</label>
-    <select id="proxyProtocolSelect">
-      <option value="http">http</option>
-      <option value="socks5">socks5</option>
-    </select>
-    <label for="step1ProxyCountrySelect">第一步代理国家</label>
-    <select id="step1ProxyCountrySelect">
-      <option value="US">美国 (US)</option>
-      <option value="JP">日本 (JP)</option>
-    </select>
-    <label for="step3ProxyCountrySelect">第三步代理国家</label>
-    <select id="step3ProxyCountrySelect">
-      <option value="US">美国 (US)</option>
-      <option value="JP">日本 (JP)</option>
-    </select>
-    <div id="proxyStatus" class="proxy-status empty" aria-live="polite">代理状态: 未设置</div>
-    <div class="actions">
-      <button id="getWebshareProxyButton" class="secondary" type="button">获取当前</button>
-      <button id="setProxyButton" class="secondary" type="button">设置代理</button>
-      <button id="replaceProxyButton" class="secondary" type="button">替换代理</button>
-      <button id="clearProxyButton" class="secondary" type="button">清除代理</button>
-    </div>
   </div>
 
   <div class="panel">

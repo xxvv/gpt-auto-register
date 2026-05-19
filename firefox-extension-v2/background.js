@@ -3,7 +3,9 @@
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const TAB_USER_AGENT_TTL_MS = 30 * 60 * 1000;
   let proxyAuth = {};
+  const tabUserAgents = new Map();
 
   ext.storage.local.get(PROXY_AUTH_KEY).then((saved) => {
     proxyAuth = saved && saved[PROXY_AUTH_KEY] ? saved[PROXY_AUTH_KEY] : {};
@@ -16,9 +18,19 @@
     proxyAuth = changes[PROXY_AUTH_KEY].newValue || {};
   });
 
-  ext.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== "gptAutoRegisterProxy") {
+  ext.runtime.onMessage.addListener((message, sender) => {
+    if (
+      !message ||
+      (
+        message.type !== "gptAutoRegisterProxy" &&
+        message.type !== "gptAutoRegisterUserAgent"
+      )
+    ) {
       return undefined;
+    }
+
+    if (message.type === "gptAutoRegisterUserAgent") {
+      return handleUserAgentMessage(message, sender);
     }
 
     if (message.action === "apply") {
@@ -47,6 +59,31 @@
     ["blocking"]
   );
 
+  ext.webRequest.onBeforeSendHeaders.addListener(
+    (details) => {
+      const record = getTabUserAgentRecord(details && details.tabId);
+      if (!record || !record.userAgent) {
+        return {};
+      }
+      const requestHeaders = Array.isArray(details.requestHeaders) ? details.requestHeaders : [];
+      const userAgentHeader = requestHeaders.find((header) => String(header.name || "").toLowerCase() === "user-agent");
+      if (userAgentHeader) {
+        userAgentHeader.value = record.userAgent;
+      } else {
+        requestHeaders.push({ name: "User-Agent", value: record.userAgent });
+      }
+      return { requestHeaders };
+    },
+    { urls: ["<all_urls>"] },
+    ["blocking", "requestHeaders"]
+  );
+
+  if (ext.tabs && ext.tabs.onRemoved) {
+    ext.tabs.onRemoved.addListener((tabId) => {
+      tabUserAgents.delete(Number(tabId));
+    });
+  }
+
   function shouldUseProxyAuth(details) {
     if (!details || !details.isProxy || !proxyAuth || !proxyAuth.enabled) {
       return false;
@@ -72,6 +109,71 @@
     }
 
     return true;
+  }
+
+  function handleUserAgentMessage(message, sender) {
+    if (message.action === "prepare") {
+      const tabId = Number(message.tabId || 0);
+      if (tabId <= 0) {
+        return Promise.resolve({ ok: false, error: "Missing tabId" });
+      }
+      const userAgent = generateRandomUserAgent();
+      tabUserAgents.set(tabId, {
+        userAgent,
+        preparedAt: Date.now(),
+        url: String(message.url || "")
+      });
+      return Promise.resolve({ ok: true, tabId, userAgent });
+    }
+
+    if (message.action === "get") {
+      const tabId = Number(message.tabId || (sender && sender.tab && sender.tab.id) || 0);
+      const record = getTabUserAgentRecord(tabId);
+      return Promise.resolve({
+        ok: Boolean(record && record.userAgent),
+        tabId,
+        userAgent: record && record.userAgent ? record.userAgent : ""
+      });
+    }
+
+    return Promise.resolve({ ok: false, error: `Unknown userAgent action: ${message.action || ""}` });
+  }
+
+  function getTabUserAgentRecord(tabId) {
+    const normalizedTabId = Number(tabId || 0);
+    if (normalizedTabId <= 0) {
+      return null;
+    }
+    const record = tabUserAgents.get(normalizedTabId);
+    if (!record) {
+      return null;
+    }
+    if (Date.now() - Number(record.preparedAt || 0) > TAB_USER_AGENT_TTL_MS) {
+      tabUserAgents.delete(normalizedTabId);
+      return null;
+    }
+    return record;
+  }
+
+  function generateRandomUserAgent() {
+    const firefoxMajor = randomInt(123, 145);
+    const platform = randomChoice([
+      "Windows NT 10.0; Win64; x64",
+      "Windows NT 10.0; WOW64",
+      "Macintosh; Intel Mac OS X 10.15",
+      "X11; Linux x86_64"
+    ]);
+    return `Mozilla/5.0 (${platform}; rv:${firefoxMajor}.0) Gecko/20100101 Firefox/${firefoxMajor}.0`;
+  }
+
+  function randomChoice(values) {
+    return values[randomInt(0, values.length - 1)];
+  }
+
+  function randomInt(min, max) {
+    const low = Math.ceil(Number(min) || 0);
+    const high = Math.floor(Number(max) || low);
+    return Math.floor(Math.random() * (high - low + 1)) + low;
   }
 
   async function applyFirefoxProxy(proxy) {
