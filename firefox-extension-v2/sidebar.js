@@ -98,6 +98,13 @@
     return Math.floor(Math.random() * 34) + 22;
   }
 
+  function generateRandomBirthday() {
+    const year = Math.floor(Math.random() * 34) + 1971;
+    const month = String(Math.floor(Math.random() * 12) + 1).padStart(2, "0");
+    const day = String(Math.floor(Math.random() * 28) + 1).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
   function logMessage(message) {
     const logDiv = document.getElementById("logOutput");
     if (!logDiv) return;
@@ -607,6 +614,7 @@
     const email = `${localPart}@${domain}`;
     const randomName = generateRandomName();
     const randomAge = String(generateRandomAge());
+    const randomBirthday = generateRandomBirthday();
     logMessage(`生成注册邮箱: ${email}`);
 
     const fillEmailCode = `
@@ -622,13 +630,33 @@
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }
         }
+        function setValue(el, text) {
+          if (!el) return;
+          el.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(el, text);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        function fillAgeOrBirthday(ageValue, birthdayValue) {
+          const ageInput = document.querySelector('input[name="age"]');
+          const birthdayInput = document.querySelector('input[name="birthday"]');
+          if (ageInput) {
+            simulateType(ageInput, ageValue);
+            return true;
+          }
+          if (birthdayInput) {
+            setValue(birthdayInput, birthdayValue);
+            return true;
+          }
+          return false;
+        }
         const input = document.querySelector('#email');
         const nameInput = document.querySelector('input[name="name"]');
-        const ageInput = document.querySelector('input[name="age"]');
         if (input) simulateType(input, ${JSON.stringify(email)});
         if (nameInput) simulateType(nameInput, ${JSON.stringify(randomName)});
-        if (ageInput) simulateType(ageInput, ${JSON.stringify(randomAge)});
-        return { email: Boolean(input), nameAge: Boolean(nameInput && ageInput) };
+        const ageOrBirthday = fillAgeOrBirthday(${JSON.stringify(randomAge)}, ${JSON.stringify(randomBirthday)});
+        return { email: Boolean(input), nameAge: Boolean(nameInput && ageOrBirthday) };
       })();
     `;
     const fillEmailResult = (await executeScriptAfterPageReady(tabId, { code: fillEmailCode }, "填写邮箱"))[0] || {};
@@ -654,13 +682,34 @@
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }
         }
+        function setValue(el, text) {
+          if (!el) return;
+          el.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(el, text);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        function fillAgeOrBirthday(ageValue, birthdayValue) {
+          const ageInput = document.querySelector('input[name="age"]');
+          const birthdayInput = document.querySelector('input[name="birthday"]');
+          if (ageInput) {
+            simulateType(ageInput, ageValue);
+            return true;
+          }
+          if (birthdayInput) {
+            setValue(birthdayInput, birthdayValue);
+            return true;
+          }
+          return false;
+        }
         const start = Date.now();
         while (Date.now() - start < 60000) {
           const nameInput = document.querySelector('input[name="name"]');
-          const ageInput = document.querySelector('input[name="age"]');
+          const ageInput = document.querySelector('input[name="age"], input[name="birthday"]');
           if (nameInput && ageInput) {
             simulateType(nameInput, ${JSON.stringify(randomName)});
-            simulateType(ageInput, ${JSON.stringify(randomAge)});
+            fillAgeOrBirthday(${JSON.stringify(randomAge)}, ${JSON.stringify(randomBirthday)});
             return { ok: true };
           }
           await delay(1000);
