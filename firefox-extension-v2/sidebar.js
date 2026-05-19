@@ -856,6 +856,18 @@
     return Boolean((await executeScriptAfterPageReady(tabId, { code: clickTryAgainCode }, "检测并点击 Try again"))[0]);
   }
 
+  async function createTabInActiveWindow(url) {
+    try {
+      const win = await ext.windows.getLastFocused({ windowTypes: ["normal"] });
+      if (win && win.id !== undefined) {
+        return await ext.tabs.create({ windowId: win.id, url, active: true });
+      }
+    } catch (error) {
+      console.warn("Failed to get active browser window", error);
+    }
+    return ext.tabs.create({ url, active: true });
+  }
+
   async function startAutomation() {
     const countrySel = document.getElementById("country").value;
     let prepared;
@@ -873,7 +885,7 @@
       logMessage("第一步代理设置失败，流程终止: " + formatError(error));
       return;
     }
-    const tab = await ext.tabs.create({ url: "https://chatgpt.com", active: true });
+    const tab = await createTabInActiveWindow("https://chatgpt.com");
     logMessage("步骤1: 打开 chatgpt.com");
 
     const registration = await runRegistration(tab.id);
@@ -942,7 +954,7 @@
       logMessage("第三步代理设置失败，流程终止: " + formatError(error));
       return;
     }
-    const tab = await ext.tabs.create({ url: prepared.payUrl, active: true });
+    const tab = await createTabInActiveWindow(prepared.payUrl);
     await runPayPalFlow(tab.id, prepared, { proxyReady: true });
   }
 
