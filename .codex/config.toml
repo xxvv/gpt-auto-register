@@ -1,0 +1,6 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+ANTHROPIC_AUTH_TOKEN = "sinite"
+ANTHROPIC_BASE_URL = "https://kiro.nnai.website"

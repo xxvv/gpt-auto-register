@@ -94,6 +94,62 @@ class BrowserProxyDiagnosticsTests(unittest.TestCase):
             target_timeout=5,
         )
 
+    @patch("app.browser.SafeChrome")
+    @patch("app.browser._build_task_user_agent")
+    @patch("app.browser._detect_chrome_major_version", return_value=125)
+    @patch("app.browser.uc.ChromeOptions")
+    def test_create_driver_applies_task_user_agent(
+        self,
+        chrome_options_cls,
+        detect_version,
+        build_user_agent,
+        safe_chrome_cls,
+    ):
+        options = MagicMock()
+        chrome_options_cls.return_value = options
+        safe_driver = MagicMock()
+        safe_chrome_cls.return_value = safe_driver
+        task_user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.7000.42 Safari/537.36"
+        )
+        build_user_agent.return_value = task_user_agent
+
+        driver = browser.create_driver(headless=False, proxy=None)
+
+        self.assertIs(driver, safe_driver)
+        build_user_agent.assert_called_once_with(125)
+        options.add_argument.assert_any_call(f"--user-agent={task_user_agent}")
+        safe_driver.execute_cdp_cmd.assert_any_call(
+            "Network.setUserAgentOverride",
+            {
+                "userAgent": task_user_agent,
+                "acceptLanguage": "zh-CN,zh;q=0.9,en;q=0.8",
+                "platform": "Windows",
+            },
+        )
+        add_script_calls = [
+            call
+            for call in safe_driver.execute_cdp_cmd.call_args_list
+            if call.args and call.args[0] == "Page.addScriptToEvaluateOnNewDocument"
+        ]
+        self.assertTrue(add_script_calls)
+        self.assertIn(task_user_agent, add_script_calls[0].args[1]["source"])
+        detect_version.assert_called_once()
+
+    @patch("app.browser.random.randint", side_effect=[7001, 88, 7002, 89])
+    @patch("app.browser.random.choice", return_value="Windows NT 10.0; Win64; x64")
+    def test_build_task_user_agent_changes_between_tasks(self, choice, randint):
+        del choice, randint
+
+        first = browser._build_task_user_agent(125)
+        second = browser._build_task_user_agent(125)
+
+        self.assertNotEqual(first, second)
+        self.assertIn("Chrome/125.0.7001.88", first)
+        self.assertIn("Chrome/125.0.7002.89", second)
+
     @patch("app.browser.time.sleep", return_value=None)
     @patch("app.browser.SafeChrome")
     @patch("app.browser._detect_chrome_major_version", return_value=None)

@@ -3,6 +3,7 @@
 """
 
 import io
+import json
 import os
 import random
 import re
@@ -35,6 +36,7 @@ from .config import (
     BROWSER_POST_SUBMIT_WAIT,
     BROWSER_TRANSITION_WAIT,
     BROWSER_VERIFY_POLL_INTERVAL,
+    USER_AGENT,
 )
 from .utils import (
     OPENAI_PROXY_TARGET_URLS,
@@ -1022,6 +1024,84 @@ def _detect_chrome_major_version() -> int | None:
     return None
 
 
+def _extract_chrome_major_from_user_agent(user_agent: str | None) -> int | None:
+    match = re.search(r"\b(?:Chrome|Chromium)/(\d+)\.", str(user_agent or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _build_task_user_agent(chrome_major_version: int | None = None) -> str:
+    """
+    为每次浏览器任务生成一个新的 Chrome User-Agent。
+
+    优先复用本机 Chrome 主版本，避免和 undetected-chromedriver 启动的浏览器
+    主版本不一致；每次创建 driver 时随机化 build/patch，让 navigator.userAgent
+    不再固定不变。
+    """
+    major = (
+        chrome_major_version
+        or _extract_chrome_major_from_user_agent(USER_AGENT)
+        or random.randint(120, 126)
+    )
+    chrome_version = f"{major}.0.{random.randint(6000, 7999)}.{random.randint(10, 199)}"
+    configured_user_agent = (USER_AGENT or "").strip()
+
+    if re.search(r"\b(?:Chrome|Chromium)/\d", configured_user_agent):
+        return re.sub(
+            r"\b(Chrome|Chromium)/\d+(?:\.\d+){0,3}",
+            rf"\1/{chrome_version}",
+            configured_user_agent,
+            count=1,
+        )
+
+    os_token = random.choice(
+        (
+            "Windows NT 10.0; Win64; x64",
+            "Windows NT 10.0; WOW64",
+        )
+    )
+    return (
+        f"Mozilla/5.0 ({os_token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+    )
+
+
+def _apply_user_agent_override(driver, user_agent: str) -> None:
+    """同时覆盖请求头和页面内 navigator.userAgent。"""
+    _execute_cdp_cmd_with_target_recovery(
+        driver,
+        "Network.setUserAgentOverride",
+        {
+            "userAgent": user_agent,
+            "acceptLanguage": "zh-CN,zh;q=0.9,en;q=0.8",
+            "platform": "Windows",
+        },
+    )
+    _execute_cdp_cmd_with_target_recovery(
+        driver,
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": f"""
+                const taskUserAgent = {json.dumps(user_agent)};
+                try {{
+                    Object.defineProperty(navigator, 'userAgent', {{
+                        get: () => taskUserAgent,
+                    }});
+                }} catch (e) {{}}
+                try {{
+                    Object.defineProperty(Navigator.prototype, 'userAgent', {{
+                        get: () => taskUserAgent,
+                    }});
+                }} catch (e) {{}}
+            """
+        },
+    )
+
+
 def apply_proxy_to_options(options: uc.ChromeOptions, proxy: dict | None) -> None:
     """
     将代理配置写入 ChromeOptions。
@@ -1092,8 +1172,13 @@ def create_driver(headless=False, proxy=None):
             target_timeout=5,
         )
 
+    chrome_major_version = _detect_chrome_major_version()
+    task_user_agent = _build_task_user_agent(chrome_major_version)
+
     options = uc.ChromeOptions()
     options.page_load_strategy = "eager"
+    options.add_argument(f"--user-agent={task_user_agent}")
+    print(f"  🌐 本次浏览器 User-Agent: {task_user_agent}")
 
     # === 伪无头模式 (Fake Headless) ===
     # 真正的 Headless 很难过 Cloudflare，我们使用"移出屏幕"的策略
@@ -1117,8 +1202,6 @@ def create_driver(headless=False, proxy=None):
     # 应用代理设置
     apply_proxy_to_options(options, proxy)
 
-    chrome_major_version = _detect_chrome_major_version()
-
     chrome_kwargs = {
         "options": options,
         "use_subprocess": True,
@@ -1129,6 +1212,7 @@ def create_driver(headless=False, proxy=None):
 
     # 使用自定义的 SafeChrome (注意: 传入 real_headless=False)
     driver = _start_safe_chrome_with_retry(chrome_kwargs)
+    _apply_user_agent_override(driver, task_user_agent)
 
     # === 深度伪装 (针对 Headless 模式) ===
     if headless:

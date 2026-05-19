@@ -13,9 +13,12 @@
   const CODE_API = "https://getemail.nnai.website/api/code";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.website/api/third-party/accounts";
   const THIRD_PARTY_API_KEY = "pvxxvv";
+  const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
+  const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const STORAGE_KEY = "gptAutoRegisterV2State";
+  const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
-  const POLL_ATTEMPTS = 3;
+  const POLL_ATTEMPTS = 5;
   const POLL_DELAY_MS = 2500;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
@@ -29,7 +32,7 @@
     billingCitySelector: ["#billingCity", "#billingLocality"],
     billingStateSelector: ["#billingState", ""],
     billingPostalCodeSelector: ["#billingPostalCode", ""],
-    countrySelector: ["#country", ""],
+    countrySelector: ["#country", "#billingCountry"],
     passwordSelector: ["#password", ""],
     passwordValue: "Bb02911ss"
   });
@@ -37,14 +40,29 @@
   const state = {
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
+    randomCardEnabled: false,
     phoneKeyInput: "",
     phoneKey: null,
-    lastPhoneCode: ""
+    lastPhoneCode: "",
+    lastPaypalEmail: "",
+    proxyEnabled: true,
+    webshareApiKey: "",
+    proxyProtocol: "http",
+    step1ProxyCountry: "US",
+    step3ProxyCountry: "US",
+    currentProxy: null
   };
   let usZip3StateRangesPromise = null;
 
+  function randomDelayMs(minMs = 3000, maxMs = 5000) {
+    const min = Math.ceil(Number(minMs) || 3000);
+    const max = Math.floor(Number(maxMs) || 5000);
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
   function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    const waitMs = Number.isFinite(Number(ms)) ? Number(ms) : randomDelayMs();
+    return new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
   function generateLocalPart() {
@@ -97,6 +115,347 @@
       if (step) {
         step.classList.toggle("active", i === stepNumber);
       }
+    }
+  }
+
+  async function ensureProxyForStage(stage) {
+    if (!isProxyEnabled()) {
+      logMessage(`代理未开启，跳过${stage}代理设置`);
+      return false;
+    }
+
+    const country = stage === "第一步" ? getStep1ProxyCountry() : getStep3ProxyCountry();
+    const protocol = getProxyProtocol();
+    const apiKey = requireWebshareApiKey();
+    logMessage(`${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
+    logMessage(`${stage}: 正在先清除当前 Firefox 代理`);
+    await clearFirefoxProxyState();
+    state.currentProxy = null;
+    renderProxyStatus();
+    await persistState();
+    logMessage(`${stage}: 当前 Firefox 代理已清除，开始替换对应国家代理`);
+    const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
+    await applyFirefoxProxy(proxy);
+    state.currentProxy = proxy;
+    renderProxyStatus();
+    await persistState();
+    logMessage(`${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
+    return true;
+  }
+
+  async function getCurrentWebshareProxy() {
+    try {
+      const apiKey = requireWebshareApiKey();
+      const proxy = await getCurrentWebshareProxyDirect(apiKey, getProxyProtocol());
+      state.currentProxy = proxy;
+      renderProxyStatus();
+      await persistState();
+      logMessage(`已获取当前 Webshare 代理: ${formatProxy(proxy)}`);
+    } catch (error) {
+      logMessage(`获取当前 Webshare 代理失败: ${formatError(error)}`);
+    }
+  }
+
+  async function setCurrentProxy() {
+    try {
+      if (!isRuntimeProxy(state.currentProxy)) {
+        const apiKey = requireWebshareApiKey();
+        state.currentProxy = await getCurrentWebshareProxyDirect(apiKey, getProxyProtocol());
+      }
+      await applyFirefoxProxy(state.currentProxy);
+      renderProxyStatus();
+      await persistState();
+      logMessage(`代理设置成功，Firefox 已写入 ${formatProxy(state.currentProxy)}`);
+    } catch (error) {
+      logMessage(`设置代理失败: ${formatError(error)}`);
+    }
+  }
+
+  async function replaceWebshareProxy() {
+    try {
+      const apiKey = requireWebshareApiKey();
+      const proxy = await replaceWebshareProxyDirect(apiKey, getStep3ProxyCountry(), getProxyProtocol());
+      await applyFirefoxProxy(proxy);
+      state.currentProxy = proxy;
+      renderProxyStatus();
+      await persistState();
+      logMessage(`已替换并设置代理: 国家 ${getStep3ProxyCountry()}，${formatProxy(proxy)}`);
+    } catch (error) {
+      logMessage(`替换代理失败: ${formatError(error)}`);
+    }
+  }
+
+  async function clearProxy() {
+    try {
+      await clearFirefoxProxyState();
+      state.currentProxy = null;
+      renderProxyStatus();
+      await persistState();
+      logMessage("已清除 Firefox 代理");
+    } catch (error) {
+      logMessage(`清除代理失败: ${formatError(error)}`);
+    }
+  }
+
+  async function applyFirefoxProxy(proxy) {
+    const runtimeProxy = requireRuntimeProxy(proxy);
+    const proxyType = String(runtimeProxy.type || "http").toLowerCase();
+    if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
+      throw new Error(`Firefox 不支持的代理类型: ${runtimeProxy.type}`);
+    }
+
+    await sendProxyMessage({ action: "apply", proxy: runtimeProxy });
+  }
+
+  async function clearFirefoxProxyState() {
+    await sendProxyMessage({ action: "clear" });
+  }
+
+  async function sendProxyMessage(payload) {
+    const response = await ext.runtime.sendMessage({
+      type: "gptAutoRegisterProxy",
+      ...payload
+    });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "background 代理设置失败");
+    }
+    return response;
+  }
+
+  async function getCurrentWebshareProxyDirect(apiKey, protocol) {
+    const items = await fetchWebshareProxyList(apiKey);
+    return requireRuntimeProxy(mapWebshareItemToProxy(items[0], protocol));
+  }
+
+  async function replaceWebshareProxyDirect(apiKey, country, protocol) {
+    const currentItems = await fetchWebshareProxyList(apiKey);
+    const currentProxy = mapWebshareItemToProxy(currentItems[0], protocol);
+    const response = await fetch(WEBSHARE_REPLACE_API, {
+      method: "POST",
+      headers: buildWebshareHeaders(apiKey),
+      body: JSON.stringify({
+        to_replace: { type: "ip_address", ip_addresses: [currentProxy.host] },
+        replace_with: [{ type: "country", country_code: normalizeProxyCountry(country), count: 1 }],
+        dry_run: false
+      })
+    });
+    const payload = await readJsonResponse(response, "Webshare 替换接口");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
+    }
+
+    const replacementId = String(
+      payload.id ||
+      payload.uuid ||
+      payload.replacement_id ||
+      ((payload.data || {}).id) ||
+      ((payload.data || {}).uuid) ||
+      ((payload.data || {}).replacement_id) ||
+      ""
+    ).trim();
+    if (!replacementId) {
+      throw new Error("Webshare 替换响应缺少任务 ID");
+    }
+
+    const deadline = Date.now() + 30000;
+    let lastStatus = normalizeWebshareStatus(payload);
+    while (Date.now() < deadline) {
+      if (isWebshareTerminalSuccess(lastStatus)) {
+        break;
+      }
+      if (isWebshareTerminalFailure(lastStatus)) {
+        throw new Error(`Webshare 代理替换失败: status=${lastStatus || "unknown"}`);
+      }
+
+      await delay(1200);
+      const detailResponse = await fetch(`${WEBSHARE_REPLACE_API}${replacementId}/`, {
+        method: "GET",
+        headers: buildWebshareHeaders(apiKey)
+      });
+      const detailPayload = await readJsonResponse(detailResponse, "Webshare 替换查询接口");
+      if (!detailResponse.ok) {
+        throw new Error(detailPayload.detail || detailPayload.error || detailPayload.message || `HTTP ${detailResponse.status}`);
+      }
+      lastStatus = normalizeWebshareStatus(detailPayload);
+    }
+
+    if (!isWebshareTerminalSuccess(lastStatus)) {
+      throw new Error(`Webshare 代理替换超时: status=${lastStatus || "unknown"}`);
+    }
+
+    return getCurrentWebshareProxyDirect(apiKey, protocol);
+  }
+
+  async function fetchWebshareProxyList(apiKey) {
+    const response = await fetch(`${WEBSHARE_LIST_API}?mode=direct&page=1&page_size=25`, {
+      method: "GET",
+      headers: buildWebshareHeaders(apiKey),
+      cache: "no-store"
+    });
+    const payload = await readJsonResponse(response, "Webshare 代理列表");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
+    }
+    const items = extractWebshareItems(payload);
+    if (!items.length) {
+      throw new Error("Webshare 代理列表为空");
+    }
+    return items;
+  }
+
+  function buildWebshareHeaders(apiKey) {
+    return {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Token ${apiKey}`
+    };
+  }
+
+  function extractWebshareItems(payload) {
+    let rawItems = payload && payload.results;
+    if (rawItems === undefined || rawItems === null) {
+      rawItems = (payload && (payload.items || payload.data)) || [];
+    }
+    if (rawItems && typeof rawItems === "object" && !Array.isArray(rawItems)) {
+      rawItems = rawItems.results || rawItems.items || [];
+    }
+    return Array.isArray(rawItems) ? rawItems.filter((item) => item && typeof item === "object") : [];
+  }
+
+  function mapWebshareItemToProxy(item, protocol) {
+    if (!item || typeof item !== "object") {
+      throw new Error("Webshare 代理数据无效");
+    }
+    const host = String(item.proxy_address || item.host || item.ip || item.ip_address || "").trim();
+    if (!host) {
+      throw new Error("Webshare 代理缺少 host");
+    }
+    const port = Number(item.port || 0);
+    if (!port || port <= 0) {
+      throw new Error("Webshare 代理缺少有效的 port");
+    }
+    const username = String(item.username || item.user || "");
+    const password = String(item.password || "");
+    return {
+      enabled: true,
+      type: normalizeProxyProtocol(protocol),
+      host,
+      port,
+      city_name: String(item.city_name || item.city || ""),
+      country_code: String(item.country_code || item.country || "").toUpperCase(),
+      use_auth: Boolean(username),
+      username: username || "",
+      password: username ? password : ""
+    };
+  }
+
+  function requireRuntimeProxy(proxy) {
+    if (!isRuntimeProxy(proxy)) {
+      throw new Error("代理数据缺少 host/port");
+    }
+    return proxy;
+  }
+
+  function isRuntimeProxy(proxy) {
+    if (!proxy || !proxy.enabled) {
+      return false;
+    }
+    const host = String(proxy.host || "").trim();
+    const port = Number(proxy.port || 0);
+    return Boolean(host && port > 0);
+  }
+
+  function renderProxyStatus() {
+    const proxyStatus = document.getElementById("proxyStatus");
+    if (!proxyStatus) return;
+    const proxy = state.currentProxy;
+    if (!isRuntimeProxy(proxy)) {
+      proxyStatus.classList.add("empty");
+      proxyStatus.textContent = "代理状态: 未设置";
+      return;
+    }
+    proxyStatus.classList.remove("empty");
+    proxyStatus.textContent = [
+      `代理状态: 已设置`,
+      `类型: ${String(proxy.type || "http").toLowerCase()}`,
+      `地址: ${proxy.host}:${proxy.port}`,
+      `国家: ${String(proxy.country_code || proxy.country || "-").toUpperCase()}`,
+      `用户名: ${proxy.username || "-"}`
+    ].join("\n");
+  }
+
+  function formatProxy(proxy) {
+    if (!isRuntimeProxy(proxy)) {
+      return "未启用";
+    }
+    const type = String(proxy.type || "http").toLowerCase();
+    const auth = proxy.use_auth && proxy.username ? ` (auth: ${proxy.username})` : "";
+    return `${type}://${proxy.host}:${proxy.port}${auth}`;
+  }
+
+  function requireWebshareApiKey() {
+    const apiKey = String(document.getElementById("webshareApiKeyInput").value || "").trim();
+    if (!apiKey) {
+      throw new Error("请先输入 Webshare API Key");
+    }
+    state.webshareApiKey = apiKey;
+    return apiKey;
+  }
+
+  function isProxyEnabled() {
+    const input = document.getElementById("proxyEnabledCheckbox");
+    state.proxyEnabled = input ? Boolean(input.checked) : true;
+    return state.proxyEnabled;
+  }
+
+  function getProxyProtocol() {
+    const value = document.getElementById("proxyProtocolSelect").value;
+    state.proxyProtocol = normalizeProxyProtocol(value);
+    return state.proxyProtocol;
+  }
+
+  function getStep1ProxyCountry() {
+    const value = document.getElementById("step1ProxyCountrySelect").value;
+    state.step1ProxyCountry = normalizeProxyCountry(value);
+    return state.step1ProxyCountry;
+  }
+
+  function getStep3ProxyCountry() {
+    const value = document.getElementById("step3ProxyCountrySelect").value;
+    state.step3ProxyCountry = normalizeProxyCountry(value);
+    return state.step3ProxyCountry;
+  }
+
+  function normalizeProxyProtocol(value) {
+    return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
+  }
+
+  function normalizeProxyCountry(value) {
+    const country = String(value || "").trim().toUpperCase();
+    return country === "JP" ? "JP" : "US";
+  }
+
+  function normalizeWebshareStatus(payload) {
+    return String(
+      (payload && (payload.state || payload.status)) ||
+      ((payload && payload.data && (payload.data.state || payload.data.status)) || "")
+    ).trim().toLowerCase();
+  }
+
+  function isWebshareTerminalSuccess(status) {
+    return ["completed", "complete", "success", "succeeded", "done"].includes(String(status || "").toLowerCase());
+  }
+
+  function isWebshareTerminalFailure(status) {
+    return ["failed", "failure", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
+  }
+
+  async function readJsonResponse(response, label) {
+    const text = await response.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch (error) {
+      throw new Error(`${label}返回不是 JSON: HTTP ${response.status} ${text.slice(0, 200)}`);
     }
   }
 
@@ -188,16 +547,41 @@
 
   async function runRegistration(tabId) {
     setActiveStep(1);
+    logMessage("等待 chatgpt.com 页面加载完成...");
+    const pageLoaded = await waitForPageComplete(tabId, 90000);
+    if (!pageLoaded) {
+      logMessage("错误: chatgpt.com 页面加载超时");
+      return { ok: false };
+    }
     logMessage("等待注册按钮...");
     const clickRegisterCode = `
       (function() {
+        function simulateClick(el) {
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          el.focus();
+          const rect = el.getBoundingClientRect();
+          const clientX = rect.left + rect.width / 2;
+          const clientY = rect.top + rect.height / 2;
+          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+            el.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              buttons: type === 'mousedown' ? 1 : 0
+            }));
+          });
+        }
         const btns = Array.from(document.querySelectorAll('button'));
         const regBtn = btns.find(b => /注册|Sign up|Create account/i.test(b.textContent || ''));
-        if (regBtn) { regBtn.click(); return true; }
+        if (regBtn) { simulateClick(regBtn); return true; }
         return false;
       })();
     `;
-    await ext.tabs.executeScript(tabId, { code: clickRegisterCode });
+    await scrollTabToBottom(tabId);
+    await executeScriptAfterPageReady(tabId, { code: clickRegisterCode }, "点击注册按钮");
     logMessage("已点击注册按钮，等待 3 秒...");
     await delay(3000);
 
@@ -212,7 +596,7 @@
         return false;
       })();
     `;
-    const hasEmail = (await ext.tabs.executeScript(tabId, { code: waitEmailCode }))[0];
+    const hasEmail = (await executeScriptAfterPageReady(tabId, { code: waitEmailCode }, "等待邮箱输入框"))[0];
     if (!hasEmail) {
       logMessage("错误: #email 未出现，超时");
       return { ok: false };
@@ -247,20 +631,117 @@
         return { email: Boolean(input), nameAge: Boolean(nameInput && ageInput) };
       })();
     `;
-    const fillEmailResult = (await ext.tabs.executeScript(tabId, { code: fillEmailCode }))[0] || {};
+    const fillEmailResult = (await executeScriptAfterPageReady(tabId, { code: fillEmailCode }, "填写邮箱"))[0] || {};
+    const nameAgeFilledOnEmailPage = Boolean(fillEmailResult.nameAge);
     if (fillEmailResult.nameAge) {
       logMessage("检测到姓名和年龄输入框，已一起填写");
     }
     await delay(3000);
 
-    const clickSubmitCode = `
-      (function() {
-        const submit = document.querySelector('button[type="submit"]');
-        if (submit) { submit.click(); return true; }
+    const fillNameAgeCode = `
+      (async function() {
+        function delay(ms) {
+          return new Promise(r => setTimeout(r, ms));
+        }
+        function simulateType(el, text) {
+          if (!el) return;
+          el.focus();
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(el, '');
+          for (const ch of text) {
+            setter.call(el, el.value + ch);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+        const start = Date.now();
+        while (Date.now() - start < 60000) {
+          const nameInput = document.querySelector('input[name="name"]');
+          const ageInput = document.querySelector('input[name="age"]');
+          if (nameInput && ageInput) {
+            simulateType(nameInput, ${JSON.stringify(randomName)});
+            simulateType(ageInput, ${JSON.stringify(randomAge)});
+            return { ok: true };
+          }
+          await delay(1000);
+        }
+        return { ok: false };
+      })();
+    `;
+    const clickTryAgainCode = `
+      (async function() {
+        function delay(ms) {
+          return new Promise(r => setTimeout(r, ms));
+        }
+        function simulateClick(el) {
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          el.focus();
+          const rect = el.getBoundingClientRect();
+          const clientX = rect.left + rect.width / 2;
+          const clientY = rect.top + rect.height / 2;
+          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+            el.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              buttons: type === 'mousedown' ? 1 : 0
+            }));
+          });
+        }
+        const start = Date.now();
+        while (Date.now() - start < 15000) {
+          const tryAgain = document.querySelector('[data-dd-action-name="Try again"]');
+          if (tryAgain) {
+            simulateClick(tryAgain);
+            return true;
+          }
+          await delay(1000);
+        }
         return false;
       })();
     `;
-    await ext.tabs.executeScript(tabId, { code: clickSubmitCode });
+
+    const clickSubmitCode = `
+      (function() {
+        function simulateClick(el) {
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          el.focus();
+          const rect = el.getBoundingClientRect();
+          const clientX = rect.left + rect.width / 2;
+          const clientY = rect.top + rect.height / 2;
+          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+            el.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              buttons: type === 'mousedown' ? 1 : 0
+            }));
+          });
+        }
+        const submit = document.querySelector('button[type="submit"]');
+        if (submit) { simulateClick(submit); return true; }
+        return false;
+      })();
+    `;
+    await scrollTabToBottom(tabId);
+    await executeScriptAfterPageReady(tabId, { code: clickSubmitCode }, "提交邮箱");
+    if (nameAgeFilledOnEmailPage) {
+      await delay(3000);
+      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode);
+      if (clickedTryAgain) {
+        logMessage("邮箱页提交后仍在 about-you 页面，检测到 Try again，已点击后重新填写姓名和年龄");
+        const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, clickSubmitCode, clickTryAgainCode);
+        if (!nameAgeSubmitted) {
+          return { ok: false };
+        }
+      }
+    }
     logMessage("已提交邮箱，轮询验证码...");
 
     let code = null;
@@ -296,19 +777,83 @@
         return false;
       })();
     `;
-    await ext.tabs.executeScript(tabId, { code: fillCodeOnly });
+    await executeScriptAfterPageReady(tabId, { code: fillCodeOnly }, "填写验证码");
     await delay(3000);
 
     const submitCodeBtn = `
       (function() {
+        function simulateClick(el) {
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          el.focus();
+          const rect = el.getBoundingClientRect();
+          const clientX = rect.left + rect.width / 2;
+          const clientY = rect.top + rect.height / 2;
+          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+            el.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              buttons: type === 'mousedown' ? 1 : 0
+            }));
+          });
+        }
         const submit = document.querySelector('button[type="submit"], button[data-testid="submit"]');
-        if (submit) { submit.click(); return true; }
+        if (submit) { simulateClick(submit); return true; }
         return false;
       })();
     `;
-    await ext.tabs.executeScript(tabId, { code: submitCodeBtn });
-    logMessage("验证码已提交，等待进入 chatgpt.com");
+    await scrollTabToBottom(tabId);
+    await executeScriptAfterPageReady(tabId, { code: submitCodeBtn }, "提交验证码");
+
+    if (!nameAgeFilledOnEmailPage) {
+      logMessage("验证码已提交，等待姓名和年龄输入框...");
+      const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, submitCodeBtn, clickTryAgainCode);
+      if (!nameAgeSubmitted) {
+        return { ok: false };
+      }
+    } else {
+      logMessage("验证码已提交，等待进入 chatgpt.com");
+    }
     return { ok: true, email };
+  }
+
+  async function submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, submitCodeBtn, clickTryAgainCode) {
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const fillNameAgeResult = (await executeScriptAfterPageReady(tabId, { code: fillNameAgeCode }, "填写姓名和年龄"))[0] || {};
+      if (!fillNameAgeResult.ok) {
+        logMessage("错误: 姓名和年龄输入框未出现，超时");
+        return false;
+      }
+
+      await delay(1000);
+      await scrollTabToBottom(tabId);
+      await executeScriptAfterPageReady(tabId, { code: submitCodeBtn }, "提交姓名和年龄");
+      logMessage(attempt === 1 ? "姓名和年龄已提交，等待进入 chatgpt.com" : `姓名和年龄已重新提交，第 ${attempt} 次，等待进入 chatgpt.com`);
+      await delay(3000);
+
+      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode);
+      if (!clickedTryAgain) {
+        return true;
+      }
+
+      logMessage(`仍在 about-you 页面，检测到 Try again，已点击后准备重新填写（第 ${attempt}/5 次）`);
+      await delay(1500);
+    }
+
+    logMessage("错误: about-you 页面 Try again 重试次数已达上限");
+    return false;
+  }
+
+  async function clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode) {
+    const tab = await ext.tabs.get(tabId);
+    const currentUrl = String(tab.url || "");
+    if (!currentUrl.startsWith("https://auth.openai.com/about-you")) {
+      return false;
+    }
+    return Boolean((await executeScriptAfterPageReady(tabId, { code: clickTryAgainCode }, "检测并点击 Try again"))[0]);
   }
 
   async function startAutomation() {
@@ -322,10 +867,15 @@
     }
 
     logMessage("开始完整自动化流程...");
+    try {
+      await ensureProxyForStage("第一步");
+    } catch (error) {
+      logMessage("第一步代理设置失败，流程终止: " + formatError(error));
+      return;
+    }
     const tab = await ext.tabs.create({ url: "https://chatgpt.com", active: true });
     logMessage("步骤1: 打开 chatgpt.com");
 
-    await delay(2500);
     const registration = await runRegistration(tab.id);
     if (!registration.ok) {
       logMessage("注册失败，流程终止");
@@ -386,17 +936,76 @@
     }
 
     logMessage("从 PayURL 开始支付流程...");
+    try {
+      await ensureProxyForStage("第三步");
+    } catch (error) {
+      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
+      return;
+    }
     const tab = await ext.tabs.create({ url: prepared.payUrl, active: true });
-    await runPayPalFlow(tab.id, prepared);
+    await runPayPalFlow(tab.id, prepared, { proxyReady: true });
   }
 
-  async function preparePaymentInputs(requirePayUrl) {
+  async function startFromStep3() {
+    let prepared;
+    try {
+      prepared = await preparePaymentInputs(false);
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return;
+    }
+
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab || !tab.id) {
+      logMessage("错误: 未找到当前标签页");
+      return;
+    }
+
+    logMessage("从当前页面第3步开始支付流程...");
+    try {
+      await ensureProxyForStage("第三步");
+    } catch (error) {
+      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
+      return;
+    }
+    await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
+  }
+
+  async function manualFillStep5Form() {
+    let prepared;
+    try {
+      prepared = await preparePaymentInputs(false, { reusePaypalEmail: true });
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return;
+    }
+
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab || !tab.id) {
+      logMessage("错误: 未找到当前标签页");
+      return;
+    }
+
+    setActiveStep(5);
+    logMessage("手动填充第5步 PayPal signup 表单...");
+    await fillPayPalSignupForm(tab.id, prepared);
+    logMessage("第5步表单已填充，未自动提交");
+  }
+
+  async function preparePaymentInputs(requirePayUrl, options = {}) {
     const cardText = document.getElementById("cardInput").value.trim();
     const payUrl = document.getElementById("payUrlInput").value.trim();
     if (!cardText) {
       throw new Error("请输入卡片信息");
     }
     const card = await parseCardInput(cardText);
+    if (state.randomCardEnabled) {
+      const generatedCardNumber = generateRandomLuhnCardNumber(card.card);
+      card.card = generatedCardNumber;
+      logMessage(`已随机生成 Luhn 有效卡号: ${generatedCardNumber}`);
+    }
     if (requirePayUrl && !payUrl) {
       throw new Error("请输入 PayURL");
     }
@@ -410,6 +1019,10 @@
     const phoneKey = parsePhoneKeyInput(document.getElementById("phoneKeyInput").value);
     state.phoneKey = phoneKey;
     state.phoneKeyInput = phoneKey.raw;
+    const paypalEmail = options.reusePaypalEmail && state.lastPaypalEmail
+      ? state.lastPaypalEmail
+      : generateGmailAddress();
+    state.lastPaypalEmail = paypalEmail;
     await persistState();
     return {
       card,
@@ -417,15 +1030,27 @@
       phone: phoneKey.phone || getFillPhoneNumber(card),
       payUrl,
       settings: sanitizeFillSettings(state.fillSettings),
-      paypalEmail: generateGmailAddress()
+      paypalEmail
     };
   }
 
-  async function runPayPalFlow(tabId, prepared) {
+  async function runPayPalFlow(tabId, prepared, options = {}) {
     if (!prepared.payUrl) {
       throw new Error("PayURL 不能为空");
     }
+    if (!options.proxyReady) {
+      try {
+        await ensureProxyForStage("第三步");
+      } catch (error) {
+        logMessage("第三步代理设置失败，流程终止: " + formatError(error));
+        return;
+      }
+    }
     await updateTabUrl(tabId, prepared.payUrl);
+    await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+  }
+
+  async function runPayPalFlowFromCurrentPayUrl(tabId, prepared) {
     await runPayUrlPage(tabId, prepared);
     await runPayPalLoginPage(tabId, prepared);
     await runPayPalSignupPage(tabId, prepared);
@@ -436,17 +1061,22 @@
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    await clickPageElement(tabId, {
       selector: 'button[data-testid="paypal-accordion-item-button"]',
       timeoutMs: 60000
     }, "未找到 PayPal 支付选项");
     logMessage("已选择 PayPal，填充卡片信息");
+    await delay();
     await fillCurrentPage(tabId, prepared);
+    await scrollTabToBottom(tabId);
     await requirePageResult(tabId, "__gptAutoRegisterCheck", {
       selector: "#termsOfServiceConsentCheckbox",
       timeoutMs: 30000
     }, "未找到服务条款复选框");
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    const submitDelayMs = randomDelayMs();
+    logMessage(`表单已填充，等待 ${(submitDelayMs / 1000).toFixed(1)} 秒后提交`);
+    await delay(submitDelayMs);
+    await clickPageElement(tabId, {
       selector: 'button[type="submit"]',
       timeoutMs: 30000
     }, "未找到提交按钮");
@@ -457,19 +1087,55 @@
     setActiveStep(4);
     logMessage("步骤4: 等待进入 paypal.com");
     await waitForUrlPrefix(tabId, "https://www.paypal.com", 90000);
+    await delay();
     await ensureContentScript(tabId);
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
-      selector: 'button[type="submit"]',
+    await delay();
+    logMessage("检测是否有滑块验证码");
+    const captchaChecks = await executePageFunction(tabId, "__gptAutoRegisterCheckCaptcha", {
+      timeoutMs: 10000
+    }, {
+      allFrames: true
+    });
+    const captchaCheck = (Array.isArray(captchaChecks) ? captchaChecks : [captchaChecks])
+      .filter(Boolean)
+      .find((result) => result.hasCaptcha);
+    if (captchaCheck) {
+      logMessage("检测到滑块验证码，正在处理...");
+      const captchaResults = await executePageFunction(tabId, "__gptAutoRegisterSolveCaptcha", {
+        distance: 280,
+        timeoutMs: 10000,
+        onlyIfPresent: true
+      }, {
+        allFrames: true
+      });
+      const captchaResult = (Array.isArray(captchaResults) ? captchaResults : [captchaResults])
+        .filter(Boolean)
+        .find((result) => result.hasCaptcha || result.ok);
+      if (captchaResult && captchaResult.ok) {
+        logMessage("滑块验证码已完成");
+        await delay();
+      } else {
+        logMessage(`滑块验证码处理失败: ${captchaResult ? captchaResult.error : "未知错误"}`);
+      }
+    }
+
+    logMessage("等待点击");
+    await delay();
+    await clickPageElement(tabId, {
+      selector: '#createAccount, #startOnboardingFlow, button[data-atomic-wait-intent="Pay_With_Card"]',
       timeoutMs: 60000
     }, "PayPal 页面未找到提交按钮");
+    logMessage("点击了按钮");
+    logMessage("等待插件邮箱输入框");
+    await delay();
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-      selector: "#login_email",
+      selector: '#login_email, #onboardingFlowEmail',
       value: prepared.paypalEmail,
       type: true,
       timeoutMs: 60000
     }, "未找到 PayPal login_email");
     logMessage(`已输入 PayPal 邮箱: ${prepared.paypalEmail}`);
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    await clickPageElement(tabId, {
       selector: "button",
       timeoutMs: 30000
     }, "PayPal 页面未找到下一步按钮");
@@ -479,7 +1145,56 @@
     setActiveStep(5);
     logMessage("步骤5: 等待 PayPal signup 页面");
     await waitForUrlPrefix(tabId, "https://www.paypal.com/checkoutweb/signup", 120000);
+    const stopCaptchaCleaner = startCaptchaCleaner(tabId, "#captchaComponent");
+    try {
+      await fillPayPalSignupForm(tabId, prepared);
+      await delay();
+
+      await submitSignupForm(tabId);
+      logMessage("已提交 signup，开始获取短信验证码");
+      await delay();
+      await refillSignupFormIfCleared(tabId, prepared);
+      await requirePageResult(tabId, "__gptAutoRegisterWaitForSelector", {
+        selector: "#ci-ciBasic-0",
+        timeoutMs: 120000
+      }, "未找到短信验证码输入框");
+      const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey);
+      await requirePageResult(tabId, "__gptAutoRegisterSetOtpDigits", {
+        selectors: [
+          "#ci-ciBasic-0",
+          "#ci-ciBasic-1",
+          "#ci-ciBasic-2",
+          "#ci-ciBasic-3",
+          "#ci-ciBasic-4",
+          "#ci-ciBasic-5"
+        ],
+        value: smsCode,
+        timeoutMs: 30000
+      }, "短信验证码输入失败");
+      logMessage(`短信验证码已输入: ${smsCode}`);
+      await finishPayPalConsent(tabId);
+    } finally {
+      stopCaptchaCleaner();
+    }
+  }
+
+  async function finishPayPalConsent(tabId) {
+    logMessage("等待 PayPal Hermes 授权页面...");
+    await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 120000);
+    logMessage("已进入 Hermes 页面，等待点击授权按钮");
+    await clickPageElement(tabId, {
+      selector: "#consentButton",
+      timeoutMs: 60000
+    }, "未找到 PayPal 授权按钮 #consentButton");
+    logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
+    const finalUrl = await waitForUrlPrefix(tabId, "https://chatgpt.com/", 120000);
+    logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
+  }
+
+  async function fillPayPalSignupForm(tabId, prepared) {
     await ensureContentScript(tabId);
+    await delay();
+    logMessage("步骤5: 判断国家是否是us");
     const countryResult = await requirePageResult(tabId, "__gptAutoRegisterSetSelectIfNeeded", {
       selector: "#country",
       value: "US",
@@ -487,38 +1202,120 @@
     }, "未找到国家字段");
     if (countryResult.changed) {
       logMessage("国家已改为 US，等待 3 秒");
-      await delay(3000);
+      await delay();
+    } else {
+      logMessage("步骤5: 国家为us不用修改");
     }
+
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
       selector: "#email",
       value: prepared.paypalEmail,
-      type: true,
+      payUrlStyle: true,
       timeoutMs: 30000
     }, "未找到 signup 邮箱字段");
-    await fillCurrentPage(tabId, prepared);
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
       selector: "#phone",
       value: prepared.phone,
-      type: true,
+      payUrlStyle: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions());
+  }
+
+  async function submitSignupForm(tabId) {
+    await clickPageElement(tabId, {
       selector: 'button[type="submit"]',
       timeoutMs: 30000
     }, "未找到 signup 提交按钮");
-    logMessage("已提交 signup，开始获取短信验证码");
-    await requirePageResult(tabId, "__gptAutoRegisterWaitForSelector", {
-      selector: "#ci-ciBasic-0",
-      timeoutMs: 120000
-    }, "未找到短信验证码输入框");
-    const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey);
+  }
+
+  async function refillSignupFormIfCleared(tabId, prepared) {
+    const clearedFields = await getClearedSignupFields(tabId, prepared);
+    if (!clearedFields.length) {
+      return;
+    }
+
+    logMessage(`检测到 signup 表单数据被清空: ${clearedFields.join(", ")}，重新填入并提交`);
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-      selector: "#ci-ciBasic-0",
-      value: smsCode,
-      type: true,
+      selector: "#email",
+      value: prepared.paypalEmail,
+      payUrlStyle: true,
       timeoutMs: 30000
-    }, "短信验证码输入失败");
-    logMessage(`短信验证码已输入: ${smsCode}`);
+    }, "未找到 signup 邮箱字段");
+    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+      selector: "#phone",
+      value: prepared.phone,
+      payUrlStyle: true,
+      timeoutMs: 30000
+    }, "未找到手机号字段");
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions());
+    await delay();
+    await submitSignupForm(tabId);
+    logMessage("signup 表单已重新提交");
+  }
+
+  async function getClearedSignupFields(tabId, prepared) {
+    const cleared = [];
+    const emailValue = await readFirstPageValue(tabId, "#email");
+    if (emailValue !== null && String(emailValue || "").trim().toLowerCase() !== String(prepared.paypalEmail || "").trim().toLowerCase()) {
+      cleared.push("邮箱");
+    }
+
+    const phoneValue = await readFirstPageValue(tabId, "#phone");
+    if (phoneValue !== null && normalizeUsPhone(phoneValue) !== normalizeUsPhone(prepared.phone)) {
+      cleared.push("手机号");
+    }
+    return cleared;
+  }
+
+  async function readFirstPageValue(tabId, selector) {
+    const results = await executePageFunction(tabId, "__gptAutoRegisterGetValue", {
+      selector
+    }, {
+      allFrames: true
+    });
+    const matched = (Array.isArray(results) ? results : [results])
+      .filter(Boolean)
+      .find((result) => result.ok);
+    return matched ? String(matched.value || "") : null;
+  }
+
+  function startCaptchaCleaner(tabId, selector) {
+    let stopped = false;
+    let running = false;
+    logMessage(`开始轮询移除 ${selector}`);
+
+    const tick = async () => {
+      if (stopped || running) {
+        return;
+      }
+      running = true;
+      try {
+        const results = await executePageFunction(tabId, "__gptAutoRegisterRemoveAll", {
+          selector
+        }, {
+          allFrames: true
+        });
+        const removed = (Array.isArray(results) ? results : [results])
+          .filter(Boolean)
+          .reduce((sum, result) => sum + Number(result.removed || 0), 0);
+        if (removed > 0) {
+          logMessage(`已移除 ${selector}: ${removed} 个`);
+        }
+      } catch (error) {
+        console.warn("Failed to remove captcha component", error);
+      } finally {
+        running = false;
+      }
+    };
+
+    tick();
+    const intervalId = setInterval(tick, 1000);
+    return () => {
+      stopped = true;
+      clearInterval(intervalId);
+      logMessage(`停止轮询移除 ${selector}`);
+    };
   }
 
   async function updateTabUrl(tabId, url) {
@@ -526,7 +1323,11 @@
     if (!String(tab.url || "").startsWith(url)) {
       await ext.tabs.update(tabId, { url, active: true });
     }
-    await delay(1500);
+    const loaded = await waitForPageComplete(tabId, 45000);
+    if (!loaded) {
+      logMessage("页面仍在加载，继续尝试执行第3步脚本");
+      await delay(1500);
+    }
   }
 
   async function waitForUrlPrefix(tabId, prefix, timeoutMs) {
@@ -541,15 +1342,151 @@
     throw new Error(`等待 URL 超时: ${prefix}`);
   }
 
+  async function waitForPageComplete(tabId, timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const tab = await ext.tabs.get(tabId);
+        const readyState = (await ext.tabs.executeScript(tabId, {
+          code: "document.readyState"
+        }))[0];
+        if ((!tab.status || tab.status === "complete") && readyState === "complete") {
+          return true;
+        }
+      } catch (_) {}
+      await delay(500);
+    }
+    return false;
+  }
+
   async function executePageFunction(tabId, functionName, payload, options = {}) {
     await ensureContentScript(tabId, Boolean(options.allFrames));
     const code = `window.${functionName} && window.${functionName}(${JSON.stringify(payload || {})})`;
-    const results = await ext.tabs.executeScript(tabId, {
+    const results = await executeScriptAfterPageReady(tabId, {
       code,
       allFrames: Boolean(options.allFrames),
       runAt: "document_idle"
-    });
+    }, functionName);
     return options.allFrames ? results : (Array.isArray(results) ? results[0] : results);
+  }
+
+  async function executeScriptAfterPageReady(tabId, details, label, options = {}) {
+    await waitForScriptableTab(tabId, Number(options.scriptableTimeoutMs) || 15000);
+    const loaded = await waitForPageComplete(tabId, Number(options.loadTimeoutMs) || 45000);
+    if (!loaded) {
+      logMessage(`${label || "页面脚本"}: 页面仍在加载，继续尝试注入`);
+    }
+    return executeScriptWithRetry(tabId, details, label);
+  }
+
+  async function waitForScriptableTab(tabId, timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const tab = await ext.tabs.get(tabId);
+        const url = String(tab.url || "");
+        if (url && !url.startsWith("about:") && !url.startsWith("moz-extension:")) {
+          return tab;
+        }
+      } catch (_) {}
+      await delay(500);
+    }
+    return ext.tabs.get(tabId);
+  }
+
+  async function executeScriptWithRetry(tabId, details, label) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await ext.tabs.executeScript(tabId, details);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          await delay(1000);
+        }
+      }
+    }
+
+    let url = "";
+    try {
+      const tab = await ext.tabs.get(tabId);
+      url = String(tab.url || "");
+    } catch (_) {}
+    throw new Error(`${label || "页面脚本"} 执行失败: ${formatError(lastError)}${url ? `，当前 URL: ${url}` : ""}`);
+  }
+
+  async function scrollTabToBottom(tabId) {
+    try {
+      await executeScriptAfterPageReady(tabId, {
+        code: `
+          (async function() {
+            function fireScrollEvent(target) {
+              if (!target || typeof target.dispatchEvent !== 'function') {
+                return;
+              }
+              target.dispatchEvent(new Event('scroll', {
+                bubbles: true,
+                cancelable: false
+              }));
+            }
+
+            function scrollElementToBottom(element) {
+              if (!element) {
+                return false;
+              }
+              const bottom = Math.max(element.scrollHeight || 0, element.clientHeight || 0);
+              const before = element.scrollTop;
+              element.scrollTop = bottom;
+              fireScrollEvent(element);
+              return element.scrollTop !== before;
+            }
+
+            function isScrollableElement(element) {
+              if (!element || element === document.documentElement || element === document.body) {
+                return false;
+              }
+              const style = window.getComputedStyle(element);
+              const overflowY = style.overflowY;
+              return /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight;
+            }
+
+            const root = document.scrollingElement || document.documentElement || document.body;
+            const bottom = Math.max(
+              root ? root.scrollHeight : 0,
+              document.documentElement ? document.documentElement.scrollHeight : 0,
+              document.body ? document.body.scrollHeight : 0
+            );
+            window.scrollTo(0, bottom);
+            if (root) {
+              root.scrollTop = bottom;
+              fireScrollEvent(root);
+            }
+            fireScrollEvent(window);
+            fireScrollEvent(document);
+            fireScrollEvent(document.body);
+
+            Array.from(document.querySelectorAll('*'))
+              .filter(isScrollableElement)
+              .forEach(scrollElementToBottom);
+
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            window.scrollTo(0, Math.max(bottom, root ? root.scrollHeight : 0));
+            if (root) {
+              root.scrollTop = root.scrollHeight;
+              fireScrollEvent(root);
+            }
+            fireScrollEvent(window);
+            return true;
+          })();
+        `,
+        runAt: "document_idle"
+      }, "滚动页面", { loadTimeoutMs: 15000 });
+    } catch (_) {}
+  }
+
+  async function clickPageElement(tabId, payload, errorMessage) {
+    await scrollTabToBottom(tabId);
+    return requirePageResult(tabId, "__gptAutoRegisterClick", payload, errorMessage);
   }
 
   async function requirePageResult(tabId, functionName, payload, errorMessage) {
@@ -560,15 +1497,32 @@
     return result;
   }
 
-  async function fillCurrentPage(tabId, prepared) {
+  function createPayUrlFillOptions() {
+    return {
+      payUrlStyle: true
+    };
+  }
+
+  function createSignupFillOptions() {
+    return {
+      ...createPayUrlFillOptions(),
+      skipFields: ["country"]
+    };
+  }
+
+  async function fillCurrentPage(tabId, prepared, fillOptions = {}) {
+    const probes = await executePageFunction(tabId, "__gptAutoRegisterProbe", {}, {
+      allFrames: true
+    });
     const result = await executePageFunction(tabId, "__gptAutoRegisterFillForm", {
       card: prepared.card,
       phone: prepared.phone,
-      settings: prepared.settings
+      settings: prepared.settings,
+      fillOptions
     }, {
       allFrames: true
     });
-    const summary = summarizeFillResults(result);
+    const summary = summarizeFillResults(result, probes);
     if (!summary.success) {
       throw new Error(summary.message);
     }
@@ -581,28 +1535,42 @@
 
   async function ensureContentScript(tabId, allFrames = false) {
     try {
-      await ext.tabs.executeScript(tabId, {
+      await executeScriptAfterPageReady(tabId, {
         file: "content-script.js",
         allFrames,
         runAt: "document_idle"
-      });
+      }, "content-script 注入");
     } catch (error) {
       logMessage("注入 content-script 失败: " + formatError(error));
     }
   }
 
-  function summarizeFillResults(results) {
+  function summarizeFillResults(results, probes) {
     const validResults = (Array.isArray(results) ? results : [results]).filter(Boolean);
     const successful = validResults.filter((result) => result && result.ok);
     if (!successful.length) {
       const errors = validResults
         .filter((result) => result && result.error)
         .map((result) => result.error);
+      const probeResults = (Array.isArray(probes) ? probes : [probes]).filter(Boolean);
+      const loadedFrames = probeResults.filter((probe) => probe && probe.ok);
+      const inputCount = loadedFrames.reduce((sum, probe) => sum + Number(probe.inputs || 0), 0);
+      const missing = validResults
+        .flatMap((result) => result && Array.isArray(result.missing) ? result.missing : [])
+        .slice(0, 6);
+      if (!loadedFrames.length) {
+        return {
+          success: false,
+          filled: 0,
+          missing: [],
+          message: "content-script 未在当前页面或 iframe 中加载成功，请刷新页面或重新加载扩展后重试"
+        };
+      }
       return {
         success: false,
         filled: 0,
         missing: [],
-        message: errors[0] || "没有在当前页面找到可填充的支付表单"
+        message: errors[0] || `content-script 已加载 ${loadedFrames.length} 个 frame，扫描到 ${inputCount} 个输入控件，但没有匹配到可填充字段${missing.length ? `；未命中: ${missing.join(", ")}` : ""}`
       };
     }
 
@@ -694,6 +1662,54 @@
       throw new Error(`卡片字段为空: ${missing.join(", ")}`);
     }
     return parsed;
+  }
+
+  function generateRandomLuhnCardNumber(sourceCard) {
+    const normalizedSource = String(sourceCard || "").replace(/\D+/g, "");
+    const length = normalizedSource.length || 16;
+    if (length < 2) {
+      throw new Error("卡号长度太短，无法生成 Luhn 校验位");
+    }
+
+    const bodyLength = length - 1;
+    const prefixLength = Math.min(Math.max(6, bodyLength - 10), bodyLength);
+    const prefix = normalizedSource.slice(0, prefixLength).padEnd(prefixLength, "0");
+    let body = prefix;
+    while (body.length < bodyLength) {
+      body += String(randomDigit());
+    }
+    return body + calculateLuhnCheckDigit(body);
+  }
+
+  function calculateLuhnCheckDigit(body) {
+    const digits = String(body || "").replace(/\D+/g, "");
+    let sum = 0;
+    let shouldDouble = true;
+    for (let i = digits.length - 1; i >= 0; i -= 1) {
+      let digit = Number(digits[i]);
+      if (!Number.isInteger(digit)) {
+        throw new Error("卡号包含非数字字符，无法计算 Luhn 校验位");
+      }
+      if (shouldDouble) {
+        digit *= 2;
+        if (digit > 9) {
+          digit -= 9;
+        }
+      }
+      sum += digit;
+      shouldDouble = !shouldDouble;
+    }
+    return String((10 - (sum % 10)) % 10);
+  }
+
+  function randomDigit() {
+    const cryptoObj = globalThis.crypto;
+    if (cryptoObj && typeof cryptoObj.getRandomValues === "function") {
+      const value = new Uint8Array(1);
+      cryptoObj.getRandomValues(value);
+      return value[0] % 10;
+    }
+    return Math.floor(Math.random() * 10);
   }
 
   function parseExpiry(rawExpiry) {
@@ -1055,6 +2071,20 @@
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
+      state.proxyEnabled = saved.proxyEnabled === undefined ? true : Boolean(saved.proxyEnabled);
+      document.getElementById("proxyEnabledCheckbox").checked = state.proxyEnabled;
+      state.webshareApiKey = typeof saved.webshareApiKey === "string" ? saved.webshareApiKey : "";
+      document.getElementById("webshareApiKeyInput").value = state.webshareApiKey;
+      state.proxyProtocol = normalizeProxyProtocol(saved.proxyProtocol);
+      document.getElementById("proxyProtocolSelect").value = state.proxyProtocol;
+      state.step1ProxyCountry = normalizeProxyCountry(saved.step1ProxyCountry);
+      document.getElementById("step1ProxyCountrySelect").value = state.step1ProxyCountry;
+      state.step3ProxyCountry = normalizeProxyCountry(saved.step3ProxyCountry);
+      document.getElementById("step3ProxyCountrySelect").value = state.step3ProxyCountry;
+      state.currentProxy = isRuntimeProxy(saved.currentProxy) ? saved.currentProxy : null;
+      renderProxyStatus();
+      state.randomCardEnabled = Boolean(saved.randomCardEnabled);
+      document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
       try {
         state.phoneKey = parsePhoneKeyInput(state.phoneKeyInput, { allowEmpty: true });
@@ -1063,6 +2093,7 @@
       }
       state.fillSettings = sanitizeFillSettings(saved.fillSettings);
       state.fillSettingsExpanded = Boolean(saved.fillSettingsExpanded);
+      state.lastPaypalEmail = typeof saved.lastPaypalEmail === "string" ? saved.lastPaypalEmail : "";
       renderFillSettings();
     });
   }
@@ -1071,11 +2102,19 @@
     const nextState = {
       country: document.getElementById("country").value,
       cardInput: document.getElementById("cardInput").value,
+      randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       payUrlInput: document.getElementById("payUrlInput").value,
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
+      proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
+      webshareApiKey: document.getElementById("webshareApiKeyInput").value,
+      proxyProtocol: normalizeProxyProtocol(document.getElementById("proxyProtocolSelect").value),
+      step1ProxyCountry: normalizeProxyCountry(document.getElementById("step1ProxyCountrySelect").value),
+      step3ProxyCountry: normalizeProxyCountry(document.getElementById("step3ProxyCountrySelect").value),
+      currentProxy: state.currentProxy,
       fillSettings: sanitizeFillSettings(state.fillSettings),
       fillSettingsExpanded: state.fillSettingsExpanded,
-      lastPhoneCode: state.lastPhoneCode
+      lastPhoneCode: state.lastPhoneCode,
+      lastPaypalEmail: state.lastPaypalEmail
     };
     return ext.storage.local.set({ [STORAGE_KEY]: nextState });
   }
@@ -1083,8 +2122,39 @@
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(startAutomation));
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
+    document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
+    document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
+    document.getElementById("getWebshareProxyButton").addEventListener("click", () => runWithErrorHandling(getCurrentWebshareProxy));
+    document.getElementById("setProxyButton").addEventListener("click", () => runWithErrorHandling(setCurrentProxy));
+    document.getElementById("replaceProxyButton").addEventListener("click", () => runWithErrorHandling(replaceWebshareProxy));
+    document.getElementById("clearProxyButton").addEventListener("click", () => runWithErrorHandling(clearProxy));
+    document.getElementById("proxyEnabledCheckbox").addEventListener("change", () => {
+      state.proxyEnabled = document.getElementById("proxyEnabledCheckbox").checked;
+      persistState();
+      logMessage(state.proxyEnabled ? "代理已开启" : "代理已关闭");
+    });
+    document.getElementById("webshareApiKeyInput").addEventListener("input", () => {
+      state.webshareApiKey = document.getElementById("webshareApiKeyInput").value.trim();
+      persistState();
+    });
+    document.getElementById("proxyProtocolSelect").addEventListener("change", () => {
+      document.getElementById("proxyProtocolSelect").value = getProxyProtocol();
+      persistState();
+    });
+    document.getElementById("step1ProxyCountrySelect").addEventListener("change", () => {
+      document.getElementById("step1ProxyCountrySelect").value = getStep1ProxyCountry();
+      persistState();
+    });
+    document.getElementById("step3ProxyCountrySelect").addEventListener("change", () => {
+      document.getElementById("step3ProxyCountrySelect").value = getStep3ProxyCountry();
+      persistState();
+    });
     document.getElementById("country").addEventListener("change", persistState);
     document.getElementById("cardInput").addEventListener("input", persistState);
+    document.getElementById("randomCardCheckbox").addEventListener("change", () => {
+      state.randomCardEnabled = document.getElementById("randomCardCheckbox").checked;
+      persistState();
+    });
     document.getElementById("payUrlInput").addEventListener("input", persistState);
     document.getElementById("phoneKeyInput").addEventListener("input", () => {
       state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();

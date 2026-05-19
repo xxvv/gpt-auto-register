@@ -8,11 +8,24 @@
     "storage",
     "scripting",
     "activeTab",
-    "<all_urls>"
+    "proxy",
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>",
+    "https://proxy.webshare.io/*"
   ],
+  "background": {
+    "scripts": ["background.js"]
+  },
   "sidebar_action": {
     "default_panel": "sidebar.html",
     "default_title": "GPT Auto Register v2"
+  },
+  "applications": {
+    "gecko": {
+      "id": "gpt-auto-register-v2@example.local",
+      "strict_min_version": "109.0"
+    }
   },
   "content_scripts": [
     {
