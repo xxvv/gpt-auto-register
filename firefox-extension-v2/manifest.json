@@ -12,7 +12,8 @@
     "webRequest",
     "webRequestBlocking",
     "<all_urls>",
-    "https://proxy.webshare.io/*"
+    "https://proxy.webshare.io/*",
+    "https://ipapi.co/*"
   ],
   "background": {
     "scripts": ["background.js"]

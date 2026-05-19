@@ -16,6 +16,7 @@
   const THIRD_PARTY_API_KEY = "pvxxvv";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
+  const IPAPI_LOCATION_API = "https://ipapi.co/json/?token=T6UkBSJpmZgNZELN7QsJk5uCZTF8c6aVHUYZiLwEsHnUQqqeJg";
   const STORAGE_KEY = "gptAutoRegisterV2State";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
@@ -53,7 +54,8 @@
     proxyProtocol: "http",
     step1ProxyCountry: "US",
     step3ProxyCountry: "US",
-    currentProxy: null
+    currentProxy: null,
+    currentIpLocation: null
   };
   let usZip3StateRangesPromise = null;
 
@@ -147,6 +149,11 @@
     const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
     await applyFirefoxProxy(proxy);
     state.currentProxy = proxy;
+    if (stage === "第三步") {
+      await refreshIpLocation(`${stage}: `);
+    } else {
+      state.currentIpLocation = null;
+    }
     renderProxyStatus();
     await persistState();
     logMessage(`${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
@@ -199,6 +206,7 @@
     try {
       await clearFirefoxProxyState();
       state.currentProxy = null;
+      state.currentIpLocation = null;
       renderProxyStatus();
       await persistState();
       logMessage("已清除 Firefox 代理");
@@ -469,6 +477,117 @@
     }
   }
 
+  async function refreshIpLocation(logPrefix = "") {
+    try {
+      const location = await fetchCurrentIpLocation();
+      state.currentIpLocation = location;
+      logMessage(`${logPrefix}当前 IP 定位: ${formatIpLocation(location)}`);
+      return location;
+    } catch (error) {
+      state.currentIpLocation = null;
+      logMessage(`${logPrefix}获取当前 IP 定位失败: ${formatError(error)}`);
+      return null;
+    }
+  }
+
+  async function fetchCurrentIpLocation() {
+    const response = await fetch(IPAPI_LOCATION_API, {
+      method: "GET",
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    });
+    const payload = await readJsonResponse(response, "IP 定位接口");
+    if (!response.ok || payload.error) {
+      throw new Error(payload.reason || payload.message || `HTTP ${response.status}`);
+    }
+    return normalizeIpLocation(payload);
+  }
+
+  function normalizeIpLocation(payload) {
+    const city = String(payload && payload.city || "").trim();
+    const region = String(payload && payload.region || "").trim();
+    const regionCode = String(payload && payload.region_code || "").trim().toUpperCase();
+    const countryCode = String(payload && (payload.country_code || payload.country) || "").trim().toUpperCase();
+    const postal = String(payload && payload.postal || "").trim();
+    if (!city || (!regionCode && !region)) {
+      throw new Error("IP 定位缺少城市或州信息");
+    }
+    return {
+      ip: String(payload && payload.ip || "").trim(),
+      city,
+      region,
+      regionCode,
+      countryCode,
+      postal,
+      timezone: String(payload && payload.timezone || "").trim()
+    };
+  }
+
+  async function applyCurrentIpLocationToPrepared(prepared) {
+    if (!prepared || !prepared.card) {
+      return;
+    }
+    const changed = applyIpLocationToCard(prepared.card, state.currentIpLocation);
+    if (changed) {
+      logMessage(`已按当前 IP 定位更新卡片地址: ${formatIpLocation(state.currentIpLocation)}`);
+    } else {
+      logMessage("未获取到可用 IP 定位，继续使用卡片原地址");
+    }
+  }
+
+  function applyIpLocationToCard(card, location) {
+    if (!card || !location || !location.city || (!location.regionCode && !location.region)) {
+      return false;
+    }
+    card.city = location.city;
+    card.state = location.regionCode || location.region;
+    if (location.postal) {
+      card.postcode = normalizeLocationPostcode(location.postal);
+    }
+    if (location.countryCode) {
+      card.country = location.countryCode;
+    }
+    return true;
+  }
+
+  function normalizeLocationPostcode(postal) {
+    const normalized = String(postal || "").trim();
+    const usMatch = normalized.match(/^(\d{5})(?:-\d{4})?$/);
+    return usMatch ? usMatch[1] : normalized;
+  }
+
+  function formatIpLocation(location) {
+    if (!location) {
+      return "未知";
+    }
+    const stateLabel = location.regionCode || location.region || "-";
+    const postalLabel = location.postal ? ` ${location.postal}` : "";
+    const countryLabel = location.countryCode || "-";
+    const ipLabel = location.ip ? ` (${location.ip})` : "";
+    return `${location.city}, ${stateLabel}${postalLabel}, ${countryLabel}${ipLabel}`;
+  }
+
+  function normalizeSavedIpLocation(location) {
+    if (!location || typeof location !== "object") {
+      return null;
+    }
+    const city = String(location.city || "").trim();
+    const region = String(location.region || "").trim();
+    const regionCode = String(location.regionCode || location.region_code || "").trim().toUpperCase();
+    if (!city || (!regionCode && !region)) {
+      return null;
+    }
+    return {
+      ip: String(location.ip || "").trim(),
+      city,
+      region,
+      regionCode,
+      countryCode: String(location.countryCode || location.country_code || location.country || "").trim().toUpperCase(),
+      postal: String(location.postal || "").trim(),
+      timezone: String(location.timezone || "").trim()
+    };
+  }
+
   async function fetchVerificationCode(email) {
     try {
       const resp = await fetch(`${CODE_API}?email=${encodeURIComponent(email)}&format=json`);
@@ -623,7 +742,7 @@
     const domain = DOMAINS[Math.floor(Math.random() * DOMAINS.length)];
     const email = `${localPart}@${domain}`;
     const randomName = generateRandomName();
-    const randomAge = String(generateRandomAge());
+    const randomAge = generateRandomAge();
     const randomBirthday = generateRandomBirthday();
     logMessage(`生成注册邮箱: ${email}`);
 
@@ -652,11 +771,11 @@
           const ageInput = document.querySelector('input[name="age"]');
           const birthdayInput = document.querySelector('input[name="birthday"]');
           if (ageInput) {
-            simulateType(ageInput, ageValue);
+            setValue(ageInput, Number(ageValue));
             return true;
           }
           if (birthdayInput) {
-            setValue(birthdayInput, birthdayValue);
+            setValue(birthdayInput, String(birthdayValue));
             return true;
           }
           return false;
@@ -704,11 +823,11 @@
           const ageInput = document.querySelector('input[name="age"]');
           const birthdayInput = document.querySelector('input[name="birthday"]');
           if (ageInput) {
-            simulateType(ageInput, ageValue);
+            setValue(ageInput, Number(ageValue));
             return true;
           }
           if (birthdayInput) {
-            setValue(birthdayInput, birthdayValue);
+            setValue(birthdayInput, String(birthdayValue));
             return true;
           }
           return false;
@@ -716,8 +835,9 @@
         const start = Date.now();
         while (Date.now() - start < 60000) {
           const nameInput = document.querySelector('input[name="name"]');
-          const ageInput = document.querySelector('input[name="age"], input[name="birthday"]');
-          if (nameInput && ageInput) {
+          const ageInput = document.querySelector('input[name="age"]');
+          const birthdayInput = document.querySelector('input[name="birthday"]');
+          if (nameInput && (ageInput || birthdayInput)) {
             simulateType(nameInput, ${JSON.stringify(randomName)});
             fillAgeOrBirthday(${JSON.stringify(randomAge)}, ${JSON.stringify(randomBirthday)});
             return { ok: true };
@@ -1153,6 +1273,7 @@
       logMessage("第三步代理设置失败，流程终止: " + formatError(error));
       return;
     }
+    await applyCurrentIpLocationToPrepared(prepared);
     await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
   }
 
@@ -1173,6 +1294,7 @@
 
     setActiveStep(5);
     logMessage("手动填充第5步 PayPal signup 表单...");
+    await applyCurrentIpLocationToPrepared(prepared);
     await fillPayPalSignupForm(tab.id, prepared);
     logMessage("第5步表单已填充，未自动提交");
   }
@@ -1229,6 +1351,7 @@
         return;
       }
     }
+    await applyCurrentIpLocationToPrepared(prepared);
     await updateTabUrl(tabId, prepared.payUrl);
     await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
@@ -2350,6 +2473,7 @@
       state.step3ProxyCountry = normalizeProxyCountry(saved.step3ProxyCountry);
       document.getElementById("step3ProxyCountrySelect").value = state.step3ProxyCountry;
       state.currentProxy = isRuntimeProxy(saved.currentProxy) ? saved.currentProxy : null;
+      state.currentIpLocation = normalizeSavedIpLocation(saved.currentIpLocation);
       renderProxyStatus();
       state.randomCardEnabled = Boolean(saved.randomCardEnabled);
       document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
@@ -2380,6 +2504,7 @@
       step1ProxyCountry: normalizeProxyCountry(document.getElementById("step1ProxyCountrySelect").value),
       step3ProxyCountry: normalizeProxyCountry(document.getElementById("step3ProxyCountrySelect").value),
       currentProxy: state.currentProxy,
+      currentIpLocation: state.currentIpLocation,
       fillSettings: sanitizeFillSettings(state.fillSettings),
       fillSettingsExpanded: state.fillSettingsExpanded,
       lastPhoneCode: state.lastPhoneCode,
