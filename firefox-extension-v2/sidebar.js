@@ -99,7 +99,7 @@
   }
 
   function generateRandomBirthday() {
-    const year = Math.floor(Math.random() * 34) + 1971;
+    const year = Math.floor(Math.random() * 15) + 1981;
     const month = String(Math.floor(Math.random() * 12) + 1).padStart(2, "0");
     const day = String(Math.floor(Math.random() * 28) + 1).padStart(2, "0");
     return `${year}-${month}-${day}`;
