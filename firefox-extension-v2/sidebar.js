@@ -217,6 +217,19 @@
     }
   }
 
+  async function cleanupAutomationProxy(reason) {
+    try {
+      await clearFirefoxProxyState();
+      state.currentProxy = null;
+      state.currentIpLocation = null;
+      renderProxyStatus();
+      await persistState();
+      logMessage(`${reason || "任务结束"}，已清理 Firefox 代理`);
+    } catch (error) {
+      logMessage(`${reason || "任务结束"}，清理代理失败: ${formatError(error)}`);
+    }
+  }
+
   async function applyFirefoxProxy(proxy) {
     const runtimeProxy = requireRuntimeProxy(proxy);
     const proxyType = String(runtimeProxy.type || "http").toLowerCase();
@@ -1211,14 +1224,14 @@
     }
 
     logMessage("开始完整自动化流程...");
-    try {
-      await ensureProxyForStage("第一步");
-    } catch (error) {
-      logMessage("第一步代理设置失败，流程终止: " + formatError(error));
-      return;
-    }
     let automationWindowId = null;
     try {
+      try {
+        await ensureProxyForStage("第一步");
+      } catch (error) {
+        logMessage("第一步代理设置失败，流程终止: " + formatError(error));
+        return;
+      }
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
@@ -1274,6 +1287,7 @@
     await runPayPalFlow(tab.id, prepared);
     } finally {
       await closeAutomationWindow(automationWindowId);
+      await cleanupAutomationProxy("完整流程任务已关闭");
     }
   }
 
@@ -1287,19 +1301,20 @@
     }
 
     logMessage("从 PayURL 开始支付流程...");
-    try {
-      await ensureProxyForStage("第三步");
-    } catch (error) {
-      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-      return;
-    }
     let automationWindowId = null;
     try {
+      try {
+        await ensureProxyForStage("第三步");
+      } catch (error) {
+        logMessage("第三步代理设置失败，流程终止: " + formatError(error));
+        return;
+      }
       const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
       automationWindowId = automationWindow.windowId;
       await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
     } finally {
       await closeAutomationWindow(automationWindowId);
+      await cleanupAutomationProxy("PayURL 任务已关闭");
     }
   }
 
@@ -1320,13 +1335,17 @@
 
     logMessage("从当前页面第3步开始支付流程...");
     try {
-      await ensureProxyForStage("第三步");
-    } catch (error) {
-      logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-      return;
+      try {
+        await ensureProxyForStage("第三步");
+      } catch (error) {
+        logMessage("第三步代理设置失败，流程终止: " + formatError(error));
+        return;
+      }
+      await applyCurrentIpLocationToPrepared(prepared);
+      await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
+    } finally {
+      await cleanupAutomationProxy("第3步任务已关闭");
     }
-    await applyCurrentIpLocationToPrepared(prepared);
-    await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
   }
 
   async function manualFillStep5Form() {
