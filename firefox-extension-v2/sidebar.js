@@ -55,7 +55,9 @@
     step1ProxyCountry: "US",
     step3ProxyCountry: "US",
     currentProxy: null,
-    currentIpLocation: null
+    currentIpLocation: null,
+    automationBatchRunning: false,
+    cancelAutomationBatchRequested: false
   };
   let usZip3StateRangesPromise = null;
 
@@ -1133,19 +1135,69 @@
     return DEFAULT_RUN_COUNT;
   }
 
-  async function runAutomationBatch() {
-    const runCount = getRunCount();
-    logMessage(`准备连续执行 ${runCount} 次完整流程`);
-    for (let index = 1; index <= runCount; index += 1) {
-      logMessage(`===== 第 ${index}/${runCount} 次开始 =====`);
-      try {
-        await startAutomation();
-        logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
-      } catch (error) {
-        logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
-      }
+  function renderAutomationBatchControls() {
+    const startButton = document.getElementById("startBtn");
+    const cancelButton = document.getElementById("cancelBatchBtn");
+    if (startButton) {
+      startButton.disabled = state.automationBatchRunning;
     }
-    logMessage(`连续执行完成，共 ${runCount} 次`);
+    if (cancelButton) {
+      cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
+      cancelButton.textContent = state.cancelAutomationBatchRequested ? "取消中" : "取消";
+    }
+  }
+
+  function requestCancelAutomationBatch() {
+    if (!state.automationBatchRunning) {
+      logMessage("当前没有正在执行的完整流程");
+      return;
+    }
+    if (state.cancelAutomationBatchRequested) {
+      logMessage("已请求取消，当前流程结束后会停止");
+      return;
+    }
+    state.cancelAutomationBatchRequested = true;
+    renderAutomationBatchControls();
+    logMessage("已请求取消，当前流程执行完后不再执行后续次数");
+  }
+
+  async function runAutomationBatch() {
+    if (state.automationBatchRunning) {
+      logMessage("完整流程正在执行中");
+      return;
+    }
+    state.automationBatchRunning = true;
+    state.cancelAutomationBatchRequested = false;
+    renderAutomationBatchControls();
+    const runCount = getRunCount();
+    let completedCount = 0;
+    try {
+      logMessage(`准备连续执行 ${runCount} 次完整流程`);
+      for (let index = 1; index <= runCount; index += 1) {
+        logMessage(`===== 第 ${index}/${runCount} 次开始 =====`);
+        try {
+          await startAutomation();
+          completedCount = index;
+          logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
+        } catch (error) {
+          completedCount = index;
+          logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
+        }
+        if (state.cancelAutomationBatchRequested) {
+          logMessage(`已取消后续任务，停止在第 ${completedCount}/${runCount} 次之后`);
+          break;
+        }
+      }
+      if (state.cancelAutomationBatchRequested && completedCount < runCount) {
+        logMessage(`连续执行已取消，已完成 ${completedCount} 次，剩余 ${runCount - completedCount} 次未执行`);
+      } else {
+        logMessage(`连续执行完成，共 ${completedCount} 次`);
+      }
+    } finally {
+      state.automationBatchRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+    }
   }
 
   async function startAutomation() {
@@ -1548,13 +1600,17 @@
     await ensureContentScript(tabId);
     await delay();
     logMessage("步骤5: 判断国家是否是us");
+    const countrySelectors = normalizeSelectorList(
+      prepared.settings && prepared.settings.countrySelector,
+      DEFAULT_FILL_SETTINGS.countrySelector
+    );
     const countryResult = await requirePageResult(tabId, "__gptAutoRegisterSetSelectIfNeeded", {
-      selector: "#country",
-      value: "US",
+      selectors: countrySelectors,
+      value: "us",
       timeoutMs: 60000
     }, "未找到国家字段");
     if (countryResult.changed) {
-      logMessage("国家已改为 US，等待 3 秒");
+      logMessage("国家已改为 us，等待 3 秒");
       await delay();
     } else {
       logMessage("步骤5: 国家为us不用修改");
@@ -2515,6 +2571,7 @@
 
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(runAutomationBatch));
+    document.getElementById("cancelBatchBtn").addEventListener("click", requestCancelAutomationBatch);
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
     document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
@@ -2588,6 +2645,7 @@
 
   function init() {
     bindEvents();
+    renderAutomationBatchControls();
     restoreState();
     renderFillSettings();
     logMessage("扩展已加载，准备开始");

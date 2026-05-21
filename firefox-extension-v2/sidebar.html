@@ -16,9 +16,14 @@
     button:hover { background: #1976d2; }
     button.secondary { background: #607d8b; }
     button.secondary:hover { background: #455a64; }
+    button.danger { background: #d32f2f; }
+    button.danger:hover { background: #b71c1c; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .actions button { margin-bottom: 0; }
     .actions .wide { grid-column: 1 / -1; }
+    .batch-actions { display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+    .batch-actions button { margin-bottom: 8px; }
     .proxy-status { border: 1px solid #ddd; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; margin-bottom: 8px; }
     .proxy-status.empty { color: #666; }
     .settings { border: 1px solid #ddd; padding: 8px; background: #fafafa; margin-top: 8px; }
@@ -140,7 +145,10 @@
     <input id="runCountInput" type="number" min="1" step="1" value="1">
   </div>
 
-  <button id="startBtn" type="button">开始完整流程</button>
+  <div class="batch-actions">
+    <button id="startBtn" type="button">开始完整流程</button>
+    <button id="cancelBatchBtn" class="danger" type="button" disabled>取消</button>
+  </div>
 
   <div style="margin-top: 15px;">
     <label>日志输出</label>

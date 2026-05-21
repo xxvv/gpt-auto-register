@@ -145,7 +145,11 @@
   function setNativeValue(element, value) {
     const nextValue = String(value || "");
     if (element instanceof HTMLSelectElement) {
-      element.value = nextValue;
+      const matchingOption = Array.from(element.options).find((option) =>
+        String(option.value || "").toLowerCase() === nextValue.toLowerCase() ||
+        String(option.textContent || "").trim().toLowerCase() === nextValue.toLowerCase()
+      );
+      element.value = matchingOption ? matchingOption.value : nextValue;
       element.dispatchEvent(new Event("input", { bubbles: true }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
       return;
@@ -253,6 +257,24 @@
       await delay(300);
     }
     return null;
+  }
+
+  async function waitForAnySelector(selectors, timeoutMs) {
+    const selectorList = uniqueSelectors(selectors);
+    const timeout = Number(timeoutMs || 60000);
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      for (const selector of selectorList) {
+        try {
+          const element = document.querySelector(selector);
+          if (element) {
+            return { element, selector };
+          }
+        } catch (_) {}
+      }
+      await delay(300);
+    }
+    return { element: null, selector: selectorList.join(", ") };
   }
 
   function isVisible(element) {
@@ -407,7 +429,7 @@
       { field: "billingCity", selectors: selectorsFor(settings, "billingCity"), value: card.city },
       { field: "billingState", selectors: selectorsFor(settings, "billingState"), value: card.state },
       { field: "billingPostalCode", selectors: selectorsFor(settings, "billingPostalCode"), value: card.postcode },
-      { field: "country", selectors: selectorsFor(settings, "country"), value: card.country },
+      { field: "country", selectors: selectorsFor(settings, "country"), value: "us" },
       { field: "password", selectors: selectorsFor(settings, "password"), value: settings.passwordValue }
     ];
   }
@@ -562,14 +584,14 @@
   };
 
   window.__gptAutoRegisterSetSelectIfNeeded = async function setSelectIfNeededExport(payload) {
-    const selector = String((payload && payload.selector) || "").trim();
+    const selectors = uniqueSelectors((payload && payload.selectors) || (payload && payload.selector) || "");
     const value = String((payload && payload.value) || "");
-    const element = selector ? await waitForSelector(selector, payload && payload.timeoutMs) : null;
+    const { element, selector } = await waitForAnySelector(selectors, payload && payload.timeoutMs);
     if (!element) {
       return { ok: false, selector, changed: false, error: `Element not found: ${selector}` };
     }
     const currentValue = String(element.value || "");
-    if (currentValue === value) {
+    if (currentValue.toLowerCase() === value.toLowerCase()) {
       return { ok: true, selector, changed: false, value: currentValue };
     }
     element.focus();
