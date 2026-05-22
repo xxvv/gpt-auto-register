@@ -283,24 +283,132 @@ class _TaskProxySelector:
         self._base_proxy = dict(base_proxy) if base_proxy and base_proxy.get("enabled") else None
         self._switch_interval = _normalize_proxy_switch_interval(switch_interval)
         self._current_proxy = None
-        self._lock = threading.Lock()
+        self._assigned_since_switch = 0
+        self._active_leases = 0
+        self._condition = threading.Condition(threading.Lock())
+
+    @staticmethod
+    def _proxy_key(proxy):
+        if not proxy:
+            return None
+        return (
+            str(proxy.get("type", "http")).lower(),
+            str(proxy.get("host", "")),
+            int(proxy.get("port", 0) or 0),
+            str(proxy.get("username", "")),
+        )
+
+    def _replace_current_proxy_locked(self):
+        self._current_proxy = payment_service.replace_webshare_static_proxy()
+        self._assigned_since_switch = 0
+        with state.lock:
+            state.proxy = dict(self._current_proxy)
+        return self._current_proxy
+
+    def _ensure_current_proxy_locked(self):
+        if self._current_proxy is None:
+            self._current_proxy = dict(self._base_proxy)
+            self._assigned_since_switch = 0
+        return self._current_proxy
+
+    def _acquire_proxy(self, task_number):
+        del task_number
+        if not self._base_proxy:
+            return None
+
+        with self._condition:
+            self._ensure_current_proxy_locked()
+            should_switch = self._assigned_since_switch >= self._switch_interval
+            if should_switch and self._active_leases > 0:
+                main.print(
+                    f"⏳ Webshare: 当前静态 IP 仍有 {self._active_leases} 个浏览器在运行，暂缓切换并复用当前代理"
+                )
+            if should_switch and self._active_leases <= 0:
+                self._replace_current_proxy_locked()
+
+            self._active_leases += 1
+            self._assigned_since_switch += 1
+            return dict(self._current_proxy)
+
+    def _release_proxy(self):
+        if not self._base_proxy:
+            return
+        with self._condition:
+            if self._active_leases > 0:
+                self._active_leases -= 1
+            self._condition.notify_all()
+
+    def _replace_after_failure(self, failed_proxy):
+        if not self._base_proxy:
+            return None
+
+        failed_key = self._proxy_key(failed_proxy)
+        with self._condition:
+            if self._active_leases > 0:
+                self._active_leases -= 1
+                self._condition.notify_all()
+            if self._active_leases > 0:
+                main.print(
+                    f"⏳ Webshare: 代理出口检测失败，等待 {self._active_leases} 个浏览器结束后同步切换 IP"
+                )
+            while (
+                self._proxy_key(self._current_proxy) == failed_key
+                and self._active_leases > 0
+            ):
+                self._condition.wait()
+
+            self._ensure_current_proxy_locked()
+            if self._proxy_key(self._current_proxy) == failed_key:
+                main.print("🔁 Webshare: 出口检测失败，正在同步替换静态 IP")
+                self._replace_current_proxy_locked()
+            else:
+                main.print("🔁 Webshare: 其他线程已完成 IP 切换，复用最新代理")
+
+            self._active_leases += 1
+            self._assigned_since_switch += 1
+            return dict(self._current_proxy)
 
     def next_proxy(self, task_number):
         if not self._base_proxy:
             return None
 
-        with self._lock:
-            should_switch = (
-                self._current_proxy is None
-                or int(task_number) > 1
-                and (int(task_number) - 1) % self._switch_interval == 0
-            )
-            if should_switch:
-                if self._current_proxy is None:
-                    self._current_proxy = dict(self._base_proxy)
-                else:
-                    self._current_proxy = payment_service.replace_webshare_static_proxy()
+        with self._condition:
+            self._ensure_current_proxy_locked()
+            if self._assigned_since_switch >= self._switch_interval:
+                self._replace_current_proxy_locked()
+            self._assigned_since_switch += 1
             return dict(self._current_proxy)
+
+    @contextmanager
+    def lease(self, task_number):
+        lease = _TaskProxyLease(self, self._acquire_proxy(task_number))
+        try:
+            yield lease
+        finally:
+            lease.release()
+
+
+class _TaskProxyLease:
+    def __init__(self, selector, proxy):
+        self._selector = selector
+        self._proxy = dict(proxy) if proxy else None
+        self._released = False
+
+    @property
+    def proxy(self):
+        return dict(self._proxy) if self._proxy else None
+
+    def replace_after_failure(self):
+        if self._released:
+            return self.proxy
+        self._proxy = self._selector._replace_after_failure(self._proxy)
+        return self.proxy
+
+    def release(self):
+        if self._released:
+            return
+        self._released = True
+        self._selector._release_proxy()
 
 
 def _current_email_domains():
@@ -431,67 +539,79 @@ def worker_thread(
             with counter_lock:
                 started[0] += 1
                 idx = started[0]
-            account_proxy = proxy_selector.next_proxy(idx)
-            if account_proxy and account_proxy.get("enabled"):
-                with state.lock:
-                    state.proxy = dict(account_proxy)
-
-            with _log_proxy_context(account_proxy):
-                state.current_action = f"正在注册 ({idx}/{count})..."
+            with proxy_selector.lease(idx) as proxy_lease:
+                account_proxy = proxy_lease.proxy
                 if account_proxy and account_proxy.get("enabled"):
-                    proxy_label = describe_proxy(account_proxy)
-                    state.current_action = f"{state.current_action} [{proxy_label}]"
-                    main.print(f"🧭 第 {idx}/{count} 个账号使用代理: {proxy_label}")
-                provider = "nnai"
-                email_domain = random.choice(email_domains)
-                try:
-                    attempt_proxy = account_proxy
+                    with state.lock:
+                        state.proxy = dict(account_proxy)
 
-                    def on_success_ready(_email, _password, _account_record_info):
-                        if complete_payment_flow:
-                            main.print("⚡ accessToken 已保存，保留窗口继续支付流程")
-                        else:
-                            main.print("⚡ accessToken 已保存，开始排队下个注册任务")
-                        release_slot()
+                with _log_proxy_context(account_proxy):
+                    state.current_action = f"正在注册 ({idx}/{count})..."
+                    if account_proxy and account_proxy.get("enabled"):
+                        proxy_label = describe_proxy(account_proxy)
+                        state.current_action = f"{state.current_action} [{proxy_label}]"
+                        main.print(f"🧭 第 {idx}/{count} 个账号使用代理: {proxy_label}")
+                    provider = "nnai"
+                    email_domain = random.choice(email_domains)
+                    try:
+                        attempt_proxy = account_proxy
 
-                    while True:
-                        try:
-                            with _log_proxy_context(attempt_proxy):
-                                _, _, success = main.register_one_account(
-                                    monitor_callback=monitor,
-                                    email_provider=provider,
-                                    email_domain=email_domain,
-                                    headless=headless,
-                                    proxy=attempt_proxy,
-                                    raise_proxy_errors=True,
-                                    success_callback=on_success_ready,
-                                    complete_payment_flow=complete_payment_flow,
-                                    payment_method=payment_method,
+                        def on_success_ready(_email, _password, _account_record_info):
+                            if complete_payment_flow:
+                                main.print("⚡ accessToken 已保存，保留窗口继续支付流程")
+                            else:
+                                main.print("⚡ accessToken 已保存，开始排队下个注册任务")
+                            release_slot()
+
+                        while True:
+                            try:
+                                with _log_proxy_context(attempt_proxy):
+                                    _, _, success = main.register_one_account(
+                                        monitor_callback=monitor,
+                                        email_provider=provider,
+                                        email_domain=email_domain,
+                                        headless=headless,
+                                        proxy=attempt_proxy,
+                                        raise_proxy_errors=True,
+                                        success_callback=on_success_ready,
+                                        complete_payment_flow=complete_payment_flow,
+                                        payment_method=payment_method,
+                                    )
+                                break
+                            except main.ProxyEgressCheckError as proxy_exc:
+                                if not (attempt_proxy and attempt_proxy.get("enabled")):
+                                    raise proxy_exc
+                                main.print(f"⚠️ {proxy_exc}")
+                                attempt_proxy = proxy_lease.replace_after_failure()
+                                if not (attempt_proxy and attempt_proxy.get("enabled")):
+                                    raise proxy_exc
+                                with state.lock:
+                                    state.proxy = dict(attempt_proxy)
+                                main.print(
+                                    f"🔁 第 {idx}/{count} 个账号改用新代理重试: "
+                                    f"{describe_proxy(attempt_proxy)}"
                                 )
-                            break
-                        except main.ProxyEgressCheckError as proxy_exc:
-                            raise proxy_exc
-                    with counter_lock:
-                        if success:
-                            state.success_count += 1
-                        else:
+                        with counter_lock:
+                            if success:
+                                state.success_count += 1
+                            else:
+                                state.fail_count += 1
+                            state.update_progress(
+                                completed=state.success_count + state.fail_count,
+                                processed=state.success_count,
+                            )
+                    except InterruptedError:
+                        main.print("🛑 任务已中断")
+                    except Exception as e:
+                        with counter_lock:
                             state.fail_count += 1
-                        state.update_progress(
-                            completed=state.success_count + state.fail_count,
-                            processed=state.success_count,
-                        )
-                except InterruptedError:
-                    main.print("🛑 任务已中断")
-                except Exception as e:
-                    with counter_lock:
-                        state.fail_count += 1
-                        state.update_progress(
-                            completed=state.success_count + state.fail_count,
-                            processed=state.success_count,
-                        )
-                    main.print(f"❌ 异常: {str(e)}")
-                finally:
-                    release_slot()
+                            state.update_progress(
+                                completed=state.success_count + state.fail_count,
+                                processed=state.success_count,
+                            )
+                        main.print(f"❌ 异常: {str(e)}")
+                    finally:
+                        release_slot()
 
         try:
             max_workers = max(1, min(count, int(parallel) * 4))
@@ -1356,7 +1476,7 @@ def get_current_webshare_proxy():
         return jsonify({"error": "任务运行中，暂不支持获取 Webshare 代理"}), 400
 
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         prefer_http = _normalize_bool(request.args.get("prefer_http"), False)
         payment_cfg = payment_service.with_webshare_api_key(
             cfg.payment,
@@ -1380,7 +1500,7 @@ def replace_webshare_proxy():
         return jsonify({"error": "任务运行中，暂不支持替换 Webshare 代理"}), 400
 
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         prefer_http = _normalize_bool(request.args.get("prefer_http"), False)
         payment_cfg = payment_service.with_webshare_api_key(
             cfg.payment,

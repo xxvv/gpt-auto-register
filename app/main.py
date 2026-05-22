@@ -6,6 +6,8 @@ ChatGPT 账号自动注册 - 主程序
 import time
 import random
 import requests
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from .config import (
     cfg,
@@ -27,6 +29,7 @@ from .utils import (
     generate_cpa_json,
     upload_cpa_json,
 )
+from .oauth_service import _decode_jwt_payload, upload_token_json
 from . import email_providers
 from . import payment_service
 from .browser import (
@@ -156,6 +159,90 @@ def _run_post_registration_payment_flow(
     )
     print(f"✅ 支付流程全部完成，JSON 已保存: {token_path}")
     return str(token_path)
+
+
+def _build_token_data_from_access_token(access_token: str, email: str) -> dict:
+    payload = _decode_jwt_payload(access_token)
+    auth_info = payload.get("https://api.openai.com/auth", {})
+    account_id = auth_info.get("chatgpt_account_id", "")
+
+    expired_str = ""
+    exp_timestamp = payload.get("exp")
+    if isinstance(exp_timestamp, int) and exp_timestamp > 0:
+        exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+        expired_str = exp_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
+
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "type": "codex",
+        "email": email,
+        "expired": expired_str,
+        "id_token": "",
+        "account_id": account_id,
+        "access_token": access_token,
+        "last_refresh": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z",
+        "refresh_token": "",
+    }
+
+
+def _upload_post_registration_cpa(email: str, access_token: str, proxy: dict | None = None):
+    """Upload CPA data after a successful plain registration."""
+    if not access_token or not access_token.startswith("eyJ"):
+        return
+
+    has_management_upload = cfg.cpa.enabled and cfg.cpa.management_api_url
+    has_file_upload = bool(cfg.cpa.upload_api_url)
+    if not has_management_upload and not has_file_upload:
+        return
+
+    try:
+        token_data = _build_token_data_from_access_token(access_token, email)
+    except Exception as exc:
+        print(f"⚠️ CPA token 数据生成失败: {exc}")
+        return
+
+    if has_file_upload:
+        token_path = None
+        try:
+            from tempfile import NamedTemporaryFile
+            import json
+            import os
+
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                suffix=".json",
+                prefix=f"codex-{email}-",
+                delete=False,
+            ) as handle:
+                json.dump(token_data, handle, ensure_ascii=False)
+                token_path = handle.name
+
+            print("📤 正在上传 CPA token JSON 文件...")
+            upload_token_json(
+                token_path,
+                cpa_cfg=SimpleNamespace(
+                    upload_api_url=cfg.cpa.upload_api_url,
+                    upload_api_token=cfg.cpa.upload_api_token,
+                ),
+                proxy=proxy,
+            )
+            print(f"✅ CPA token JSON 文件上传成功: {email}")
+        except Exception as exc:
+            print(f"⚠️ CPA token JSON 文件上传失败: {exc}")
+        finally:
+            if token_path:
+                try:
+                    os.unlink(token_path)
+                except Exception:
+                    pass
+
+    if has_management_upload:
+        try:
+            cpa_data = generate_cpa_json(token_data, email)
+            upload_cpa_json(cpa_data)
+        except Exception as exc:
+            print(f"⚠️ CPA 管理 API 上传失败: {exc}")
 
 
 def _run_signup_until_code_submitted(
@@ -422,37 +509,7 @@ def register_one_account_with_email(
         ):
             upload_access_token(account_record_info)
 
-        # 上传 CPA 数据到管理 API（如果启用）
-        if (
-            cfg.cpa.enabled
-            and account_record_info
-            and account_record_info.startswith("eyJ")
-        ):
-            try:
-                from .oauth_service import _decode_jwt_payload
-                from datetime import datetime, timezone
-
-                # 构建 token_data 用于生成 CPA
-                payload = _decode_jwt_payload(account_record_info)
-                exp_timestamp = payload.get("exp")
-                expired_str = ""
-                if isinstance(exp_timestamp, int) and exp_timestamp > 0:
-                    exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-                    expired_str = exp_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
-
-                now = datetime.now(tz=timezone.utc)
-                token_data = {
-                    "access_token": account_record_info,
-                    "refresh_token": "",
-                    "id_token": "",
-                    "expired": expired_str,
-                    "last_refresh": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z",
-                }
-
-                cpa_data = generate_cpa_json(token_data, email)
-                upload_cpa_json(cpa_data)
-            except Exception as e:
-                print(f"⚠️ CPA 上传失败: {e}")
+        _upload_post_registration_cpa(email, account_record_info, proxy=proxy)
 
         # 保存账号信息
         save_to_txt(
@@ -725,6 +782,8 @@ def register_one_account(
             and account_record_info.startswith("eyJ")
         ):
             upload_access_token(account_record_info)
+
+        _upload_post_registration_cpa(email, account_record_info, proxy=proxy)
 
         # 保存账号信息（含临时邮箱凭证和提供商，用于再次登录临时邮箱）
         save_to_txt(

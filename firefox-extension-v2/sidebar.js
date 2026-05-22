@@ -1286,8 +1286,8 @@
     prepared.payUrl = result.paymentLink;
     await runPayPalFlow(tab.id, prepared);
     } finally {
-      await closeAutomationWindow(automationWindowId);
       await cleanupAutomationProxy("完整流程任务已关闭");
+      await closeAutomationWindow(automationWindowId);
     }
   }
 
@@ -1313,8 +1313,8 @@
       automationWindowId = automationWindow.windowId;
       await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
     } finally {
-      await closeAutomationWindow(automationWindowId);
       await cleanupAutomationProxy("PayURL 任务已关闭");
+      await closeAutomationWindow(automationWindowId);
     }
   }
 

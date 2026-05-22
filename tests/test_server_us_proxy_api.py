@@ -376,6 +376,48 @@ class ServerUsProxyApiTests(unittest.TestCase):
     @mock.patch("app.server.random.choice", return_value="nnai.website")
     @mock.patch("app.server.main.register_one_account")
     @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
+    @mock.patch("app.server.ensure_proxy_ready")
+    def test_worker_thread_replaces_proxy_once_after_egress_failure(
+        self,
+        ensure_ready,
+        replace_proxy,
+        register_one_account,
+        _random_choice,
+    ):
+        replace_proxy.side_effect = [
+            {"enabled": True, "type": "socks5", "host": "1.1.1.1", "port": 1080, "use_auth": True, "username": "u1", "password": "p1"},
+            {"enabled": True, "type": "socks5", "host": "2.2.2.2", "port": 1080, "use_auth": True, "username": "u2", "password": "p2"},
+        ]
+        seen = []
+
+        def fake_register_one_account(*, proxy=None, **kwargs):
+            del kwargs
+            seen.append(proxy["host"])
+            if len(seen) == 1:
+                raise server.main.ProxyEgressCheckError("浏览器代理出口检测失败")
+            return "user@example.com", "secret", True
+
+        register_one_account.side_effect = fake_register_one_account
+
+        server.worker_thread(
+            count=1,
+            selected_providers=["nnai"],
+            parallel=1,
+            headless=False,
+            proxy={"enabled": False},
+            use_proxy=True,
+            proxy_switch_interval=10,
+        )
+
+        ensure_ready.assert_called_once()
+        self.assertEqual(seen, ["1.1.1.1", "2.2.2.2"])
+        self.assertEqual(replace_proxy.call_count, 2)
+        self.assertEqual(server.state.success_count, 1)
+        self.assertEqual(server.state.fail_count, 0)
+
+    @mock.patch("app.server.random.choice", return_value="nnai.website")
+    @mock.patch("app.server.main.register_one_account")
+    @mock.patch("app.server.payment_service.replace_webshare_static_proxy")
     def test_worker_thread_does_not_use_proxy_when_proxy_switch_off(
         self,
         replace_proxy,

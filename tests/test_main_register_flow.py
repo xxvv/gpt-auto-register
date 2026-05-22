@@ -283,6 +283,71 @@ class RegisterOneAccountFlowTests(unittest.TestCase):
         build_account_info.assert_called_once_with(driver, proxy=None)
         driver.quit.assert_called_once()
 
+    @mock.patch("app.main.upload_token_json")
+    @mock.patch("app.main.save_to_txt")
+    @mock.patch(
+        "app.main._build_registered_account_info",
+        return_value="eyJhbGciOiJub25lIn0.eyJleHAiOjIwMDAwMDAwMDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2N0LTEyMyIsImNoYXRncHRfcGxhbl90eXBlIjoiZnJlZSJ9fQ.sig",
+    )
+    @mock.patch("app.main.verify_logged_in", return_value=True)
+    @mock.patch("app.main.fill_profile_info", return_value=True)
+    @mock.patch("app.main.enter_verification_code", return_value=True)
+    @mock.patch(
+        "app.main.email_providers.wait_for_verification_email",
+        return_value="123456",
+    )
+    @mock.patch("app.main.fill_signup_form", return_value=(True, True))
+    @mock.patch("app.main.open_chatgpt_url")
+    @mock.patch("app.main.create_driver")
+    @mock.patch("app.main.generate_random_password", return_value="Secret123!")
+    @mock.patch(
+        "app.main.email_providers.create_temp_email",
+        return_value=("user@example.com", "mail-token", "mail-pass"),
+    )
+    @mock.patch(
+        "app.main.email_providers.get_provider_info",
+        return_value={"name": "NNAI.website", "module": mock.Mock()},
+    )
+    def test_register_one_account_uploads_cpa_token_json_file(
+        self,
+        get_provider_info,
+        create_temp_email,
+        generate_random_password,
+        create_driver,
+        open_chatgpt_url,
+        fill_signup_form,
+        wait_for_verification_email,
+        enter_verification_code,
+        fill_profile_info,
+        verify_logged_in,
+        build_account_info,
+        save_to_txt,
+        upload_token_json,
+    ):
+        driver = mock.Mock()
+        create_driver.return_value = driver
+
+        with (
+            mock.patch("app.main.time.sleep", return_value=None),
+            mock.patch.object(main.cfg.cpa, "enabled", True),
+            mock.patch.object(main.cfg.cpa, "management_api_url", ""),
+            mock.patch.object(main.cfg.cpa, "upload_api_url", "https://cpa.example.com/upload"),
+            mock.patch.object(main.cfg.cpa, "upload_api_token", "upload-secret"),
+            mock.patch.object(main.cfg.token_upload, "enabled", False),
+        ):
+            email, password, success = main.register_one_account(
+                email_provider="nnai"
+            )
+
+        self.assertEqual(email, "user@example.com")
+        self.assertEqual(password, "Secret123!")
+        self.assertTrue(success)
+        upload_token_json.assert_called_once()
+        upload_call = upload_token_json.call_args
+        self.assertEqual(upload_call.kwargs["cpa_cfg"].upload_api_url, "https://cpa.example.com/upload")
+        self.assertEqual(upload_call.kwargs["cpa_cfg"].upload_api_token, "upload-secret")
+        driver.quit.assert_called_once()
+
     @mock.patch("app.main.save_to_txt")
     @mock.patch(
         "app.main._run_post_registration_payment_flow",
