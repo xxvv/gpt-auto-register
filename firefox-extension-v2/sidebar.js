@@ -13,6 +13,7 @@
   ];
   const CODE_API = "https://getemail.nnai.website/api/code";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.website/api/third-party/accounts";
+  const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_API_KEY = "pvxxvv";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
@@ -696,6 +697,31 @@
     }
   }
 
+  async function deleteThirdPartyAccount(account) {
+    try {
+      const resp = await fetch(THIRD_PARTY_ACCOUNTS_DELETE_API, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": THIRD_PARTY_API_KEY
+        },
+        body: JSON.stringify({ account })
+      });
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (_) {}
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        data,
+        error: resp.ok ? "" : `HTTP ${resp.status}`
+      };
+    } catch (e) {
+      return { ok: false, status: 0, data: null, error: e.message || "third-party delete failed" };
+    }
+  }
+
   async function runRegistration(tabId) {
     setActiveStep(1);
     logMessage("等待 chatgpt.com 页面加载完成...");
@@ -1065,8 +1091,9 @@
     if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
       throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
     }
-    await prepareRandomUserAgentForTab(tab.id, url);
+    const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
     await ext.tabs.update(tab.id, { url, active: true });
+    logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "隐私窗口新 URL");
     return {
       windowId: createdWindow.id,
       tab: await ext.tabs.get(tab.id)
@@ -1114,8 +1141,9 @@
     if (!tab) {
       tab = await ext.tabs.create({ active: true });
     }
-    await prepareRandomUserAgentForTab(tab.id, url);
+    const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
     await ext.tabs.update(tab.id, { url, active: true });
+    logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "新标签页 URL");
     return ext.tabs.get(tab.id);
   }
 
@@ -1128,11 +1156,34 @@
         url
       });
       if (response && response.userAgent) {
-        logMessage(`User-Agent 已随机化: ${response.userAgent}`);
+        logMessage(`请求头 User-Agent 已设置: ${response.userAgent}`);
+        return response.userAgent;
       }
+      logMessage("请求头 User-Agent 设置未返回有效结果");
     } catch (error) {
       console.warn("Failed to prepare random User-Agent", error);
       logMessage("User-Agent 随机化失败: " + formatError(error));
+    }
+    return "";
+  }
+
+  async function logTabUserAgentAfterNavigation(tabId, preparedUserAgent, label) {
+    if (preparedUserAgent) {
+      logMessage(`${label || "页面"} 请求头 User-Agent: ${preparedUserAgent}`);
+    }
+    try {
+      await waitForScriptableTab(tabId, 15000);
+      const loaded = await waitForPageComplete(tabId, 45000);
+      if (!loaded) {
+        logMessage(`${label || "页面"} 页面仍在加载，继续读取 navigator.userAgent`);
+      }
+      const pageUserAgent = (await executeScriptWithRetry(tabId, {
+        code: "navigator.userAgent",
+        runAt: "document_idle"
+      }, `${label || "页面"} navigator.userAgent`))[0];
+      logMessage(`${label || "页面"} window navigator.userAgent: ${pageUserAgent || ""}`);
+    } catch (error) {
+      logMessage(`${label || "页面"} window navigator.userAgent 读取失败: ${formatError(error)}`);
     }
   }
 
@@ -1184,16 +1235,25 @@
     renderAutomationBatchControls();
     const runCount = getRunCount();
     let completedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
     try {
       logMessage(`准备连续执行 ${runCount} 次完整流程`);
       for (let index = 1; index <= runCount; index += 1) {
         logMessage(`===== 第 ${index}/${runCount} 次开始 =====`);
         try {
-          await startAutomation();
+          const result = await startAutomation();
           completedCount = index;
-          logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
+          if (result && result.ok) {
+            successCount += 1;
+            logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
+          } else {
+            failCount += 1;
+            logMessage(`第 ${index}/${runCount} 次失败结束`);
+          }
         } catch (error) {
           completedCount = index;
+          failCount += 1;
           logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
         }
         if (state.cancelAutomationBatchRequested) {
@@ -1202,9 +1262,11 @@
         }
       }
       if (state.cancelAutomationBatchRequested && completedCount < runCount) {
-        logMessage(`连续执行已取消，已完成 ${completedCount} 次，剩余 ${runCount - completedCount} 次未执行`);
+        logMessage(
+          `连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
+        );
       } else {
-        logMessage(`连续执行完成，共 ${completedCount} 次`);
+        logMessage(`连续执行完成，共 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次`);
       }
     } finally {
       state.automationBatchRunning = false;
@@ -1220,73 +1282,89 @@
       prepared = await preparePaymentInputs(false);
     } catch (error) {
       logMessage("错误: " + formatError(error));
-      return;
+      return { ok: false };
     }
 
     logMessage("开始完整自动化流程...");
     let automationWindowId = null;
+    let uploadedThirdPartyAccount = null;
+    let automationSucceeded = false;
     try {
       try {
         await ensureProxyForStage("第一步");
       } catch (error) {
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
-        return;
+        return { ok: false };
       }
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
-    logMessage("步骤1: 打开 chatgpt.com");
+      logMessage("步骤1: 打开 chatgpt.com");
 
-    const registration = await runRegistration(tab.id);
-    if (!registration.ok) {
-      logMessage("注册失败，流程终止");
-      return;
-    }
+      const registration = await runRegistration(tab.id);
+      if (!registration.ok) {
+        logMessage("注册失败，流程终止");
+        return { ok: false };
+      }
 
-    let reachedChat = false;
-    for (let i = 0; i < 45; i += 1) {
-      try {
-        const t = await ext.tabs.get(tab.id);
-        if (t.url && t.url.startsWith("https://chatgpt.com")) {
-          reachedChat = true;
-          break;
-        }
-      } catch (_) {}
-      await delay(1500);
-    }
+      let reachedChat = false;
+      for (let i = 0; i < 45; i += 1) {
+        try {
+          const t = await ext.tabs.get(tab.id);
+          if (t.url && t.url.startsWith("https://chatgpt.com")) {
+            reachedChat = true;
+            break;
+          }
+        } catch (_) {}
+        await delay(1500);
+      }
 
-    if (!reachedChat) {
-      logMessage("错误: 未成功到达 chatgpt.com");
-      return;
-    }
+      if (!reachedChat) {
+        logMessage("错误: 未成功到达 chatgpt.com");
+        return { ok: false };
+      }
 
-    setActiveStep(2);
-    logMessage("步骤2: 获取支付链接");
-    const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
-    if (!result.ok || !result.paymentLink) {
-      logMessage("获取支付链接失败: " + (result.error || "未知错误"));
-      return;
-    }
+      setActiveStep(2);
+      logMessage("步骤2: 获取支付链接");
+      const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+      if (!result.ok || !result.paymentLink) {
+        logMessage("获取支付链接失败: " + (result.error || "未知错误"));
+        return { ok: false };
+      }
 
-    document.getElementById("payUrlInput").value = result.paymentLink;
-    await persistState();
-    logMessage("支付链接获取成功: " + result.paymentLink);
-    logMessage("正在提交到第三方接口...");
-    const thirdPartyResult = await submitThirdPartyAccount({
-      account: registration.email,
-      accessToken: result.accessToken,
-      payurl: result.paymentLink
-    });
-    if (thirdPartyResult.ok) {
-      logMessage("第三方接口提交成功");
-    } else {
-      logMessage("第三方接口提交失败: " + (thirdPartyResult.error || "未知错误"));
-    }
+      document.getElementById("payUrlInput").value = result.paymentLink;
+      await persistState();
+      logMessage("支付链接获取成功: " + result.paymentLink);
+      logMessage("正在提交到第三方接口...");
+      const thirdPartyResult = await submitThirdPartyAccount({
+        account: registration.email,
+        accessToken: result.accessToken,
+        payurl: result.paymentLink
+      });
+      if (thirdPartyResult.ok) {
+        uploadedThirdPartyAccount = registration.email;
+        logMessage("第三方接口提交成功");
+      } else {
+        logMessage("第三方接口提交失败: " + (thirdPartyResult.error || "未知错误"));
+      }
 
-    prepared.payUrl = result.paymentLink;
-    await runPayPalFlow(tab.id, prepared);
+      prepared.payUrl = result.paymentLink;
+      const payFlowResult = await runPayPalFlow(tab.id, prepared);
+      automationSucceeded = Boolean(payFlowResult);
+      return { ok: automationSucceeded };
     } finally {
       await cleanupAutomationProxy("完整流程任务已关闭");
+      if (!automationSucceeded && uploadedThirdPartyAccount) {
+        logMessage(`任务失败，正在删除第三方未绑定账号: ${uploadedThirdPartyAccount}`);
+        const deleteResult = await deleteThirdPartyAccount(uploadedThirdPartyAccount);
+        if (deleteResult.ok) {
+          logMessage(`第三方未绑定账号删除请求成功: ${uploadedThirdPartyAccount}`);
+        } else {
+          logMessage(
+            `第三方未绑定账号删除请求失败: ${uploadedThirdPartyAccount}，${deleteResult.error || "未知错误"}`
+          );
+        }
+      }
       await closeAutomationWindow(automationWindowId);
     }
   }
@@ -1419,22 +1497,23 @@
         await ensureProxyForStage("第三步");
       } catch (error) {
         logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-        return;
+        return false;
       }
     }
     await applyCurrentIpLocationToPrepared(prepared);
     await updateTabUrl(tabId, prepared.payUrl);
-    await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+    return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
 
   async function runPayPalFlowFromCurrentPayUrl(tabId, prepared) {
     const payUrlReady = await runPayUrlPage(tabId, prepared);
     if (!payUrlReady) {
-      return;
+      return false;
     }
     await runPayPalLoginPage(tabId, prepared);
     await runPayPalSignupPage(tabId, prepared);
     logMessage("PayPal 步骤已完成，短信验证码已输入");
+    return true;
   }
 
   function parseCurrencyAmountText(text) {
@@ -1749,8 +1828,9 @@
   async function updateTabUrl(tabId, url) {
     const tab = await ext.tabs.get(tabId);
     if (!String(tab.url || "").startsWith(url)) {
-      await prepareRandomUserAgentForTab(tabId, url);
+      const preparedUserAgent = await prepareRandomUserAgentForTab(tabId, url);
       await ext.tabs.update(tabId, { url, active: true });
+      logTabUserAgentAfterNavigation(tabId, preparedUserAgent, "更新标签页 URL");
     }
     const loaded = await waitForPageComplete(tabId, 45000);
     if (!loaded) {
