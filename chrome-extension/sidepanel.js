@@ -16,7 +16,7 @@
     "jianjuebudnm.shop"
   ];
 
-  const CODE_API = "https://getemail.nnai.website/api/code";
+  const CODE_API = "https://getemail.nnai.uk/api/code";
   const PAYURL_API = "https://payurl.779.chat/api/request";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";

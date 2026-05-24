@@ -52,7 +52,7 @@ def _append_browser_json_exports(
     os.makedirs(sub2api_path.parent, exist_ok=True)
 
     token_json = _compact_token_json(token_path, tokens)
-    inbox_url = f"https://getemail.nnai.website/?email={quote(email, safe='')}"
+    inbox_url = f"https://getemail.nnai.uk/?email={quote(email, safe='')}"
     with open(cpa_path, "a", encoding="utf-8") as handle:
         handle.write(f"{email}|{password}|{inbox_url}|{token_json}\n")
     print(f"  📝 已追加 CPA 账号数据: {cpa_path}")

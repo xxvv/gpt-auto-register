@@ -21,7 +21,7 @@
     "webRequestBlocking",
     "<all_urls>",
     "https://chatgpt.com/*",
-    "https://getemail.nnai.website/*",
+    "https://getemail.nnai.uk/*",
     "http://127.0.0.1:5000/*",
     "https://proxy.webshare.io/*",
     "https://payurl.779.chat/*",

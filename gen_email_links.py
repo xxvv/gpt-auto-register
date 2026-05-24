@@ -16,7 +16,7 @@ def process_file(input_path, output_dir):
         if not line:
             continue
         email = line.split('|')[0]
-        results.append(f"{email}|https://getemail.nnai.website/?email={email}")
+        results.append(f"{email}|https://getemail.nnai.uk/?email={email}")
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(results) + '\n')

@@ -77,7 +77,7 @@ class BrowserJsonServiceTests(unittest.TestCase):
             self.assertEqual(len(cpa_files), 1)
             self.assertEqual(
                 cpa_files[0].read_text(encoding="utf-8"),
-                'user@nnai.website|Secret123!|https://getemail.nnai.website/?email=user%40nnai.website|{  "access_token": "header.payload.signature",  "refresh_token": "refresh-token"}\n',
+                'user@nnai.website|Secret123!|https://getemail.nnai.uk/?email=user%40nnai.website|{  "access_token": "header.payload.signature",  "refresh_token": "refresh-token"}\n',
             )
             self.assertEqual(
                 sub2api_path.read_text(encoding="utf-8"),

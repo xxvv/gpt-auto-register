@@ -605,7 +605,7 @@ class BrowserCodexOAuthClient:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             try:
-                url = f"https://getemail.nnai.website/api/code?email={email}&format=json"
+                url = f"https://getemail.nnai.uk/api/code?email={email}&format=json"
                 self._print(f"[OAuth] 访问验证码接口: {url}")
                 resp = self.session.get(url, timeout=10)
                 if resp.status_code == 200:

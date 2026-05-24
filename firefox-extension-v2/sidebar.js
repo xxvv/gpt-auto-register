@@ -11,7 +11,7 @@
     "damahou.edu.kg",
     "xymit.edu.kg"
   ];
-  const CODE_API = "https://getemail.nnai.website/api/code";
+  const CODE_API = "https://getemail.nnai.uk/api/code";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.website/api/third-party/accounts";
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_API_KEY = "pvxxvv";
