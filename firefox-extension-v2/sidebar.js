@@ -140,6 +140,11 @@
     }
 
     const country = stage === "第一步" ? getStep1ProxyCountry() : getStep3ProxyCountry();
+    if (country === "NONE") {
+      logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
+      return false;
+    }
+
     const protocol = getProxyProtocol();
     const apiKey = requireWebshareApiKey();
     logMessage(`${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
@@ -466,7 +471,9 @@
 
   function normalizeProxyCountry(value) {
     const country = String(value || "").trim().toUpperCase();
-    return country === "JP" ? "JP" : "US";
+    if (country === "JP") return "JP";
+    if (country === "NONE") return "NONE";
+    return "US";
   }
 
   function normalizeWebshareStatus(payload) {
