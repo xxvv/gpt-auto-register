@@ -472,6 +472,7 @@
   function normalizeProxyCountry(value) {
     const country = String(value || "").trim().toUpperCase();
     if (country === "JP") return "JP";
+    if (country === "SG") return "SG";
     if (country === "NONE") return "NONE";
     return "US";
   }
