@@ -12,7 +12,7 @@
     "xymit.edu.kg"
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
-  const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.website/api/third-party/accounts";
+  const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.uk/api/third-party/accounts";
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_API_KEY = "pvxxvv";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
