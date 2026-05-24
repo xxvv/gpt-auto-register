@@ -13,7 +13,7 @@
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.uk/api/third-party/accounts";
-  const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
+  const THIRD_PARTY_ACCOUNTS_DELETE_API = `https://gpt2.nnai.uk/api/third-party/accounts/delete`;
   const THIRD_PARTY_API_KEY = "pvxxvv";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
