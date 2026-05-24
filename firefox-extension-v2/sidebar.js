@@ -12,9 +12,9 @@
     "xymit.edu.kg"
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
-  const THIRD_PARTY_ACCOUNTS_API = "https://gpt.nnai.uk/api/third-party/accounts";
-  const THIRD_PARTY_ACCOUNTS_DELETE_API = `https://gpt2.nnai.uk/api/third-party/accounts/delete`;
-  const THIRD_PARTY_API_KEY = "pvxxvv";
+  const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
+  const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
+  const THIRD_PARTY_API_KEY = "aa102911";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const IPAPI_LOCATION_API = "https://ipapi.co/json/?token=T6UkBSJpmZgNZELN7QsJk5uCZTF8c6aVHUYZiLwEsHnUQqqeJg";
@@ -46,6 +46,7 @@
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
     randomCardEnabled: false,
+    useCurrentIpLocation: false,
     phoneKeyInput: "",
     phoneKey: null,
     lastPhoneCode: "",
@@ -157,7 +158,7 @@
     const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
     await applyFirefoxProxy(proxy);
     state.currentProxy = proxy;
-    if (stage === "第三步") {
+    if (stage === "第三步" && isCurrentIpLocationEnabled()) {
       await refreshIpLocation(`${stage}: `);
     } else {
       state.currentIpLocation = null;
@@ -551,12 +552,23 @@
     if (!prepared || !prepared.card) {
       return;
     }
-    const changed = applyIpLocationToCard(prepared.card, state.currentIpLocation);
+    if (!isCurrentIpLocationEnabled()) {
+      logMessage("未启用当前 IP 定位填表，继续使用默认卡片地址");
+      return;
+    }
+    const location = await refreshIpLocation();
+    const changed = applyIpLocationToCard(prepared.card, location);
     if (changed) {
-      logMessage(`已按当前 IP 定位更新卡片地址: ${formatIpLocation(state.currentIpLocation)}`);
+      logMessage(`已按当前 IP 定位更新卡片地址: ${formatIpLocation(location)}`);
     } else {
       logMessage("未获取到可用 IP 定位，继续使用卡片原地址");
     }
+  }
+
+  function isCurrentIpLocationEnabled() {
+    const input = document.getElementById("useCurrentIpLocationCheckbox");
+    state.useCurrentIpLocation = input ? Boolean(input.checked) : false;
+    return state.useCurrentIpLocation;
   }
 
   function applyIpLocationToCard(card, location) {
@@ -705,6 +717,19 @@
     }
   }
 
+  function extractThirdPartyError(resp, data) {
+    if (resp.ok) {
+      return "";
+    }
+    if (data && typeof data === "object") {
+      const message = data.message || data.error || data.reason;
+      if (message) {
+        return `HTTP ${resp.status}: ${message}`;
+      }
+    }
+    return `HTTP ${resp.status}`;
+  }
+
   async function deleteThirdPartyAccount(account) {
     try {
       const resp = await fetch(THIRD_PARTY_ACCOUNTS_DELETE_API, {
@@ -723,7 +748,7 @@
         ok: resp.ok,
         status: resp.status,
         data,
-        error: resp.ok ? "" : `HTTP ${resp.status}`
+        error: extractThirdPartyError(resp, data)
       };
     } catch (e) {
       return { ok: false, status: 0, data: null, error: e.message || "third-party delete failed" };
@@ -1603,7 +1628,7 @@
     await delay();
     logMessage("检测是否有滑块验证码");
     const captchaChecks = await executePageFunction(tabId, "__gptAutoRegisterCheckCaptcha", {
-      timeoutMs: 10000
+      timeoutMs: 5000
     }, {
       allFrames: true
     });
@@ -1628,13 +1653,14 @@
       } else {
         logMessage(`滑块验证码处理失败: ${captchaResult ? captchaResult.error : "未知错误"}`);
       }
+    } else {
+      logMessage("没有滑块")
     }
 
     logMessage("等待点击");
-    await delay();
     await clickPageElement(tabId, {
       selector: '#createAccount, #startOnboardingFlow, button[data-atomic-wait-intent="Pay_With_Card"]',
-      timeoutMs: 60000
+      timeoutMs: 30000
     }, "PayPal 页面未找到提交按钮");
     logMessage("点击了按钮");
     logMessage("等待插件邮箱输入框");
@@ -1643,7 +1669,7 @@
       selector: '#login_email, #onboardingFlowEmail',
       value: prepared.paypalEmail,
       type: true,
-      timeoutMs: 60000
+      timeoutMs: 30000
     }, "未找到 PayPal login_email");
     logMessage(`已输入 PayPal 邮箱: ${prepared.paypalEmail}`);
     await clickPageElement(tabId, {
@@ -2640,6 +2666,8 @@
       renderProxyStatus();
       state.randomCardEnabled = Boolean(saved.randomCardEnabled);
       document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
+      state.useCurrentIpLocation = Boolean(saved.useCurrentIpLocation);
+      document.getElementById("useCurrentIpLocationCheckbox").checked = state.useCurrentIpLocation;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
       try {
         state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
@@ -2659,6 +2687,7 @@
       runCount: getRunCount(),
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
+      useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
       payUrlInput: document.getElementById("payUrlInput").value,
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
       proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
@@ -2713,6 +2742,11 @@
     document.getElementById("randomCardCheckbox").addEventListener("change", () => {
       state.randomCardEnabled = document.getElementById("randomCardCheckbox").checked;
       persistState();
+    });
+    document.getElementById("useCurrentIpLocationCheckbox").addEventListener("change", () => {
+      state.useCurrentIpLocation = document.getElementById("useCurrentIpLocationCheckbox").checked;
+      persistState();
+      logMessage(state.useCurrentIpLocation ? "已启用当前 IP 定位填表" : "已关闭当前 IP 定位填表，将使用默认卡片地址");
     });
     document.getElementById("payUrlInput").addEventListener("input", persistState);
     document.getElementById("phoneKeyInput").addEventListener("input", () => {
