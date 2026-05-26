@@ -59,7 +59,13 @@
     currentProxy: null,
     currentIpLocation: null,
     automationBatchRunning: false,
-    cancelAutomationBatchRequested: false
+    cancelAutomationBatchRequested: false,
+    runStats: {
+      total: 0,
+      completed: 0,
+      success: 0,
+      fail: 0
+    }
   };
   let usZip3StateRangesPromise = null;
 
@@ -123,6 +129,36 @@
     line.textContent = `[${time}] ${message}`;
     logDiv.appendChild(line);
     logDiv.scrollTop = logDiv.scrollHeight;
+  }
+
+  function resetRunStats(total) {
+    state.runStats = {
+      total: Math.max(0, Number(total) || 0),
+      completed: 0,
+      success: 0,
+      fail: 0
+    };
+    renderRunStats();
+  }
+
+  function updateRunStats(result) {
+    state.runStats.completed += 1;
+    if (result === "success") {
+      state.runStats.success += 1;
+    } else if (result === "fail") {
+      state.runStats.fail += 1;
+    }
+    renderRunStats();
+  }
+
+  function renderRunStats() {
+    const stats = state.runStats || { total: 0, completed: 0, success: 0, fail: 0 };
+    const completedEl = document.getElementById("runStatsCompleted");
+    const successEl = document.getElementById("runStatsSuccess");
+    const failEl = document.getElementById("runStatsFail");
+    if (completedEl) completedEl.textContent = `${stats.completed}/${stats.total}`;
+    if (successEl) successEl.textContent = String(stats.success);
+    if (failEl) failEl.textContent = String(stats.fail);
   }
 
   function setActiveStep(stepNumber) {
@@ -472,6 +508,8 @@
 
   function normalizeProxyCountry(value) {
     const country = String(value || "").trim().toUpperCase();
+    if (country === "CA") return "CA";
+    if (country === "DE") return "DE";
     if (country === "JP") return "JP";
     if (country === "SG") return "SG";
     if (country === "NONE") return "NONE";
@@ -634,6 +672,7 @@
   }
 
   const regionConfig = {
+    CA: { country: "CA", currency: "CAD" },
     ID: { country: "ID", currency: "IDR" },
     IE: { country: "IE", currency: "EUR" },
     JP: { country: "JP", currency: "JPY" },
@@ -644,6 +683,7 @@
   async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
     try {
       const checkoutRegionConfig = {
+        CA: { country: "CA", currency: "CAD" },
         ID: { country: "ID", currency: "IDR" },
         IE: { country: "IE", currency: "EUR" },
         JP: { country: "JP", currency: "JPY" },
@@ -1267,6 +1307,7 @@
     state.cancelAutomationBatchRequested = false;
     renderAutomationBatchControls();
     const runCount = getRunCount();
+    resetRunStats(runCount);
     let completedCount = 0;
     let successCount = 0;
     let failCount = 0;
@@ -1279,14 +1320,17 @@
           completedCount = index;
           if (result && result.ok) {
             successCount += 1;
+            updateRunStats("success");
             logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
           } else {
             failCount += 1;
+            updateRunStats("fail");
             logMessage(`第 ${index}/${runCount} 次失败结束`);
           }
         } catch (error) {
           completedCount = index;
           failCount += 1;
+          updateRunStats("fail");
           logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
         }
         if (state.cancelAutomationBatchRequested) {
@@ -1384,6 +1428,9 @@
       prepared.payUrl = result.paymentLink;
       const payFlowResult = await runPayPalFlow(tab.id, prepared);
       automationSucceeded = Boolean(payFlowResult);
+      if (automationSucceeded) {
+        await removeUsedCardInput(prepared);
+      }
       return { ok: automationSucceeded };
     } finally {
       await cleanupAutomationProxy("完整流程任务已关闭");
@@ -1422,7 +1469,10 @@
       }
       const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
       automationWindowId = automationWindow.windowId;
-      await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
+      const payFlowResult = await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
+      if (payFlowResult) {
+        await removeUsedCardInput(prepared);
+      }
     } finally {
       await cleanupAutomationProxy("PayURL 任务已关闭");
       await closeAutomationWindow(automationWindowId);
@@ -1453,7 +1503,10 @@
         return;
       }
       await applyCurrentIpLocationToPrepared(prepared);
-      await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
+      const payFlowResult = await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
+      if (payFlowResult) {
+        await removeUsedCardInput(prepared);
+      }
     } finally {
       await cleanupAutomationProxy("第3步任务已关闭");
     }
@@ -1482,12 +1535,12 @@
   }
 
   async function preparePaymentInputs(requirePayUrl, options = {}) {
-    const cardText = document.getElementById("cardInput").value.trim();
+    const cardEntry = getNextCardInputEntry(document.getElementById("cardInput").value);
     const payUrl = document.getElementById("payUrlInput").value.trim();
-    if (!cardText) {
+    if (!cardEntry) {
       throw new Error("请输入卡片信息");
     }
-    const card = await parseCardInput(cardText);
+    const card = await parseCardInput(cardEntry.line);
     if (state.randomCardEnabled) {
       const generatedCardNumber = generateRandomLuhnCardNumber(card.card);
       card.card = generatedCardNumber;
@@ -1513,12 +1566,91 @@
     await persistState();
     return {
       card,
+      cardInputLine: cardEntry.line,
       phoneKey,
       phone: phoneKey.phone || getFillPhoneNumber(card),
       payUrl,
       settings: sanitizeFillSettings(state.fillSettings),
-      paypalEmail
+      paypalEmail,
+      randomCardEnabled: Boolean(state.randomCardEnabled)
     };
+  }
+
+  function getNextCardInputEntry(rawInput) {
+    const lines = String(rawInput || "").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (trimmed) {
+        return { line: trimmed };
+      }
+    }
+    return null;
+  }
+
+  async function removeUsedCardInput(prepared) {
+    if (prepared && prepared.randomCardEnabled) {
+      logMessage("已勾选随机生成卡片，保留原始卡片信息");
+      return;
+    }
+    const usedLine = String(prepared && prepared.cardInputLine || "").trim();
+    if (!usedLine) {
+      return;
+    }
+    const cardInput = document.getElementById("cardInput");
+    const lines = String(cardInput.value || "").split(/\r?\n/);
+    const remainingLines = [];
+    let removed = false;
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (!removed && trimmed === usedLine) {
+        removed = true;
+        continue;
+      }
+      if (trimmed) {
+        remainingLines.push(trimmed);
+      }
+    }
+    if (!removed) {
+      logMessage("未找到本次使用的卡片信息，卡片列表未修改");
+      return;
+    }
+    cardInput.value = remainingLines.join("\n");
+    await persistState();
+    logMessage("注册成功，已删除本次使用的卡片信息");
+  }
+
+  async function removeInvalidPhoneKeyInput(prepared) {
+    const usedLine = String(prepared && prepared.phoneKey && prepared.phoneKey.raw || "").trim();
+    if (!usedLine) {
+      return;
+    }
+    const phoneInput = document.getElementById("phoneKeyInput");
+    const lines = String(phoneInput.value || "").split(/\r?\n/);
+    const remainingLines = [];
+    let removed = false;
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (!removed && trimmed === usedLine) {
+        removed = true;
+        continue;
+      }
+      if (trimmed) {
+        remainingLines.push(trimmed);
+      }
+    }
+    if (!removed) {
+      logMessage("未找到本次使用的手机号，手机号列表未修改");
+      return;
+    }
+    phoneInput.value = remainingLines.join("\n");
+    state.phoneKeyInput = phoneInput.value.trim();
+    try {
+      state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
+    } catch (_) {
+      state.phoneKey = null;
+    }
+    await persistState();
+    logMessage("PayPal 返回 genericError，已删除本次使用的手机号，标记为无法继续使用");
   }
 
   async function runPayPalFlow(tabId, prepared, options = {}) {
@@ -1709,13 +1841,23 @@
         timeoutMs: 30000
       }, "短信验证码输入失败");
       logMessage(`短信验证码已输入: ${smsCode}`);
-      await finishPayPalConsent(tabId);
+      if (prepared.randomCardEnabled) {
+        await finishPayPalConsent(tabId, prepared);
+      } else {
+        await waitForChatGptReturn(tabId);
+      }
     } finally {
       stopCaptchaCleaner();
     }
   }
 
-  async function finishPayPalConsent(tabId) {
+  async function waitForChatGptReturn(tabId) {
+    logMessage("未勾选随机生成卡片，跳过 PayPal Hermes 授权等待，直接等待返回 ChatGPT");
+    const finalUrl = await waitForUrlPrefix(tabId, "https://chatgpt.com", 120000);
+    logMessage(`支付流程成功，已进入 ChatGPT: ${finalUrl}`);
+  }
+
+  async function finishPayPalConsent(tabId, prepared) {
     logMessage("等待 PayPal Hermes 授权页面...");
     await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 120000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
@@ -1724,8 +1866,29 @@
       timeoutMs: 60000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
-    const finalUrl = await waitForUrlExact(tabId, "https://chatgpt.com/", 120000);
+    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 120000);
+    if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
+      await removeInvalidPhoneKeyInput(prepared);
+      throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
+    }
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
+  }
+
+  async function waitForChatGptOrPayPalGenericError(tabId, timeoutMs) {
+    const errorPrefix = "https://www.paypal.com/checkoutweb/genericError";
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const tab = await ext.tabs.get(tabId);
+      const url = String(tab.url || "");
+      if (url === "https://chatgpt.com/" || url.startsWith("https://chatgpt.com/")) {
+        return url;
+      }
+      if (url.startsWith(errorPrefix)) {
+        return url;
+      }
+      await delay(1000);
+    }
+    throw new Error("等待 PayPal 授权结果超时");
   }
 
   async function fillPayPalSignupForm(tabId, prepared) {
@@ -2787,6 +2950,7 @@
   function init() {
     bindEvents();
     renderAutomationBatchControls();
+    renderRunStats();
     restoreState();
     renderFillSettings();
     logMessage("扩展已加载，准备开始");
