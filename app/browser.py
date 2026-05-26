@@ -556,6 +556,9 @@ class SafeChrome(uc.Chrome):
             pass
 
 
+_chrome_start_lock = threading.Lock()
+
+
 def _is_transient_urlopen_ssl_error(exc: Exception) -> bool:
     """识别 undetected-chromedriver 下载 driver 时常见的临时 TLS 断流。"""
     if isinstance(exc, URLError):
@@ -575,6 +578,19 @@ def _is_transient_urlopen_ssl_error(exc: Exception) -> bool:
     return any(marker in message for marker in transient_markers)
 
 
+def _is_chromedriver_file_exists_race(exc: Exception) -> bool:
+    """Detect undetected_chromedriver's shared-cache rename race on Windows."""
+    if isinstance(exc, FileExistsError):
+        return True
+
+    message = str(exc).lower()
+    return (
+        ("winerror 183" in message or "cannot create a file when that file already exists" in message)
+        and "undetected_chromedriver" in message
+        and "chromedriver" in message
+    )
+
+
 def _raise_chrome_startup_network_error(exc: Exception) -> None:
     raise RuntimeError(
         "浏览器驱动下载/启动时 HTTPS 连接被提前断开。"
@@ -588,15 +604,24 @@ def _raise_chrome_startup_network_error(exc: Exception) -> None:
 def _start_safe_chrome_with_retry(chrome_kwargs: dict, attempts: int = 3):
     last_exc: Exception | None = None
     total_attempts = max(1, int(attempts))
+    chrome_kwargs = dict(chrome_kwargs)
+    chrome_kwargs.setdefault("user_multi_procs", True)
 
     for attempt in range(1, total_attempts + 1):
         try:
-            return SafeChrome(**chrome_kwargs)
+            with _chrome_start_lock:
+                return SafeChrome(**chrome_kwargs)
         except Exception as exc:
             last_exc = exc
-            if not _is_transient_urlopen_ssl_error(exc):
+            is_driver_cache_race = _is_chromedriver_file_exists_race(exc)
+            if not is_driver_cache_race and not _is_transient_urlopen_ssl_error(exc):
                 raise
             if attempt >= total_attempts:
+                if is_driver_cache_race:
+                    raise RuntimeError(
+                        "ChromeDriver cache was being prepared by another browser task. "
+                        "Please retry after the current browser startup finishes."
+                    ) from exc
                 _raise_chrome_startup_network_error(exc)
             wait_time = min(2 ** attempt, 8)
             print(

@@ -1859,14 +1859,20 @@
 
   async function finishPayPalConsent(tabId, prepared) {
     logMessage("等待 PayPal Hermes 授权页面...");
-    await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 120000);
+    await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 30000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
+    await delay();
+    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 30000);
+    if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
+      await removeInvalidPhoneKeyInput(prepared);
+      throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
+    }
     await clickPageElement(tabId, {
       selector: "#consentButton",
-      timeoutMs: 60000
+      timeoutMs: 30000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
-    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 120000);
+    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 30000);
     if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
