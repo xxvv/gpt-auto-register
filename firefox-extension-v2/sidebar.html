@@ -75,6 +75,7 @@
     </select>
     <label for="step3ProxyCountrySelect">第三步代理国家</label>
     <select id="step3ProxyCountrySelect">
+      <option value="KEEP_STEP1">不修改代理（沿用第一步）</option>
       <option value="NONE">无</option>
       <option value="US">美国 (US)</option>
       <option value="CA">加拿大 (CA)</option>
@@ -99,6 +100,7 @@
       <option value="IE">爱尔兰 (IE)</option>
       <option value="CA">加拿大 (CA)</option>
       <option value="ID">印度尼西亚 (ID)</option>
+      <option value="BR">巴西 (BR)</option>
       <option value="DE">德国 (DE)</option>
     </select>
   </div>
@@ -106,7 +108,13 @@
   <div class="panel">
     <label for="payUrlInput">PayURL</label>
     <input id="payUrlInput" type="url" spellcheck="false" placeholder="https://...">
+    <label for="flowCountrySelect">第3/5步流程国家</label>
+    <select id="flowCountrySelect">
+      <option value="US">美国 (US)</option>
+      <option value="JP">日本 (JP)</option>
+    </select>
     <div class="actions">
+      <button id="getPayUrlBtn" class="secondary" type="button">获取 PayURL</button>
       <button id="startPayUrlBtn" class="secondary" type="button">从 PayURL 开始支付</button>
       <button id="startStep3Btn" class="secondary" type="button">从第3步开始</button>
       <button id="fillStep5FormBtn" class="secondary wide" type="button">填充第5步表单</button>
@@ -120,6 +128,13 @@
       rows="4"
       spellcheck="false"
       placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=...&#10;+14484490909|http://a.62-us.com/api/get_sms?key=..."
+    ></textarea>
+    <label for="jpSmsCdkInput">日本短信 CDK</label>
+    <textarea
+      id="jpSmsCdkInput"
+      rows="3"
+      spellcheck="false"
+      placeholder="SMS-6WA3-MUJH-5FAT&#10;SMS-XXXX-XXXX-XXXX"
     ></textarea>
   </div>
 
@@ -135,6 +150,7 @@
       <span>使用当前 IP 定位填充地址</span>
     </label>
     <div class="actions">
+      <button id="generateRandomCardButton" class="secondary" type="button">生成随机卡号</button>
       <button id="toggleFillSettingsButton" class="secondary" type="button" aria-expanded="false">设置</button>
       <button id="resetFillSettingsButton" class="secondary" type="button">恢复默认</button>
     </div>
@@ -165,6 +181,7 @@
   </div>
 
   <div class="batch-actions">
+    <button id="startToStep2Btn" class="secondary" type="button">只执行到第2步</button>
     <button id="startBtn" type="button">开始完整流程</button>
     <button id="cancelBatchBtn" class="danger" type="button" disabled>取消</button>
   </div>

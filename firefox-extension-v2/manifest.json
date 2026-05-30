@@ -6,6 +6,7 @@
   "permissions": [
     "tabs",
     "storage",
+    "clipboardWrite",
     "scripting",
     "activeTab",
     "proxy",
@@ -13,7 +14,8 @@
     "webRequestBlocking",
     "<all_urls>",
     "https://proxy.webshare.io/*",
-    "https://ipapi.co/*"
+    "https://ipapi.co/*",
+    "https://sms.oapi.vip/*"
   ],
   "background": {
     "scripts": ["background.js"]

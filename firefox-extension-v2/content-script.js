@@ -97,8 +97,10 @@
     ],
     billingState: [
       "#billingState",
+      "#billingAdministrativeArea",
       'input[name="billingState"]',
       'select[name="billingState"]',
+      'select[name="billingAdministrativeArea"]',
       'input[name="state"]',
       'select[name="state"]',
       'input[autocomplete="billing address-level1"]',
@@ -123,6 +125,26 @@
       'select[name="billingCountry"]',
       'select[autocomplete="billing country"]',
       'select[autocomplete="country"]'
+    ],
+    billingAdministrativeArea: [
+      "#billingAdministrativeArea",
+      'select[name="billingAdministrativeArea"]',
+      'input[name="billingAdministrativeArea"]',
+      "#billingState",
+      'select[name="billingState"]'
+    ],
+    dateOfBirth: [
+      "#dateOfBirth",
+      'input[name="dateOfBirth"]',
+      'input[autocomplete="bday"]'
+    ],
+    countrySpecificFirstName: [
+      "#countrySpecificFirstName",
+      'input[name="countrySpecificFirstName"]'
+    ],
+    countrySpecificLastName: [
+      "#countrySpecificLastName",
+      'input[name="countrySpecificLastName"]'
     ],
     password: [
       "#password",
@@ -411,7 +433,11 @@
       .concat(FALLBACK_FIELD_SELECTORS[key] || []));
   }
 
-  function buildFieldMap(card, settings, phone) {
+  function buildFieldMap(card, settings, phone, fillOptions) {
+    const overrides = fillOptions && fillOptions.countryOverrides && typeof fillOptions.countryOverrides === "object"
+      ? fillOptions.countryOverrides
+      : {};
+    const fieldValue = (key, fallback) => Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : fallback;
     const billingName = [card.firstName, card.lastName]
       .map((part) => String(part || "").trim())
       .filter(Boolean)
@@ -423,13 +449,17 @@
       { field: "cardExpiry", selectors: selectorsFor(settings, "cardExpiry"), value: card.expiryInput },
       { field: "cardCvv", selectors: selectorsFor(settings, "cardCvv"), value: card.cvv },
       { field: "billingName", selectors: selectorsFor(settings, "billingName"), value: billingName },
-      { field: "firstName", selectors: selectorsFor(settings, "firstName"), value: card.firstName },
-      { field: "lastName", selectors: selectorsFor(settings, "lastName"), value: card.lastName },
-      { field: "billingLine1", selectors: selectorsFor(settings, "billingLine1"), value: card.address },
-      { field: "billingCity", selectors: selectorsFor(settings, "billingCity"), value: card.city },
-      { field: "billingState", selectors: selectorsFor(settings, "billingState"), value: card.state },
-      { field: "billingPostalCode", selectors: selectorsFor(settings, "billingPostalCode"), value: card.postcode },
-      { field: "country", selectors: selectorsFor(settings, "country"), value: "us" },
+      { field: "firstName", selectors: selectorsFor(settings, "firstName"), value: fieldValue("firstName", card.firstName) },
+      { field: "lastName", selectors: selectorsFor(settings, "lastName"), value: fieldValue("lastName", card.lastName) },
+      { field: "billingLine1", selectors: selectorsFor(settings, "billingLine1"), value: fieldValue("billingLine1", card.address) },
+      { field: "billingCity", selectors: selectorsFor(settings, "billingCity"), value: fieldValue("billingCity", card.city) },
+      { field: "billingState", selectors: selectorsFor(settings, "billingState"), value: fieldValue("billingState", card.state) },
+      { field: "billingAdministrativeArea", selectors: selectorsFor(settings, "billingAdministrativeArea"), value: fieldValue("billingAdministrativeArea", undefined) },
+      { field: "billingPostalCode", selectors: selectorsFor(settings, "billingPostalCode"), value: fieldValue("billingPostalCode", card.postcode) },
+      { field: "country", selectors: selectorsFor(settings, "country"), value: fieldValue("country", "us") },
+      { field: "dateOfBirth", selectors: selectorsFor(settings, "dateOfBirth"), value: fieldValue("dateOfBirth", undefined) },
+      { field: "countrySpecificFirstName", selectors: selectorsFor(settings, "countrySpecificFirstName"), value: fieldValue("countrySpecificFirstName", undefined) },
+      { field: "countrySpecificLastName", selectors: selectorsFor(settings, "countrySpecificLastName"), value: fieldValue("countrySpecificLastName", undefined) },
       { field: "password", selectors: selectorsFor(settings, "password"), value: settings.passwordValue }
     ];
   }
@@ -639,7 +669,7 @@
       const fillOptions = payload && payload.fillOptions ? payload.fillOptions : {};
       const skipFields = new Set(Array.isArray(fillOptions.skipFields) ? fillOptions.skipFields : []);
       const phone = String((payload && payload.phone) || card.phone || "").trim();
-      const fields = buildFieldMap(card, settings, phone);
+      const fields = buildFieldMap(card, settings, phone, fillOptions);
       const missing = [];
       let filled = 0;
 

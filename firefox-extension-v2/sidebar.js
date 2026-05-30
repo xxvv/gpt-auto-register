@@ -21,9 +21,13 @@
   const STORAGE_KEY = "gptAutoRegisterV2State";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
-  const POLL_ATTEMPTS = 5;
+  const POLL_ATTEMPTS = 8;
   const POLL_DELAY_MS = 2500;
+  const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
+  const DEFAULT_FLOW_COUNTRY = "US";
+  const DEFAULT_JP_SMS_CDK = "";
+  const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
@@ -49,6 +53,8 @@
     useCurrentIpLocation: false,
     phoneKeyInput: "",
     phoneKey: null,
+    flowCountry: DEFAULT_FLOW_COUNTRY,
+    jpSmsCdk: DEFAULT_JP_SMS_CDK,
     lastPhoneCode: "",
     lastPaypalEmail: "",
     proxyEnabled: true,
@@ -177,6 +183,13 @@
     }
 
     const country = stage === "第一步" ? getStep1ProxyCountry() : getStep3ProxyCountry();
+    if (stage === "第三步" && country === "KEEP_STEP1") {
+      logMessage(`${stage}: 选择不修改代理，沿用第一步当前代理`);
+      if (isCurrentIpLocationEnabled()) {
+        await refreshIpLocation(`${stage}: `);
+      }
+      return false;
+    }
     if (country === "NONE") {
       logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
       return false;
@@ -235,13 +248,18 @@
 
   async function replaceWebshareProxy() {
     try {
+      const country = getStep3ProxyCountry();
+      if (country === "KEEP_STEP1") {
+        logMessage("第三步代理选择为不修改，已跳过替换代理");
+        return;
+      }
       const apiKey = requireWebshareApiKey();
-      const proxy = await replaceWebshareProxyDirect(apiKey, getStep3ProxyCountry(), getProxyProtocol());
+      const proxy = await replaceWebshareProxyDirect(apiKey, country, getProxyProtocol());
       await applyFirefoxProxy(proxy);
       state.currentProxy = proxy;
       renderProxyStatus();
       await persistState();
-      logMessage(`已替换并设置代理: 国家 ${getStep3ProxyCountry()}，${formatProxy(proxy)}`);
+      logMessage(`已替换并设置代理: 国家 ${country}，${formatProxy(proxy)}`);
     } catch (error) {
       logMessage(`替换代理失败: ${formatError(error)}`);
     }
@@ -508,12 +526,39 @@
 
   function normalizeProxyCountry(value) {
     const country = String(value || "").trim().toUpperCase();
+    if (country === "KEEP_STEP1") return "KEEP_STEP1";
     if (country === "CA") return "CA";
     if (country === "DE") return "DE";
     if (country === "JP") return "JP";
     if (country === "SG") return "SG";
     if (country === "NONE") return "NONE";
     return "US";
+  }
+
+  function normalizeFlowCountry(value) {
+    const country = String(value || "").trim().toUpperCase();
+    return country === "JP" ? "JP" : "US";
+  }
+
+  function getFlowCountry() {
+    const input = document.getElementById("flowCountrySelect");
+    state.flowCountry = normalizeFlowCountry(input ? input.value : state.flowCountry);
+    return state.flowCountry;
+  }
+
+  function getJpSmsCdkInput() {
+    const input = document.getElementById("jpSmsCdkInput");
+    const value = String(input ? input.value : state.jpSmsCdk || "").trim();
+    state.jpSmsCdk = value;
+    return value;
+  }
+
+  function pickRandomJpSmsCdk() {
+    const cdks = getJpSmsCdkInput()
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return cdks.length ? cdks[Math.floor(Math.random() * cdks.length)] : "";
   }
 
   function normalizeWebshareStatus(payload) {
@@ -676,6 +721,7 @@
     ID: { country: "ID", currency: "IDR" },
     IE: { country: "IE", currency: "EUR" },
     JP: { country: "JP", currency: "JPY" },
+    BR: { country: "BR", currency: "BRL" },
     US: { country: "US", currency: "USD" },
     DE: { country: "DE", currency: "EUR" }
   };
@@ -687,6 +733,7 @@
         ID: { country: "ID", currency: "IDR" },
         IE: { country: "IE", currency: "EUR" },
         JP: { country: "JP", currency: "JPY" },
+        BR: { country: "BR", currency: "BRL" },
         US: { country: "US", currency: "USD" },
         DE: { country: "DE", currency: "EUR" }
       };
@@ -1449,6 +1496,94 @@
     }
   }
 
+  async function startToStep2() {
+    const countrySel = document.getElementById("country").value;
+
+    logMessage("开始执行到第2步...");
+    let automationWindowId = null;
+    try {
+      try {
+        await ensureProxyForStage("第一步");
+      } catch (error) {
+        logMessage("第一步代理设置失败，流程终止: " + formatError(error));
+        return { ok: false };
+      }
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
+      automationWindowId = automationWindow.windowId;
+      const tab = automationWindow.tab;
+      logMessage("步骤1: 打开 chatgpt.com");
+
+      const registration = await runRegistration(tab.id);
+      if (!registration.ok) {
+        logMessage("注册失败，流程终止");
+        return { ok: false };
+      }
+
+      let reachedChat = false;
+      for (let i = 0; i < 45; i += 1) {
+        try {
+          const t = await ext.tabs.get(tab.id);
+          if (t.url && t.url.startsWith("https://chatgpt.com")) {
+            reachedChat = true;
+            break;
+          }
+        } catch (_) {}
+        await delay(1500);
+      }
+
+      if (!reachedChat) {
+        logMessage("错误: 未成功到达 chatgpt.com");
+        return { ok: false };
+      }
+
+      setActiveStep(2);
+      logMessage("步骤2: 获取支付链接");
+      const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+      if (!result.ok || !result.paymentLink) {
+        logMessage("获取支付链接失败: " + (result.error || "未知错误"));
+        return { ok: false };
+      }
+
+      document.getElementById("payUrlInput").value = result.paymentLink;
+      await persistState();
+      logMessage("支付链接获取成功: " + result.paymentLink);
+      logMessage("已执行到第2步，流程停止");
+      return { ok: true, email: registration.email, paymentLink: result.paymentLink };
+    } finally {
+      await cleanupAutomationProxy("执行到第2步任务已关闭");
+      await closeAutomationWindow(automationWindowId);
+    }
+  }
+
+  async function getPayUrlFromCurrentTab() {
+    const countrySel = document.getElementById("country").value;
+    const tab = await getCurrentWindowActiveTab();
+    const currentUrl = String(tab && tab.url || "");
+
+    if (!tab || !tab.id) {
+      logMessage("获取支付链接失败: 未找到当前活动标签页");
+      return { ok: false };
+    }
+
+    if (!currentUrl.startsWith("https://chatgpt.com/") && currentUrl !== "https://chatgpt.com") {
+      logMessage("获取支付链接失败: 请先切换到已登录的 chatgpt.com 页面");
+      return { ok: false };
+    }
+
+    setActiveStep(2);
+    logMessage(`主动获取支付链接，国家: ${countrySel}`);
+    const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+    if (!result.ok || !result.paymentLink) {
+      logMessage("获取支付链接失败: " + (result.error || "未知错误"));
+      return { ok: false };
+    }
+
+    document.getElementById("payUrlInput").value = result.paymentLink;
+    await persistState();
+    logMessage("支付链接获取成功: " + result.paymentLink);
+    return { ok: true, paymentLink: result.paymentLink };
+  }
+
   async function startFromPayUrl() {
     let prepared;
     try {
@@ -1544,7 +1679,7 @@
     if (state.randomCardEnabled) {
       const generatedCardNumber = generateRandomLuhnCardNumber(card.card);
       card.card = generatedCardNumber;
-      logMessage(`已随机生成 Luhn 有效卡号: ${generatedCardNumber}`);
+      logMessage(`已为本次流程临时随机生成 Luhn 有效卡号: ${generatedCardNumber}`);
     }
     if (requirePayUrl && !payUrl) {
       throw new Error("请输入 PayURL");
@@ -1556,9 +1691,17 @@
         throw new Error("PayURL 不是有效 URL");
       }
     }
-    const phoneKey = pickRandomPhoneKey(document.getElementById("phoneKeyInput").value);
+    const flowCountry = getFlowCountry();
+    logMessage(`准备第3/5步流程国家: ${flowCountry}`);
+    const phoneKey = await preparePhoneKeyForFlow(flowCountry);
     state.phoneKey = phoneKey;
-    state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();
+    const preparedPhone = phoneKey && phoneKey.phone ? phoneKey.phone : getFillPhoneNumber(card);
+    if (!preparedPhone) {
+      throw new Error(flowCountry === "JP"
+        ? "未准备好日本手机号，请填写日本短信 CDK，或在手机区域填写 phone----smsUrl"
+        : "未准备好手机号，请检查手机区域格式是否为 +1手机号|短信接口URL");
+    }
+    logMessage(`已准备手机号: ${preparedPhone}`);
     const paypalEmail = options.reusePaypalEmail && state.lastPaypalEmail
       ? state.lastPaypalEmail
       : generateGmailAddress();
@@ -1567,8 +1710,9 @@
     return {
       card,
       cardInputLine: cardEntry.line,
+      flowCountry,
       phoneKey,
-      phone: phoneKey.phone || getFillPhoneNumber(card),
+      phone: preparedPhone,
       payUrl,
       settings: sanitizeFillSettings(state.fillSettings),
       paypalEmail,
@@ -1734,7 +1878,7 @@
     }, "未找到 PayPal 支付选项");
     logMessage("已选择 PayPal，填充卡片信息");
     await delay();
-    await fillCurrentPage(tabId, prepared);
+    await fillCurrentPage(tabId, prepared, createPayUrlFillOptions(prepared));
     await scrollTabToBottom(tabId);
     await requirePageResult(tabId, "__gptAutoRegisterCheck", {
       selector: "#termsOfServiceConsentCheckbox",
@@ -1862,17 +2006,12 @@
     await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 30000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
     await delay();
-    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 30000);
-    if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
-      await removeInvalidPhoneKeyInput(prepared);
-      throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
-    }
     await clickPageElement(tabId, {
       selector: "#consentButton",
       timeoutMs: 30000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
-    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 30000);
+    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 60000);
     if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
@@ -1900,21 +2039,22 @@
   async function fillPayPalSignupForm(tabId, prepared) {
     await ensureContentScript(tabId);
     await delay();
-    logMessage("步骤5: 判断国家是否是us");
+    const flowCountry = normalizeFlowCountry(prepared && prepared.flowCountry);
+    logMessage(`步骤5: 判断国家是否是 ${flowCountry}`);
     const countrySelectors = normalizeSelectorList(
       prepared.settings && prepared.settings.countrySelector,
       DEFAULT_FILL_SETTINGS.countrySelector
     );
     const countryResult = await requirePageResult(tabId, "__gptAutoRegisterSetSelectIfNeeded", {
       selectors: countrySelectors,
-      value: "us",
+      value: flowCountry,
       timeoutMs: 60000
     }, "未找到国家字段");
     if (countryResult.changed) {
-      logMessage("国家已改为 us，等待 3 秒");
+      logMessage(`国家已改为 ${flowCountry}，等待 3 秒`);
       await delay();
     } else {
-      logMessage("步骤5: 国家为us不用修改");
+      logMessage(`步骤5: 国家为 ${flowCountry} 不用修改`);
     }
 
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
@@ -1929,7 +2069,7 @@
       payUrlStyle: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await fillCurrentPage(tabId, prepared, createSignupFillOptions());
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared));
   }
 
   async function submitSignupForm(tabId) {
@@ -1958,7 +2098,7 @@
       payUrlStyle: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await fillCurrentPage(tabId, prepared, createSignupFillOptions());
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared));
     await delay();
     await submitSignupForm(tabId);
     logMessage("signup 表单已重新提交");
@@ -2221,16 +2361,50 @@
     return result;
   }
 
-  function createPayUrlFillOptions() {
+  function createPayUrlFillOptions(prepared) {
+    const options = {
+      payUrlStyle: true,
+      skipFields: ["password"]
+    };
+    if (prepared && normalizeFlowCountry(prepared.flowCountry) === "JP") {
+      options.countryOverrides = createJapanPayUrlOverrides();
+    }
+    return options;
+  }
+
+  function createSignupFillOptions(prepared) {
+    const options = {
+      ...createPayUrlFillOptions(prepared),
+      skipFields: ["country"]
+    };
+    if (prepared && normalizeFlowCountry(prepared.flowCountry) === "JP") {
+      options.countryOverrides = createJapanSignupOverrides();
+    }
+    return options;
+  }
+
+  function createJapanPayUrlOverrides() {
     return {
-      payUrlStyle: true
+      country: "JP",
+      billingPostalCode: "150-0002",
+      billingAdministrativeArea: "京都府",
+      billingCity: "京都市",
+      billingLine1: "渋谷2丁目21番1号"
     };
   }
 
-  function createSignupFillOptions() {
+  function createJapanSignupOverrides() {
     return {
-      ...createPayUrlFillOptions(),
-      skipFields: ["country"]
+      country: "JP",
+      billingPostalCode: "150-0002",
+      billingState: "京都府",
+      billingLine1: "渋谷2丁目21番1号",
+      billingCity: "京都市",
+      dateOfBirth: "1991/10/28",
+      firstName: "ミン",
+      lastName: "リー",
+      countrySpecificFirstName: "タロウ",
+      countrySpecificLastName: "ヤマダ"
     };
   }
 
@@ -2313,6 +2487,12 @@
   }
 
   async function fetchPhoneVerificationCode(phoneKey) {
+    if (phoneKey && phoneKey.provider === "oapi") {
+      return fetchOapiPhoneVerificationCode(phoneKey);
+    }
+    if (phoneKey && phoneKey.country === "JP") {
+      return fetchJapanLegacyPhoneVerificationCode(phoneKey);
+    }
     let lastError = "";
     for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
       try {
@@ -2338,6 +2518,115 @@
       }
     }
     throw new Error(`获取短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
+  }
+
+  async function fetchJapanLegacyPhoneVerificationCode(phoneKey) {
+    await waitBeforeJapanSmsFetch();
+    const seenCodes = createSeenSmsCodes(phoneKey);
+    let lastError = "";
+    for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(phoneKey.smsUrl, {
+          method: "GET",
+          cache: "no-store",
+          headers: { Accept: "text/plain,application/json,text/html,*/*" }
+        });
+        const body = await response.text();
+        const code = extractSixDigitCode(body);
+        if (response.ok && code) {
+          const isNewCode = !seenCodes.has(code);
+          logObservedSmsCode(phoneKey, code);
+          seenCodes.add(code);
+          if (isNewCode) {
+            state.lastPhoneCode = code;
+            await persistState();
+            return code;
+          }
+          lastError = `验证码 ${code} 与上一次重复，继续等待新验证码`;
+        } else {
+          lastError = response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`;
+        }
+      } catch (error) {
+        lastError = formatError(error);
+      }
+      if (attempt < POLL_ATTEMPTS) {
+        logMessage(`日本短信第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
+        await delay(POLL_DELAY_MS);
+      }
+    }
+    throw new Error(`获取日本短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到新验证码"}`);
+  }
+
+  async function fetchOapiPhoneVerificationCode(phoneKey) {
+    const code = String(phoneKey && phoneKey.code || "").trim();
+    if (!code) {
+      throw new Error("日本短信 CDK 为空");
+    }
+    await waitBeforeJapanSmsFetch();
+    const seenCodes = createSeenSmsCodes(phoneKey);
+    let lastError = "";
+    for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+      try {
+        const payload = await postOapiSms("get_sms", { code });
+        const smsCode = String((payload && (payload.code || payload.sms)) || "").trim();
+        const matchedCode = extractSixDigitCode(smsCode);
+        if (payload && payload.ok && matchedCode) {
+          const isNewCode = !seenCodes.has(matchedCode);
+          logObservedSmsCode(phoneKey, matchedCode);
+          seenCodes.add(matchedCode);
+          if (isNewCode) {
+            state.lastPhoneCode = matchedCode;
+            await persistState();
+            return matchedCode;
+          }
+          lastError = `验证码 ${matchedCode} 与上一次重复，继续等待新验证码`;
+        } else {
+          lastError = payload && payload.error ? payload.error : "日本短信响应里没有匹配到 6 位验证码";
+        }
+      } catch (error) {
+        lastError = formatError(error);
+      }
+      if (attempt < POLL_ATTEMPTS) {
+        logMessage(`日本短信第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
+        await delay(5000);
+      }
+    }
+    throw new Error(`获取日本短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
+  }
+
+  async function waitBeforeJapanSmsFetch() {
+    logMessage("日本短信提交后等待 30 秒再获取验证码");
+    await delay(JP_SMS_INITIAL_DELAY_MS);
+  }
+
+  function createSeenSmsCodes(phoneKey) {
+    const history = Array.isArray(phoneKey && phoneKey.smsCodeHistory) ? phoneKey.smsCodeHistory : [];
+    const codes = history.map((item) => String(item && item.code || "").trim()).filter(Boolean);
+    const lastPhoneCode = String(state.lastPhoneCode || "").trim();
+    if (lastPhoneCode) {
+      codes.push(lastPhoneCode);
+    }
+    return new Set(codes);
+  }
+
+  function logObservedSmsCode(phoneKey, code) {
+    if (!phoneKey) {
+      return;
+    }
+    if (!Array.isArray(phoneKey.smsCodeHistory)) {
+      phoneKey.smsCodeHistory = [];
+    }
+    const normalizedCode = String(code || "").trim();
+    phoneKey.smsCodeHistory.push({
+      code: normalizedCode,
+      checkedAt: new Date().toISOString()
+    });
+    const last = phoneKey.smsCodeHistory[phoneKey.smsCodeHistory.length - 2];
+    if (last && String(last.code || "") === normalizedCode) {
+      logMessage(`日本短信验证码记录: ${normalizedCode}，与上一次重复`);
+    } else {
+      logMessage(`日本短信验证码记录: ${normalizedCode}`);
+    }
   }
 
   async function parseCardInput(rawInput) {
@@ -2434,6 +2723,30 @@
       return value[0] % 10;
     }
     return Math.floor(Math.random() * 10);
+  }
+
+  async function generateRandomCardInputNumber() {
+    const cardInput = document.getElementById("cardInput");
+    const rawInput = String(cardInput && cardInput.value || "");
+    const lines = rawInput.split(/\r?\n/);
+    const firstIndex = lines.findIndex((line) => String(line || "").trim());
+    if (firstIndex < 0) {
+      throw new Error("请输入卡片信息后再生成随机卡号");
+    }
+
+    const originalLine = String(lines[firstIndex] || "");
+    const parts = originalLine.split("----");
+    if (parts.length !== 6 && parts.length !== 7) {
+      throw new Error("卡片格式错误，必须是 card----年/月----cvv----url----name----address,city state postcode,US");
+    }
+
+    const originalCard = String(parts[0] || "").trim();
+    const generatedCard = generateRandomLuhnCardNumber(originalCard);
+    parts[0] = generatedCard;
+    lines[firstIndex] = parts.join("----");
+    cardInput.value = lines.join("\n");
+    await persistState();
+    logMessage(`已生成随机 Luhn 有效卡号并写入卡片信息: ${generatedCard}`);
   }
 
   function parseExpiry(rawExpiry) {
@@ -2588,6 +2901,91 @@
     return phoneKeys[Math.floor(Math.random() * phoneKeys.length)];
   }
 
+  async function preparePhoneKeyForFlow(flowCountry) {
+    if (normalizeFlowCountry(flowCountry) === "JP") {
+      const cdk = pickRandomJpSmsCdk();
+      if (cdk) {
+        return fetchJapanPhoneKey(cdk);
+      }
+      return pickRandomJapanPhoneKeyFromPhoneInput();
+    }
+    const phoneInput = document.getElementById("phoneKeyInput");
+    state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
+    return pickRandomPhoneKey(state.phoneKeyInput);
+  }
+
+  function pickRandomJapanPhoneKeyFromPhoneInput() {
+    const phoneInput = document.getElementById("phoneKeyInput");
+    state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
+    const text = String(state.phoneKeyInput || "").trim();
+    if (!text) {
+      throw new Error("日本短信 CDK 为空，请在日本短信 CDK 输入框填写 CDK，或在手机区域填写 phone----smsUrl");
+    }
+    const phoneKeys = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => parseJapanPhoneKeyInput(line));
+    if (!phoneKeys.length) {
+      throw new Error("手机区域没有可用的日本手机号记录");
+    }
+    const picked = phoneKeys[Math.floor(Math.random() * phoneKeys.length)];
+    logMessage(`日本短信使用手机区域记录: ${picked.phone}`);
+    return picked;
+  }
+
+  async function fetchJapanPhoneKey(cdk) {
+    const code = String(cdk || "").trim();
+    if (!code) {
+      throw new Error("请输入日本短信 CDK");
+    }
+    const payload = await postOapiSms("check_cdk", { code });
+    if (!payload || !payload.ok) {
+      throw new Error(payload && payload.error ? payload.error : "日本短信 CDK 校验失败");
+    }
+    const session = payload.session || {};
+    const phone = String(session.phone_number || "").trim();
+    if (!phone) {
+      throw new Error("日本短信接口未返回手机号");
+    }
+    logMessage(`日本短信手机号获取成功: ${phone}，CDK: ${maskSmsCdk(code)}`);
+    return {
+      provider: "oapi",
+      raw: code,
+      code,
+      phone,
+      countryCode: String(payload.cdk && payload.cdk.country_code || "+81").trim(),
+      sessionId: session.id || null,
+      status: String(session.status || "").trim()
+    };
+  }
+
+  function maskSmsCdk(cdk) {
+    const value = String(cdk || "").trim();
+    if (value.length <= 8) {
+      return value ? "***" : "";
+    }
+    return `${value.slice(0, 4)}***${value.slice(-4)}`;
+  }
+
+  async function postOapiSms(action, body) {
+    const url = `${OAPI_SMS_API}?action=${action}`;
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body || {})
+    });
+    const payload = await readJsonResponse(response, "日本短信接口");
+    if (!response.ok) {
+      throw new Error(payload && payload.error ? payload.error : `HTTP ${response.status}`);
+    }
+    return payload;
+  }
+
   function parsePhoneKeyInput(rawInput, options = {}) {
     const allowEmpty = Boolean(options.allowEmpty);
     const text = String(rawInput || "").trim();
@@ -2621,6 +3019,41 @@
       throw new Error("手机号格式不正确");
     }
     return {
+      provider: "legacy",
+      country: "JP",
+      raw: text,
+      rawPhone,
+      phone,
+      smsUrl: parsedUrl.toString()
+    };
+  }
+
+  function parseJapanPhoneKeyInput(rawInput) {
+    const text = String(rawInput || "").trim();
+    const parts = text.split("----");
+    if (parts.length !== 2) {
+      throw new Error("日本手机区域格式错误，必须是 7092756860----https://...");
+    }
+    const rawPhone = String(parts[0] || "").trim();
+    const smsUrl = String(parts[1] || "").trim();
+    if (!rawPhone || !smsUrl) {
+      throw new Error("日本手机区域格式错误，手机号和短信地址都不能为空");
+    }
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(smsUrl);
+    } catch (error) {
+      throw new Error("日本短信地址不是有效 URL");
+    }
+    if (!/^https?:$/i.test(parsedUrl.protocol)) {
+      throw new Error("日本短信地址只支持 http 或 https");
+    }
+    const phone = rawPhone.replace(/\D+/g, "");
+    if (!/^\d{8,15}$/.test(phone)) {
+      throw new Error("日本手机号格式不正确");
+    }
+    return {
+      provider: "legacy",
       raw: text,
       rawPhone,
       phone,
@@ -2820,6 +3253,10 @@
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
+      state.flowCountry = normalizeFlowCountry(saved.flowCountry);
+      document.getElementById("flowCountrySelect").value = state.flowCountry;
+      state.jpSmsCdk = typeof saved.jpSmsCdk === "string" && saved.jpSmsCdk.trim() ? saved.jpSmsCdk.trim() : DEFAULT_JP_SMS_CDK;
+      document.getElementById("jpSmsCdkInput").value = state.jpSmsCdk;
       state.proxyEnabled = saved.proxyEnabled === undefined ? true : Boolean(saved.proxyEnabled);
       document.getElementById("proxyEnabledCheckbox").checked = state.proxyEnabled;
       state.webshareApiKey = typeof saved.webshareApiKey === "string" ? saved.webshareApiKey : "";
@@ -2853,6 +3290,8 @@
   function persistState() {
     const nextState = {
       country: document.getElementById("country").value,
+      flowCountry: normalizeFlowCountry(document.getElementById("flowCountrySelect").value),
+      jpSmsCdk: getJpSmsCdkInput(),
       runCount: getRunCount(),
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
@@ -2876,7 +3315,9 @@
 
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(runAutomationBatch));
+    document.getElementById("startToStep2Btn").addEventListener("click", () => runWithErrorHandling(startToStep2));
     document.getElementById("cancelBatchBtn").addEventListener("click", requestCancelAutomationBatch);
+    document.getElementById("getPayUrlBtn").addEventListener("click", () => runWithErrorHandling(getPayUrlFromCurrentTab));
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
     document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
@@ -2906,12 +3347,21 @@
       persistState();
     });
     document.getElementById("country").addEventListener("change", persistState);
+    document.getElementById("flowCountrySelect").addEventListener("change", () => {
+      document.getElementById("flowCountrySelect").value = getFlowCountry();
+      persistState();
+    });
+    document.getElementById("jpSmsCdkInput").addEventListener("input", () => {
+      state.jpSmsCdk = getJpSmsCdkInput();
+      persistState();
+    });
     document.getElementById("runCountInput").addEventListener("input", persistState);
     document.getElementById("cardInput").addEventListener("input", persistState);
     document.getElementById("randomCardCheckbox").addEventListener("change", () => {
       state.randomCardEnabled = document.getElementById("randomCardCheckbox").checked;
       persistState();
     });
+    document.getElementById("generateRandomCardButton").addEventListener("click", () => runWithErrorHandling(generateRandomCardInputNumber));
     document.getElementById("useCurrentIpLocationCheckbox").addEventListener("change", () => {
       state.useCurrentIpLocation = document.getElementById("useCurrentIpLocationCheckbox").checked;
       persistState();

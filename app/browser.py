@@ -1624,9 +1624,9 @@ def _fill_input_with_verification(
         except Exception:
             pass
 
-        time.sleep(0.2)
+        time.sleep(2)
         type_slowly(element, expected)
-        time.sleep(0.2)
+        time.sleep(2)
 
         actual_value = str(element.get_attribute("value") or "")
         if actual_value == expected:
