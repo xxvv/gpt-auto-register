@@ -1965,7 +1965,7 @@
 
       await submitSignupForm(tabId);
       logMessage("已提交 signup，开始获取短信验证码");
-      await delay();
+      await delay(30000);
       await refillSignupFormIfCleared(tabId, prepared);
       await requirePageResult(tabId, "__gptAutoRegisterWaitForSelector", {
         selector: "#ci-ciBasic-0",
