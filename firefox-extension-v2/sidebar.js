@@ -21,7 +21,7 @@
   const STORAGE_KEY = "gptAutoRegisterV2State";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
-  const POLL_ATTEMPTS = 8;
+  const POLL_ATTEMPTS = 12;
   const POLL_DELAY_MS = 2500;
   const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
@@ -1971,7 +1971,7 @@
         selector: "#ci-ciBasic-0",
         timeoutMs: 120000
       }, "未找到短信验证码输入框");
-      const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey);
+      const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey, { tabId });
       logMessage(`开始获取手机号`);
       await requirePageResult(tabId, "__gptAutoRegisterSetOtpDigits", {
         selectors: [
@@ -2488,12 +2488,12 @@
     };
   }
 
-  async function fetchPhoneVerificationCode(phoneKey) {
+  async function fetchPhoneVerificationCode(phoneKey, options = {}) {
     if (phoneKey && phoneKey.provider === "oapi") {
       return fetchOapiPhoneVerificationCode(phoneKey);
     }
     if (phoneKey && phoneKey.country === "JP") {
-      return fetchJapanLegacyPhoneVerificationCode(phoneKey);
+      return fetchJapanLegacyPhoneVerificationCode(phoneKey, options);
     }
     let lastError = "";
     for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
@@ -2522,41 +2522,70 @@
     throw new Error(`获取短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
   }
 
-  async function fetchJapanLegacyPhoneVerificationCode(phoneKey) {
+  async function fetchJapanLegacyPhoneVerificationCode(phoneKey, options = {}) {
     await waitBeforeJapanSmsFetch();
     const seenCodes = createSeenSmsCodes(phoneKey);
     let lastError = "";
-    for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-      try {
-        const response = await fetch(phoneKey.smsUrl, {
-          method: "GET",
-          cache: "no-store",
-          headers: { Accept: "text/plain,application/json,text/html,*/*" }
-        });
-        const body = await response.text();
-        const code = extractSixDigitCode(body);
-        if (response.ok && code) {
-          const isNewCode = !seenCodes.has(code);
-          logObservedSmsCode(phoneKey, code);
-          seenCodes.add(code);
-          if (isNewCode) {
-            state.lastPhoneCode = code;
-            await persistState();
-            return code;
+
+    async function pollJapanLegacySmsCode(roundLabel) {
+      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetch(phoneKey.smsUrl, {
+            method: "GET",
+            cache: "no-store",
+            headers: { Accept: "text/plain,application/json,text/html,*/*" }
+          });
+          const body = await response.text();
+          const code = extractSixDigitCode(body);
+          if (response.ok && code) {
+            const isNewCode = !seenCodes.has(code);
+            logObservedSmsCode(phoneKey, code);
+            seenCodes.add(code);
+            if (isNewCode) {
+              state.lastPhoneCode = code;
+              await persistState();
+              return code;
+            }
+            lastError = `验证码 ${code} 与上一次重复，继续等待新验证码`;
+          } else {
+            lastError = response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`;
           }
-          lastError = `验证码 ${code} 与上一次重复，继续等待新验证码`;
-        } else {
-          lastError = response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`;
+        } catch (error) {
+          lastError = formatError(error);
         }
-      } catch (error) {
-        lastError = formatError(error);
+        if (attempt < POLL_ATTEMPTS) {
+          logMessage(`日本短信${roundLabel}第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
+          await delay(POLL_DELAY_MS);
+        }
       }
-      if (attempt < POLL_ATTEMPTS) {
-        logMessage(`日本短信第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
-        await delay(POLL_DELAY_MS);
-      }
+      return null;
     }
-    throw new Error(`获取日本短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到新验证码"}`);
+
+    const firstCode = await pollJapanLegacySmsCode("");
+    if (firstCode) {
+      return firstCode;
+    }
+
+    await clickJapanSmsResendButton(options.tabId);
+
+    const resentCode = await pollJapanLegacySmsCode("重发后");
+    if (resentCode) {
+      return resentCode;
+    }
+
+    throw new Error(`获取日本短信验证码失败，重发前后各轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到新验证码"}`);
+  }
+
+  async function clickJapanSmsResendButton(tabId) {
+    if (!tabId) {
+      throw new Error("获取日本短信验证码失败，首次轮询未取到验证码，且缺少 tabId，无法点击重发按钮");
+    }
+    logMessage("日本短信首次轮询未获取到验证码，点击重发按钮后继续轮询");
+    await clickPageElement(tabId, {
+      selector: 'button[data-testid="resend-link"]',
+      timeoutMs: 30000
+    }, '未找到短信验证码重发按钮 button[data-testid="resend-link"]');
+    logMessage("已点击短信验证码重发按钮，继续轮询验证码");
   }
 
   async function fetchOapiPhoneVerificationCode(phoneKey) {
