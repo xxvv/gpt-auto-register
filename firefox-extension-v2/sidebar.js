@@ -5,10 +5,8 @@
 
   const DOMAINS = [
     "xvmit.edu.kg",
-    "watermelon.edu.kg",
     "ciat.edu.kg",
     "cars.edu.kg",
-    "damahou.edu.kg",
     "xymit.edu.kg"
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
@@ -1220,12 +1218,14 @@
     };
   }
 
-  async function closeAutomationWindow(windowId) {
+  async function closeAutomationWindow(windowId, options = {}) {
     if (windowId === undefined || windowId === null) {
       return;
     }
     try {
-      await delay(AUTOMATION_WINDOW_CLOSE_DELAY_MS);
+      if (!options.immediate) {
+        await delay(AUTOMATION_WINDOW_CLOSE_DELAY_MS);
+      }
       await ext.windows.remove(windowId);
     } catch (error) {
       console.warn("Failed to close automation private window", error);
@@ -1473,7 +1473,12 @@
       }
 
       prepared.payUrl = result.paymentLink;
-      const payFlowResult = await runPayPalFlow(tab.id, prepared);
+      const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
+        currentWindowId: automationWindowId,
+        onWindowReopened: (nextWindow) => {
+          automationWindowId = nextWindow.windowId;
+        }
+      });
       automationSucceeded = Boolean(payFlowResult);
       if (automationSucceeded) {
         await removeUsedCardInput(prepared);
@@ -1604,7 +1609,13 @@
       }
       const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
       automationWindowId = automationWindow.windowId;
-      const payFlowResult = await runPayPalFlow(automationWindow.tab.id, prepared, { proxyReady: true });
+      const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(automationWindow.tab.id, prepared, {
+        proxyReady: true,
+        currentWindowId: automationWindowId,
+        onWindowReopened: (nextWindow) => {
+          automationWindowId = nextWindow.windowId;
+        }
+      });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
       }
@@ -1630,6 +1641,7 @@
     }
 
     logMessage("从当前页面第3步开始支付流程...");
+    let retryAutomationWindowId = null;
     try {
       try {
         await ensureProxyForStage("第三步");
@@ -1638,12 +1650,22 @@
         return;
       }
       await applyCurrentIpLocationToPrepared(prepared);
-      const payFlowResult = await runPayPalFlowFromCurrentPayUrl(tab.id, prepared);
+      if (!prepared.payUrl) {
+        prepared.payUrl = String(tab.url || "").trim();
+      }
+      const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
+        proxyReady: true,
+        currentWindowId: tab.incognito ? tab.windowId : null,
+        onWindowReopened: (nextWindow) => {
+          retryAutomationWindowId = nextWindow.windowId;
+        }
+      });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
       }
     } finally {
       await cleanupAutomationProxy("第3步任务已关闭");
+      await closeAutomationWindow(retryAutomationWindowId);
     }
   }
 
@@ -1797,6 +1819,46 @@
     logMessage("PayPal 返回 genericError，已删除本次使用的手机号，标记为无法继续使用");
   }
 
+  class PayPalCaptchaButtonNotFoundError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "PayPalCaptchaButtonNotFoundError";
+    }
+  }
+
+  function isPayPalCaptchaButtonNotFoundError(error) {
+    return error instanceof PayPalCaptchaButtonNotFoundError ||
+      (error && error.name === "PayPalCaptchaButtonNotFoundError");
+  }
+
+  async function runPayPalFlowWithCaptchaWindowRetry(tabId, prepared, options = {}) {
+    let activeTabId = tabId;
+    let retryWindowId = null;
+    try {
+      return await runPayPalFlow(activeTabId, prepared, options);
+    } catch (error) {
+      if (!isPayPalCaptchaButtonNotFoundError(error) || options.captchaWindowRetry === false) {
+        throw error;
+      }
+      logMessage("滑块验证码后找不到点击按钮，关闭窗口并重新打开窗口进行第三步");
+      if (options.currentWindowId !== undefined && options.currentWindowId !== null) {
+        await closeAutomationWindow(options.currentWindowId, { immediate: true });
+      }
+      const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
+      retryWindowId = automationWindow.windowId;
+      if (typeof options.onWindowReopened === "function") {
+        options.onWindowReopened(automationWindow);
+      }
+      activeTabId = automationWindow.tab.id;
+      return await runPayPalFlow(activeTabId, prepared, {
+        ...options,
+        currentWindowId: retryWindowId,
+        proxyReady: true,
+        captchaWindowRetry: false
+      });
+    }
+  }
+
   async function runPayPalFlow(tabId, prepared, options = {}) {
     if (!prepared.payUrl) {
       throw new Error("PayURL 不能为空");
@@ -1878,7 +1940,7 @@
     }, "未找到 PayPal 支付选项");
     logMessage("已选择 PayPal，填充卡片信息");
     await delay();
-    await fillCurrentPage(tabId, prepared, createPayUrlFillOptions(prepared));
+    await fillCurrentPage(tabId, prepared, createPayUrlFillOptions(prepared, { type: true }));
     await scrollTabToBottom(tabId);
     await requirePageResult(tabId, "__gptAutoRegisterCheck", {
       selector: "#termsOfServiceConsentCheckbox",
@@ -1911,6 +1973,7 @@
     const captchaCheck = (Array.isArray(captchaChecks) ? captchaChecks : [captchaChecks])
       .filter(Boolean)
       .find((result) => result.hasCaptcha);
+    let captchaSolved = false;
     if (captchaCheck) {
       logMessage("检测到滑块验证码，正在处理...");
       const captchaResults = await executePageFunction(tabId, "__gptAutoRegisterSolveCaptcha", {
@@ -1924,6 +1987,7 @@
         .filter(Boolean)
         .find((result) => result.hasCaptcha || result.ok);
       if (captchaResult && captchaResult.ok) {
+        captchaSolved = true;
         logMessage("滑块验证码已完成");
         await delay();
       } else {
@@ -1934,10 +1998,17 @@
     }
 
     logMessage("等待点击");
-    await clickPageElement(tabId, {
-      selector: '#createAccount, #startOnboardingFlow, button[data-atomic-wait-intent="Pay_With_Card"]',
-      timeoutMs: 30000
-    }, "PayPal 页面未找到提交按钮");
+    try {
+      await clickPageElement(tabId, {
+        selector: '#createAccount, #startOnboardingFlow, button[data-atomic-wait-intent="Pay_With_Card"]',
+        timeoutMs: 30000
+      }, "PayPal 页面未找到提交按钮");
+    } catch (error) {
+      if (captchaSolved) {
+        throw new PayPalCaptchaButtonNotFoundError(formatError(error));
+      }
+      throw error;
+    }
     logMessage("点击了按钮");
     logMessage("等待插件邮箱输入框");
     await delay();
@@ -2361,11 +2432,16 @@
     return result;
   }
 
-  function createPayUrlFillOptions(prepared) {
+  function createPayUrlFillOptions(prepared, inputOptions = {}) {
     const options = {
       payUrlStyle: true,
       skipFields: ["password"]
     };
+    if (inputOptions && inputOptions.type) {
+      options.type = true;
+      options.typeDelayMinMs = 140;
+      options.typeDelayMaxMs = 320;
+    }
     if (prepared && normalizeFlowCountry(prepared.flowCountry) === "JP") {
       options.countryOverrides = createJapanPayUrlOverrides();
     }
@@ -2502,7 +2578,7 @@
           headers: { Accept: "text/plain,application/json,text/html,*/*" }
         });
         const body = await response.text();
-        const code = extractSixDigitCode(body);
+        const code = extractSmsCodeFromResponseBody(phoneKey, body);
         if (response.ok && code) {
           state.lastPhoneCode = code;
           await persistState();
@@ -2532,7 +2608,7 @@
           headers: { Accept: "text/plain,application/json,text/html,*/*" }
         });
         const body = await response.text();
-        const code = extractSixDigitCode(body);
+        const code = extractSmsCodeFromResponseBody(phoneKey, body);
         if (response.ok && code) {
           const isNewCode = !seenCodes.has(code);
           logObservedSmsCode(phoneKey, code);
@@ -3093,6 +3169,31 @@
   function extractSixDigitCode(text) {
     const match = String(text || "").match(/(?:^|\D)(\d{6})(?!\d)/);
     return match ? match[1] : "";
+  }
+
+  function extractSmsCodeFromResponseBody(phoneKey, body) {
+    if (isEduaiEasySmsUrl(phoneKey && phoneKey.smsUrl)) {
+      return extractEduaiEasyMessageCode(body);
+    }
+    return extractSixDigitCode(body);
+  }
+
+  function isEduaiEasySmsUrl(smsUrl) {
+    try {
+      const url = new URL(String(smsUrl || ""));
+      return url.hostname.toLowerCase() === "s.eduaieasy.indevs.in";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function extractEduaiEasyMessageCode(body) {
+    try {
+      const payload = JSON.parse(String(body || ""));
+      return extractSixDigitCode(payload && payload.message);
+    } catch (_) {
+      return extractSixDigitCode("");
+    }
   }
 
   function extractFirstName(name) {
