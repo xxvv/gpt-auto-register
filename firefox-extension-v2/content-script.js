@@ -197,6 +197,19 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
+  function dispatchTypingKeyEvent(element, type, ch) {
+    try {
+      element.dispatchEvent(new KeyboardEvent(type, {
+        key: ch,
+        code: ch.length === 1 && /^[a-z0-9]$/i.test(ch) ? `Key${ch.toUpperCase()}` : "",
+        bubbles: true,
+        cancelable: true
+      }));
+    } catch (_) {
+      element.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+    }
+  }
+
   async function typeNativeValue(element, value, options) {
     const text = String(value || "");
     element.focus();
@@ -211,14 +224,40 @@
     const typeDelayMinMs = options && options.typeDelayMinMs;
     const typeDelayMaxMs = options && options.typeDelayMaxMs;
     for (const ch of text) {
+      dispatchTypingKeyEvent(element, "keydown", ch);
+      dispatchTypingKeyEvent(element, "keypress", ch);
+      let shouldInsert = true;
+      try {
+        shouldInsert = element.dispatchEvent(new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: ch
+        }));
+      } catch (_) {}
+      if (!shouldInsert) {
+        dispatchTypingKeyEvent(element, "keyup", ch);
+        await delay(randomTypeDelayMs(typeDelayMinMs, typeDelayMaxMs));
+        continue;
+      }
       if (descriptor && descriptor.set) {
         descriptor.set.call(element, String(element.value || "") + ch);
       } else {
         element.value = String(element.value || "") + ch;
       }
-      element.dispatchEvent(new Event("input", { bubbles: true }));
+      try {
+        element.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: ch
+        }));
+      } catch (_) {
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      dispatchTypingKeyEvent(element, "keyup", ch);
       await delay(randomTypeDelayMs(typeDelayMinMs, typeDelayMaxMs));
     }
+    element.dispatchEvent(new Event("change", { bubbles: true }));
     element.blur();
   }
 
@@ -411,7 +450,10 @@
       }
       element.focus();
       let shouldBlur = true;
-      if (options && options.payUrlStyle) {
+      if (options && options.payUrlStyle && options.type && isTextEntryElement(element)) {
+        await typeNativeValue(element, value, options);
+        shouldBlur = false;
+      } else if (options && options.payUrlStyle) {
         setNativeValue(element, value);
       } else if (options && options.type && isTextEntryElement(element)) {
         await typeNativeValue(element, value, options);
