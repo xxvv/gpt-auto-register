@@ -2043,6 +2043,7 @@
         timeoutMs: 120000
       }, "未找到短信验证码输入框");
       const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey);
+      logMessage(`开始获取手机号`);
       await requirePageResult(tabId, "__gptAutoRegisterSetOtpDigits", {
         selectors: [
           "#ci-ciBasic-0",
@@ -2134,6 +2135,7 @@
       payUrlStyle: true,
       timeoutMs: 30000
     }, "未找到 signup 邮箱字段");
+    logMessage(`手机号：${prepared.phone}`)
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
       selector: "#phone",
       value: prepared.phone,
