@@ -2134,26 +2134,28 @@
   }
 
   async function ensurePayUrlAmountIsZero(tabId, prepared) {
-    logMessage("检查 PayURL 金额是否为 0 元");
-    const amountText = await getPayUrlCurrencyAmountText(tabId);
-    if (!amountText) {
-      throw new Error("未找到 PayURL 金额元素 .CurrencyAmount，停止当前任务");
-    }
-    logMessage(`PayURL 当前金额: ${amountText}`);
-    if (!isZeroCurrencyAmount(amountText)) {
+    logMessage("检查 PayURL 是否包含 1 Month Free");
+    const results = await executeScriptAfterPageReady(tabId, {
+      code: "document.body && document.body.innerHTML.indexOf('1 Month Free') > -1",
+      allFrames: true,
+      runAt: "document_idle"
+    }, "检查 PayURL 1 Month Free");
+    const hasOneMonthFree = (Array.isArray(results) ? results : [results]).some(Boolean);
+    if (!hasOneMonthFree) {
       if (prepared) {
         prepared.payUrlAmountZero = false;
         prepared.payUrlAmountNonZero = true;
-        prepared.payUrlAmountText = amountText;
+        prepared.payUrlAmountText = "";
       }
-      logMessage(`PayURL 金额不是 0 元，停止当前任务: ${amountText}`);
+      logMessage("PayURL 未找到 1 Month Free，停止当前任务");
       return false;
     }
     if (prepared) {
       prepared.payUrlAmountZero = true;
       prepared.payUrlAmountNonZero = false;
-      prepared.payUrlAmountText = amountText;
+      prepared.payUrlAmountText = "1 Month Free";
     }
+    logMessage("PayURL 已找到 1 Month Free，继续第三步");
     return true;
   }
 
