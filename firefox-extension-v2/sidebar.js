@@ -2256,7 +2256,18 @@
   }
 
   async function ensurePayUrlAmountIsZero(tabId, prepared) {
-    logMessage("检查 PayURL 是否包含 1 Month Free");
+    logMessage("等待 PayURL 页面加载完成后检查 1 Month Free");
+    const pageLoaded = await waitForPageComplete(tabId, 120000);
+    if (!pageLoaded) {
+      if (prepared) {
+        prepared.payUrlAmountZero = false;
+        prepared.payUrlAmountNonZero = true;
+        prepared.payUrlAmountText = "";
+      }
+      logMessage("PayURL 页面未加载完成，停止当前任务");
+      return false;
+    }
+    logMessage("PayURL 页面已加载完成，检查是否包含 1 Month Free");
     const results = await executeScriptAfterPageReady(tabId, {
       code: "document.body && document.body.innerHTML.indexOf('1 Month Free') > -1",
       allFrames: true,
