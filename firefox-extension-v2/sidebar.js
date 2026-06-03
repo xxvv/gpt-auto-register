@@ -21,14 +21,12 @@
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 12;
   const POLL_DELAY_MS = 2500;
-  const CHECKOUT_LINK_ATTEMPTS = 3;
   const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
   const PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]';
   const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
-  const CHECKOUT_REGION_FALLBACK_ORDER = Object.freeze(["DE", "IE", "US"]);
   const DEFAULT_JP_SMS_CDK = "";
   const SHORT_PAY_URL_PREFIX = "https://chatgpt.com/checkout/openai_llc/";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
@@ -738,25 +736,25 @@
   }
 
   const regionConfig = {
-    CA: { country: "CA", currency: "CAD" },
-    ID: { country: "ID", currency: "IDR" },
-    IE: { country: "IE", currency: "EUR" },
-    JP: { country: "JP", currency: "JPY" },
-    BR: { country: "BR", currency: "BRL" },
-    US: { country: "US", currency: "USD" },
-    DE: { country: "DE", currency: "EUR" }
+    CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
+    ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
+    IE: { country: "IE", currency: "EUR", paymentLocale: "en-IE" },
+    JP: { country: "JP", currency: "JPY", paymentLocale: "ja-JP" },
+    BR: { country: "BR", currency: "BRL", paymentLocale: "pt-BR" },
+    US: { country: "US", currency: "USD", paymentLocale: "en-US" },
+    DE: { country: "DE", currency: "EUR", paymentLocale: "de-DE" }
   };
 
   async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
     try {
       const checkoutRegionConfig = {
-        CA: { country: "CA", currency: "CAD" },
-        ID: { country: "ID", currency: "IDR" },
-        IE: { country: "IE", currency: "EUR" },
-        JP: { country: "JP", currency: "JPY" },
-        BR: { country: "BR", currency: "BRL" },
-        US: { country: "US", currency: "USD" },
-        DE: { country: "DE", currency: "EUR" }
+        CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
+        ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
+        IE: { country: "IE", currency: "EUR", paymentLocale: "en-IE" },
+        JP: { country: "JP", currency: "JPY", paymentLocale: "ja-JP" },
+        BR: { country: "BR", currency: "BRL", paymentLocale: "pt-BR" },
+        US: { country: "US", currency: "USD", paymentLocale: "en-US" },
+        DE: { country: "DE", currency: "EUR", paymentLocale: "de-DE" }
       };
       const session = await fetch("https://chatgpt.com/api/auth/session", {
         cache: "no-store",
@@ -805,6 +803,7 @@
       return { ok: false, error: e.message || "checkout failed" };
     }
   }
+
 
   async function submitThirdPartyAccount(accountInfo) {
     try {
@@ -1281,58 +1280,76 @@
     }
   }
 
-  async function requestCheckoutLinkWithRetry(requestLink) {
-    let lastResult = null;
-    for (let attempt = 1; attempt <= CHECKOUT_LINK_ATTEMPTS; attempt += 1) {
-      lastResult = await requestLink();
-      if (lastResult && lastResult.ok && lastResult.paymentLink) {
-        return lastResult;
+  async function requestOaiPayLongLink(accessToken, checkoutRegion) {
+    try {
+      const token = String(accessToken || "").trim();
+      if (!token) {
+        return { ok: false, fallback: true, error: "accessToken: null" };
       }
-
-      const error = lastResult && lastResult.error ? lastResult.error : "未知错误";
-      if (attempt < CHECKOUT_LINK_ATTEMPTS) {
-        logMessage(`获取支付链接失败，第 ${attempt}/${CHECKOUT_LINK_ATTEMPTS} 次: ${error}，准备重试`);
-        await delay(1500);
-      }
+      const region = String(checkoutRegion || DEFAULT_FLOW_COUNTRY).trim().toUpperCase();
+      const config = regionConfig[region] || regionConfig.US;
+      const response = await fetch("https://oaipay.im-run.com/api/long-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          accessToken: token,
+          link_type: "hosted",
+          proxy: "",
+          billing_country: config.country,
+          checkout_ui_mode: "hosted",
+          payment_locale: config.paymentLocale,
+          stripe_publishable_key: "",
+          device_id: "",
+          user_agent: ""
+        })
+      });
+      const data = await response.json();
+      const longUrl = String(data && data.long_url || "").trim();
+      const checkoutSessionId = String(data && data.cs_id || "").trim();
+      return {
+        ok: response.ok && Boolean(data && data.ok) && Boolean(longUrl),
+        accessToken: token,
+        paymentLink: longUrl,
+        longPaymentLink: longUrl,
+        checkoutSessionId,
+        shortPaymentLink: checkoutSessionId ? `${SHORT_PAY_URL_PREFIX}${checkoutSessionId}` : "",
+        fallback: true,
+        providerError: data && data.provider_error || "",
+        error: response.ok ? (longUrl ? "" : "oaipay long_url 为空") : `HTTP ${response.status}`
+      };
+    } catch (error) {
+      return { ok: false, fallback: true, error: formatError(error) || "oaipay long-link failed" };
     }
-
-    return lastResult || { ok: false, error: "未返回支付链接任务结果" };
   }
 
-  function buildCheckoutRegionAttempts(primaryRegion) {
-    const attempts = [];
-    const primary = String(primaryRegion || "").trim().toUpperCase();
-    if (primary) {
-      attempts.push(primary);
+  async function requestCheckoutLinkWithOaiPayFallback(requestLinkForRegion, primaryRegion) {
+    const region = String(primaryRegion || DEFAULT_FLOW_COUNTRY).trim().toUpperCase();
+    logMessage(`尝试获取支付链接，地区: ${region}`);
+    const primaryResult = await requestLinkForRegion(region);
+    if (primaryResult && primaryResult.ok && primaryResult.paymentLink) {
+      primaryResult.checkoutRegion = region;
+      return primaryResult;
     }
-    CHECKOUT_REGION_FALLBACK_ORDER.forEach((region) => {
-      if (!attempts.includes(region)) {
-        attempts.push(region);
-      }
-    });
-    return attempts;
-  }
 
-  async function requestCheckoutLinkWithRegionFallback(requestLinkForRegion, primaryRegion) {
-    let lastResult = null;
-    const regions = buildCheckoutRegionAttempts(primaryRegion);
-    for (let index = 0; index < regions.length; index += 1) {
-      const region = regions[index];
-      logMessage(`尝试获取支付链接，地区: ${region}`);
-      lastResult = await requestCheckoutLinkWithRetry(() => requestLinkForRegion(region));
-      if (lastResult && lastResult.ok && lastResult.paymentLink) {
-        lastResult.checkoutRegion = region;
-        if (region !== String(primaryRegion || "").trim().toUpperCase()) {
-          logMessage(`原地区获取失败后，已使用 ${region} 获取支付链接`);
-        }
-        return lastResult;
-      }
-      const error = lastResult && lastResult.error ? lastResult.error : "未知错误";
-      if (index < regions.length - 1) {
-        logMessage(`地区 ${region} 获取支付链接失败: ${error}，切换下一个地区`);
-      }
+    const primaryError = primaryResult && primaryResult.error ? primaryResult.error : "未知错误";
+    logMessage(`官方支付链接获取失败: ${primaryError}，直接使用 oaipay 兜底`);
+    const fallbackResult = await requestOaiPayLongLink(primaryResult && primaryResult.accessToken, region);
+    if (fallbackResult && fallbackResult.ok && fallbackResult.paymentLink) {
+      fallbackResult.checkoutRegion = region;
+      fallbackResult.primaryError = primaryError;
+      logMessage(`oaipay 兜底长链获取成功，主渠道错误: ${primaryError}`);
+      return fallbackResult;
     }
-    return lastResult || { ok: false, error: "所有地区都未返回支付链接任务结果" };
+
+    const fallbackError = fallbackResult && fallbackResult.error ? fallbackResult.error : "未知错误";
+    return {
+      ok: false,
+      fallback: true,
+      accessToken: (fallbackResult && fallbackResult.accessToken) || (primaryResult && primaryResult.accessToken) || "",
+      error: `官方支付链接失败: ${primaryError}; oaipay 兜底失败: ${fallbackError}`
+    };
   }
 
   function getCheckoutLongPaymentLink(result) {
@@ -1407,7 +1424,7 @@
         return { ok: false, error: "打开的窗口未成功到达 chatgpt.com" };
       }
 
-      return await requestCheckoutLinkWithRegionFallback(
+      return await requestCheckoutLinkWithOaiPayFallback(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
@@ -1640,7 +1657,7 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithRegionFallback(
+      const result = await requestCheckoutLinkWithOaiPayFallback(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
@@ -1747,7 +1764,7 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithRegionFallback(
+      const result = await requestCheckoutLinkWithOaiPayFallback(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
@@ -1997,7 +2014,7 @@
     if (!accountEntry || !accountEntry.line) {
       return;
     }
-    logMessage(`指定注册账号获取支付链接连续 ${CHECKOUT_LINK_ATTEMPTS} 次失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    logMessage(`指定注册账号主渠道和 oaipay 兜底获取支付链接均失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
     await removeSpecifiedAccountInput(accountEntry);
   }
 
