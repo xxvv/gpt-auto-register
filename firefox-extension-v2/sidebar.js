@@ -2685,7 +2685,21 @@
   }
 
   function isPayPalMoneyFlowAccountsNewUrl(url) {
-    return String(url || "").split(/[?#]/, 1)[0] === "https://www.paypal.com/myaccount/money/flow/accounts/new";
+    try {
+      const parsed = new URL(String(url || ""));
+      if (!parsed.hostname.endsWith("paypal.com")) {
+        return false;
+      }
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      return pathname === "/myaccount/money/flow/accounts/new" ||
+        pathname.endsWith("/myaccount/money/flow/accounts/new");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isPayPalGenericErrorUrl(url) {
+    return String(url || "").startsWith("https://www.paypal.com/checkoutweb/genericError");
   }
 
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
@@ -2693,20 +2707,29 @@
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
-    let moneyFlowModalClosed = false;
+    let lastLoggedUrl = "";
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
       if (url.startsWith(hermesPrefix) || url.startsWith(hermes2)) {
         return url;
       }
-      if (!moneyFlowModalClosed && isPayPalMoneyFlowAccountsNewUrl(url)) {
+      if (isPayPalGenericErrorUrl(url) ) {
+        logMessage("检测到 PayPal genericError 页面，点击 a.btn.full 继续");
+        await requirePageResult(tabId, "__gptAutoRegisterClick", {
+          selector: "a.btn.full",
+          timeoutMs: 30000
+        }, "未找到 PayPal genericError 继续按钮 a.btn.full");
+        logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
+        await delay(1000);
+        continue;
+      }
+      if (isPayPalMoneyFlowAccountsNewUrl(url)) {
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
         await requirePageResult(tabId, "__gptAutoRegisterClick", {
           selector: "#modalClose",
           timeoutMs: 30000
         }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
-        moneyFlowModalClosed = true;
         logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
       }
       await delay(1000);
