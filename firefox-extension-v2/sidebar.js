@@ -2542,7 +2542,7 @@
 
   async function finishPayPalConsent(tabId, prepared) {
     logMessage("等待 PayPal Hermes 授权页面...");
-    await waitForUrlPrefix(tabId, "https://www.paypal.com/webapps/hermes", 30000);
+    await waitForPayPalHermesPage(tabId, 30000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
     await delay();
     await clickPageElement(tabId, {
@@ -2556,6 +2556,34 @@
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
+  }
+
+  function isPayPalMoneyFlowAccountsNewUrl(url) {
+    return String(url || "").split(/[?#]/, 1)[0] === "https://www.paypal.com/myaccount/money/flow/accounts/new";
+  }
+
+  async function waitForPayPalHermesPage(tabId, timeoutMs) {
+    const hermesPrefix = "https://www.paypal.com/webapps/hermes";
+    const start = Date.now();
+    let moneyFlowModalClosed = false;
+    while (Date.now() - start < timeoutMs) {
+      const tab = await ext.tabs.get(tabId);
+      const url = String(tab.url || "");
+      if (url.startsWith(hermesPrefix)) {
+        return url;
+      }
+      if (!moneyFlowModalClosed && isPayPalMoneyFlowAccountsNewUrl(url)) {
+        logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
+        await requirePageResult(tabId, "__gptAutoRegisterClick", {
+          selector: "#modalClose",
+          timeoutMs: 30000
+        }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
+        moneyFlowModalClosed = true;
+        logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
+      }
+      await delay(1000);
+    }
+    throw new Error(`等待 URL 超时: ${hermesPrefix}`);
   }
 
   async function waitForChatGptOrPayPalGenericError(tabId, timeoutMs) {
