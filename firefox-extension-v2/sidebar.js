@@ -28,6 +28,7 @@
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
+  const CHECKOUT_REGION_FALLBACK_ORDER = Object.freeze(["DE", "IE", "US"]);
   const DEFAULT_JP_SMS_CDK = "";
   const SHORT_PAY_URL_PREFIX = "https://chatgpt.com/checkout/openai_llc/";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
@@ -1298,6 +1299,42 @@
     return lastResult || { ok: false, error: "未返回支付链接任务结果" };
   }
 
+  function buildCheckoutRegionAttempts(primaryRegion) {
+    const attempts = [];
+    const primary = String(primaryRegion || "").trim().toUpperCase();
+    if (primary) {
+      attempts.push(primary);
+    }
+    CHECKOUT_REGION_FALLBACK_ORDER.forEach((region) => {
+      if (!attempts.includes(region)) {
+        attempts.push(region);
+      }
+    });
+    return attempts;
+  }
+
+  async function requestCheckoutLinkWithRegionFallback(requestLinkForRegion, primaryRegion) {
+    let lastResult = null;
+    const regions = buildCheckoutRegionAttempts(primaryRegion);
+    for (let index = 0; index < regions.length; index += 1) {
+      const region = regions[index];
+      logMessage(`尝试获取支付链接，地区: ${region}`);
+      lastResult = await requestCheckoutLinkWithRetry(() => requestLinkForRegion(region));
+      if (lastResult && lastResult.ok && lastResult.paymentLink) {
+        lastResult.checkoutRegion = region;
+        if (region !== String(primaryRegion || "").trim().toUpperCase()) {
+          logMessage(`原地区获取失败后，已使用 ${region} 获取支付链接`);
+        }
+        return lastResult;
+      }
+      const error = lastResult && lastResult.error ? lastResult.error : "未知错误";
+      if (index < regions.length - 1) {
+        logMessage(`地区 ${region} 获取支付链接失败: ${error}，切换下一个地区`);
+      }
+    }
+    return lastResult || { ok: false, error: "所有地区都未返回支付链接任务结果" };
+  }
+
   function getCheckoutLongPaymentLink(result) {
     return String(result && (result.longPaymentLink || result.paymentLink) || "").trim();
   }
@@ -1370,7 +1407,10 @@
         return { ok: false, error: "打开的窗口未成功到达 chatgpt.com" };
       }
 
-      return await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
+      return await requestCheckoutLinkWithRegionFallback(
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        countrySel
+      );
     } finally {
       await closeAutomationWindow(automationWindowId);
       if (closeReason) {
@@ -1600,7 +1640,10 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
+      const result = await requestCheckoutLinkWithRegionFallback(
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        countrySel
+      );
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
@@ -1704,7 +1747,10 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
+      const result = await requestCheckoutLinkWithRegionFallback(
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        countrySel
+      );
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
