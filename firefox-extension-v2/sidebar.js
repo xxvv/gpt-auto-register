@@ -21,6 +21,7 @@
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 12;
   const POLL_DELAY_MS = 2500;
+  const CHECKOUT_LINK_ATTEMPTS = 3;
   const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
@@ -1249,6 +1250,24 @@
     }
   }
 
+  async function requestCheckoutLinkWithRetry(requestLink) {
+    let lastResult = null;
+    for (let attempt = 1; attempt <= CHECKOUT_LINK_ATTEMPTS; attempt += 1) {
+      lastResult = await requestLink();
+      if (lastResult && lastResult.ok && lastResult.paymentLink) {
+        return lastResult;
+      }
+
+      const error = lastResult && lastResult.error ? lastResult.error : "未知错误";
+      if (attempt < CHECKOUT_LINK_ATTEMPTS) {
+        logMessage(`获取支付链接失败，第 ${attempt}/${CHECKOUT_LINK_ATTEMPTS} 次: ${error}，准备重试`);
+        await delay(1500);
+      }
+    }
+
+    return lastResult || { ok: false, error: "未返回支付链接任务结果" };
+  }
+
   async function createTabInActiveWindow(url) {
     let tab = null;
     try {
@@ -1473,7 +1492,7 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+      const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         return { ok: false };
@@ -1574,7 +1593,7 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+      const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         return { ok: false };
@@ -1609,7 +1628,7 @@
 
     setActiveStep(2);
     logMessage(`主动获取支付链接，国家: ${countrySel}`);
-    const result = await requestChatGptCheckoutLinkFromTab(tab.id, countrySel);
+    const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
     if (!result.ok || !result.paymentLink) {
       logMessage("获取支付链接失败: " + (result.error || "未知错误"));
       return { ok: false };
