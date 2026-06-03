@@ -2005,28 +2005,28 @@
     logMessage("注册成功，已删除本次使用的卡片信息");
   }
 
-  async function removeInvalidPhoneKeyInput(prepared) {
+  async function removeInvalidPhoneKeyInput(prepared, reason) {
     const usedLine = String(prepared && prepared.phoneKey && prepared.phoneKey.raw || "").trim();
     if (!usedLine) {
-      return;
+      return false;
     }
     const phoneInput = document.getElementById("phoneKeyInput");
     const lines = String(phoneInput.value || "").split(/\r?\n/);
     const remainingLines = [];
-    let removed = false;
+    let removedCount = 0;
     for (const line of lines) {
       const trimmed = String(line || "").trim();
-      if (!removed && trimmed === usedLine) {
-        removed = true;
+      if (trimmed === usedLine) {
+        removedCount += 1;
         continue;
       }
       if (trimmed) {
         remainingLines.push(trimmed);
       }
     }
-    if (!removed) {
+    if (!removedCount) {
       logMessage("未找到本次使用的手机号，手机号列表未修改");
-      return;
+      return false;
     }
     phoneInput.value = remainingLines.join("\n");
     state.phoneKeyInput = phoneInput.value.trim();
@@ -2036,7 +2036,8 @@
       state.phoneKey = null;
     }
     await persistState();
-    logMessage("PayPal 返回 genericError，已删除本次使用的手机号，标记为无法继续使用");
+    logMessage(`${reason || "PayPal 返回 genericError"}，已删除本次使用的手机号，标记为无法继续使用`);
+    return true;
   }
 
   class PayPalCaptchaButtonNotFoundError extends Error {
@@ -2261,19 +2262,27 @@
     await waitForUrlPrefix(tabId, "https://www.paypal.com/checkoutweb/signup", 120000);
     const stopCaptchaCleaner = startCaptchaCleaner(tabId, "#captchaComponent");
     try {
-      await fillPayPalSignupForm(tabId, prepared);
-      await delay();
+      while (true) {
+        await fillPayPalSignupForm(tabId, prepared);
+        await delay();
 
-      await submitSignupForm(tabId);
-      logMessage("已提交 signup，开始获取短信验证码");
-      await delay(30000);
-      await refillSignupFormIfCleared(tabId, prepared);
-      await requirePageResult(tabId, "__gptAutoRegisterWaitForSelector", {
-        selector: "#ci-ciBasic-0",
-        timeoutMs: 120000
-      }, "未找到短信验证码输入框");
+        await submitSignupForm(tabId);
+        logMessage("已提交 signup，等待短信验证码输入框");
+        await delay(30000);
+        await refillSignupFormIfCleared(tabId, prepared);
+        const otpReady = await waitForSmsOtpInput(tabId, 120000);
+        if (otpReady) {
+          break;
+        }
+
+        logMessage("未找到短信验证码输入框，可能手机号被风控，准备删除当前手机号并换新号码重试");
+        const switched = await replaceRiskedSignupPhone(tabId, prepared);
+        if (!switched) {
+          throw new Error("未找到短信验证码输入框，已删除当前手机号，但手机区域没有可用的新手机号");
+        }
+      }
       const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey, { tabId });
-      logMessage(`开始获取手机号`);
+      logMessage("开始输入短信验证码");
       await requirePageResult(tabId, "__gptAutoRegisterSetOtpDigits", {
         selectors: [
           "#ci-ciBasic-0",
@@ -2295,6 +2304,52 @@
     } finally {
       stopCaptchaCleaner();
     }
+  }
+
+  async function waitForSmsOtpInput(tabId, timeoutMs) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterWaitForSelector", {
+      selector: "#ci-ciBasic-0",
+      timeoutMs
+    });
+    return Boolean(result && result.ok);
+  }
+
+  async function replaceRiskedSignupPhone(tabId, prepared) {
+    const removed = await removeInvalidPhoneKeyInput(prepared, "PayPal 未出现短信验证码输入框，可能手机号被风控");
+    await closePayPalRiskDialog(tabId);
+    if (!removed) {
+      return false;
+    }
+
+    const nextPhoneKey = await preparePhoneKeyForFlow(prepared.flowCountry);
+    const nextPhone = nextPhoneKey && nextPhoneKey.phone ? nextPhoneKey.phone : "";
+    if (!nextPhone) {
+      return false;
+    }
+
+    prepared.phoneKey = nextPhoneKey;
+    prepared.phone = nextPhone;
+    state.phoneKey = nextPhoneKey;
+    await persistState();
+    logMessage(`已切换新手机号: ${nextPhone}`);
+    return true;
+  }
+
+  async function closePayPalRiskDialog(tabId) {
+    const results = await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: 'button[title="Close"]',
+      timeoutMs: 10000
+    }, {
+      allFrames: true
+    });
+    const result = (Array.isArray(results) ? results : [results]).find((item) => item && item.ok);
+    if (result && result.ok) {
+      logMessage('已点击 PayPal Close 按钮');
+      await delay();
+      return true;
+    }
+    logMessage('未找到 PayPal Close 按钮，继续尝试重填手机号');
+    return false;
   }
 
   async function waitForChatGptReturn(tabId) {
