@@ -775,7 +775,7 @@
       const endX = startX + distance;
       const endY = startY;
 
-      sliderElement.dispatchEvent(new MouseEvent("pointerdown", {
+      sliderElement.dispatchEvent(new MouseEvent("mousedown", {
         bubbles: true,
         cancelable: true,
         view: window,
@@ -790,7 +790,7 @@
       const steps = 20;
       for (let i = 1; i <= steps; i++) {
         const currentX = startX + (distance * i / steps);
-        sliderElement.dispatchEvent(new MouseEvent("pointermove", {
+        sliderElement.dispatchEvent(new MouseEvent("mousemove", {
           bubbles: true,
           cancelable: true,
           view: window,
@@ -804,7 +804,7 @@
 
       await delay(500);
 
-      sliderElement.dispatchEvent(new MouseEvent("pointerup", {
+      sliderElement.dispatchEvent(new MouseEvent("mouseup", {
         bubbles: true,
         cancelable: true,
         view: window,

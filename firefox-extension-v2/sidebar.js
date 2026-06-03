@@ -49,6 +49,7 @@
     fillSettingsExpanded: false,
     randomCardEnabled: false,
     useCurrentIpLocation: false,
+    specifiedAccountInput: "",
     phoneKeyInput: "",
     phoneKey: null,
     flowCountry: DEFAULT_FLOW_COUNTRY,
@@ -840,7 +841,7 @@
     }
   }
 
-  async function runRegistration(tabId) {
+  async function runRegistration(tabId, specifiedAccountEmail = "") {
     setActiveStep(1);
     logMessage("等待 chatgpt.com 页面加载完成...");
     const pageLoaded = await waitForPageComplete(tabId, 90000);
@@ -897,13 +898,12 @@
       return { ok: false };
     }
 
-    const localPart = generateLocalPart();
-    const domain = DOMAINS[Math.floor(Math.random() * DOMAINS.length)];
-    const email = `${localPart}@${domain}`;
+    const normalizedSpecifiedEmail = String(specifiedAccountEmail || "").trim();
+    const email = normalizedSpecifiedEmail || `${generateLocalPart()}@${DOMAINS[Math.floor(Math.random() * DOMAINS.length)]}`;
     const randomName = generateRandomName();
     const randomAge = generateRandomAge();
     const randomBirthday = generateRandomBirthday();
-    logMessage(`生成注册邮箱: ${email}`);
+    logMessage(normalizedSpecifiedEmail ? `使用指定注册邮箱: ${email}` : `生成注册邮箱: ${email}`);
 
     const fillEmailCode = `
       (function() {
@@ -1239,6 +1239,7 @@
         runAt: "document_idle"
       }, "隐私窗口获取支付链接");
       const result = Array.isArray(results) ? results[0] : results;
+      logMessage("隐私窗口支付链接任务结果", JSON.stringify(result));
       return result || { ok: false, error: "隐私窗口未返回支付链接任务结果" };
     } catch (error) {
       return {
@@ -1353,7 +1354,22 @@
     state.automationBatchRunning = true;
     state.cancelAutomationBatchRequested = false;
     renderAutomationBatchControls();
-    const runCount = getRunCount();
+    let runCount = getRunCount();
+    const specifiedAccounts = getSpecifiedAccountEntries();
+    if (specifiedAccounts.length) {
+      const invalidAccount = specifiedAccounts.find((account) => !isValidSpecifiedAccountEmail(account));
+      if (invalidAccount) {
+        logMessage(`指定注册账号格式无效，流程终止: ${invalidAccount}`);
+        state.automationBatchRunning = false;
+        state.cancelAutomationBatchRequested = false;
+        renderAutomationBatchControls();
+        return;
+      }
+      if (runCount > specifiedAccounts.length) {
+        logMessage(`指定注册账号只有 ${specifiedAccounts.length} 个，本次完整流程执行次数调整为 ${specifiedAccounts.length}`);
+        runCount = specifiedAccounts.length;
+      }
+    }
     resetRunStats(runCount);
     let completedCount = 0;
     let successCount = 0;
@@ -1401,6 +1417,13 @@
 
   async function startAutomation() {
     const countrySel = document.getElementById("country").value;
+    let specifiedAccountEntry;
+    try {
+      specifiedAccountEntry = getNextSpecifiedAccountEntry();
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return { ok: false };
+    }
     let prepared;
     try {
       prepared = await preparePaymentInputs(false);
@@ -1425,7 +1448,7 @@
       const tab = automationWindow.tab;
       logMessage("步骤1: 打开 chatgpt.com");
 
-      const registration = await runRegistration(tab.id);
+      const registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
         return { ok: false };
@@ -1459,6 +1482,7 @@
       document.getElementById("payUrlInput").value = result.paymentLink;
       await persistState();
       logMessage("支付链接获取成功: " + result.paymentLink);
+      await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("正在提交到第三方接口...");
       const thirdPartyResult = await submitThirdPartyAccount({
         account: registration.email,
@@ -1486,8 +1510,8 @@
       return { ok: automationSucceeded };
     } finally {
       await cleanupAutomationProxy("完整流程任务已关闭");
-      if (!automationSucceeded && uploadedThirdPartyAccount) {
-        logMessage(`任务失败，正在删除第三方未绑定账号: ${uploadedThirdPartyAccount}`);
+      if (!automationSucceeded && uploadedThirdPartyAccount && prepared && prepared.payUrlAmountNonZero) {
+        logMessage(`PayURL 金额不是 0，正在删除第三方未绑定账号: ${uploadedThirdPartyAccount}`);
         const deleteResult = await deleteThirdPartyAccount(uploadedThirdPartyAccount);
         if (deleteResult.ok) {
           logMessage(`第三方未绑定账号删除请求成功: ${uploadedThirdPartyAccount}`);
@@ -1503,6 +1527,13 @@
 
   async function startToStep2() {
     const countrySel = document.getElementById("country").value;
+    let specifiedAccountEntry;
+    try {
+      specifiedAccountEntry = getNextSpecifiedAccountEntry();
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return { ok: false };
+    }
 
     logMessage("开始执行到第2步...");
     let automationWindowId = null;
@@ -1518,7 +1549,7 @@
       const tab = automationWindow.tab;
       logMessage("步骤1: 打开 chatgpt.com");
 
-      const registration = await runRegistration(tab.id);
+      const registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
         return { ok: false };
@@ -1552,6 +1583,7 @@
       document.getElementById("payUrlInput").value = result.paymentLink;
       await persistState();
       logMessage("支付链接获取成功: " + result.paymentLink);
+      await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("已执行到第2步，流程停止");
       return { ok: true, email: registration.email, paymentLink: result.paymentLink };
     } finally {
@@ -1753,6 +1785,75 @@
     return null;
   }
 
+  function getSpecifiedAccountEntries(rawInput) {
+    const input = rawInput === undefined
+      ? document.getElementById("specifiedAccountInput").value
+      : rawInput;
+    return String(input || "")
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+  }
+
+  function isValidSpecifiedAccountEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+  }
+
+  function getNextSpecifiedAccountEntry() {
+    const accounts = getSpecifiedAccountEntries();
+    if (!accounts.length) {
+      return null;
+    }
+    const email = accounts[0];
+    if (!isValidSpecifiedAccountEmail(email)) {
+      throw new Error(`指定注册账号格式无效: ${email}`);
+    }
+    return {
+      line: email,
+      email
+    };
+  }
+
+  async function markSpecifiedAccountCreated(accountEntry, fallbackEmail) {
+    if (!accountEntry || !accountEntry.line) {
+      return;
+    }
+    const email = accountEntry.email || String(fallbackEmail || "").trim();
+    if (email) {
+      logMessage(`指定账号创建成功: ${email}`);
+    }
+    await removeSpecifiedAccountInput(accountEntry);
+  }
+
+  async function removeSpecifiedAccountInput(accountEntry) {
+    const usedLine = String(accountEntry && accountEntry.line || "").trim();
+    if (!usedLine) {
+      return;
+    }
+    const accountInput = document.getElementById("specifiedAccountInput");
+    const lines = String(accountInput.value || "").split(/\r?\n/);
+    const remainingLines = [];
+    let removed = false;
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (!removed && trimmed === usedLine) {
+        removed = true;
+        continue;
+      }
+      if (trimmed) {
+        remainingLines.push(trimmed);
+      }
+    }
+    if (!removed) {
+      logMessage("未找到本次使用的指定注册账号，账号列表未修改");
+      return;
+    }
+    accountInput.value = remainingLines.join("\n");
+    state.specifiedAccountInput = accountInput.value.trim();
+    await persistState();
+    logMessage(`已从指定注册账号列表删除: ${usedLine}`);
+  }
+
   async function removeUsedCardInput(prepared) {
     if (prepared && prepared.randomCardEnabled) {
       logMessage("已勾选随机生成卡片，保留原始卡片信息");
@@ -1912,7 +2013,7 @@
     return matched ? String(matched.text || "").trim() : "";
   }
 
-  async function ensurePayUrlAmountIsZero(tabId) {
+  async function ensurePayUrlAmountIsZero(tabId, prepared) {
     logMessage("检查 PayURL 金额是否为 0 元");
     const amountText = await getPayUrlCurrencyAmountText(tabId);
     if (!amountText) {
@@ -1920,6 +2021,10 @@
     }
     logMessage(`PayURL 当前金额: ${amountText}`);
     if (!isZeroCurrencyAmount(amountText)) {
+      if (prepared) {
+        prepared.payUrlAmountNonZero = true;
+        prepared.payUrlAmountText = amountText;
+      }
       logMessage(`PayURL 金额不是 0 元，停止当前任务: ${amountText}`);
       return false;
     }
@@ -1930,7 +2035,7 @@
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
-    const shouldContinue = await ensurePayUrlAmountIsZero(tabId);
+    const shouldContinue = await ensurePayUrlAmountIsZero(tabId, prepared);
     if (!shouldContinue) {
       return false;
     }
@@ -3384,6 +3489,8 @@
       }
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
+      state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
+      document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
       state.flowCountry = normalizeFlowCountry(saved.flowCountry);
       document.getElementById("flowCountrySelect").value = state.flowCountry;
@@ -3428,6 +3535,7 @@
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
+      specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       payUrlInput: document.getElementById("payUrlInput").value,
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
       proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
@@ -3479,6 +3587,10 @@
       persistState();
     });
     document.getElementById("country").addEventListener("change", persistState);
+    document.getElementById("specifiedAccountInput").addEventListener("input", () => {
+      state.specifiedAccountInput = document.getElementById("specifiedAccountInput").value.trim();
+      persistState();
+    });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
       persistState();
