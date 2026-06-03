@@ -27,7 +27,9 @@
   const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
+  const DEFAULT_PAY_URL_MODE = "long";
   const DEFAULT_JP_SMS_CDK = "";
+  const SHORT_PAY_URL_PREFIX = "https://chatgpt.com/checkout/openai_llc/";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
@@ -56,6 +58,9 @@
     phoneKeyInput: "",
     phoneKey: null,
     flowCountry: DEFAULT_FLOW_COUNTRY,
+    payUrlMode: DEFAULT_PAY_URL_MODE,
+    lastLongPayUrl: "",
+    lastShortPayUrl: "",
     jpSmsCdk: DEFAULT_JP_SMS_CDK,
     lastPhoneCode: "",
     lastPaypalEmail: "",
@@ -542,10 +547,23 @@
     return country === "JP" ? "JP" : "US";
   }
 
+  function normalizePayUrlMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    if (mode === "short") return "short";
+    if (mode === "auto") return "auto";
+    return DEFAULT_PAY_URL_MODE;
+  }
+
   function getFlowCountry() {
     const input = document.getElementById("flowCountrySelect");
     state.flowCountry = normalizeFlowCountry(input ? input.value : state.flowCountry);
     return state.flowCountry;
+  }
+
+  function getPayUrlMode() {
+    const input = document.getElementById("payUrlModeSelect");
+    state.payUrlMode = normalizePayUrlMode(input ? input.value : state.payUrlMode);
+    return state.payUrlMode;
   }
 
   function getJpSmsCdkInput() {
@@ -766,10 +784,20 @@
       });
       const data = await resp.json();
       const paymentLink = data && (data.url || data.stripe_hosted_url || data.checkout_url) || null;
+      const checkoutSessionId = data && (
+        data.checkout_session_id ||
+        data.checkoutSessionId ||
+        data.session_id ||
+        data.sessionId ||
+        data.id
+      ) || "";
       return {
         ok: resp.ok && Boolean(paymentLink),
         accessToken,
         paymentLink,
+        longPaymentLink: paymentLink,
+        checkoutSessionId,
+        shortPaymentLink: checkoutSessionId ? `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId}` : "",
         error: resp.ok ? "" : `HTTP ${resp.status}`
       };
     } catch (e) {
@@ -1270,6 +1298,87 @@
     return lastResult || { ok: false, error: "未返回支付链接任务结果" };
   }
 
+  function getCheckoutLongPaymentLink(result) {
+    return String(result && (result.longPaymentLink || result.paymentLink) || "").trim();
+  }
+
+  function getCheckoutShortPaymentLink(result) {
+    const explicitShortLink = String(result && result.shortPaymentLink || "").trim();
+    if (explicitShortLink) {
+      return explicitShortLink;
+    }
+    const checkoutSessionId = String(result && result.checkoutSessionId || "").trim();
+    return checkoutSessionId ? `${SHORT_PAY_URL_PREFIX}${checkoutSessionId}` : "";
+  }
+
+  function choosePaymentLinkForMode(result, mode) {
+    const normalizedMode = normalizePayUrlMode(mode);
+    const longLink = getCheckoutLongPaymentLink(result);
+    const shortLink = getCheckoutShortPaymentLink(result);
+    if (normalizedMode === "short") {
+      return shortLink || longLink;
+    }
+    return longLink || shortLink;
+  }
+
+  function chooseStoredPaymentLinkForMode(mode) {
+    const normalizedMode = normalizePayUrlMode(mode);
+    const longLink = String(state.lastLongPayUrl || "").trim();
+    const shortLink = String(state.lastShortPayUrl || "").trim();
+    if (normalizedMode === "short") {
+      return shortLink || longLink;
+    }
+    return longLink || shortLink;
+  }
+
+  async function applyCheckoutLinkResult(result, options = {}) {
+    const mode = normalizePayUrlMode(options.mode || getPayUrlMode());
+    const longLink = getCheckoutLongPaymentLink(result);
+    const shortLink = getCheckoutShortPaymentLink(result);
+    const selectedLink = choosePaymentLinkForMode(result, mode);
+    if (!selectedLink) {
+      throw new Error("支付链接响应缺少长链和短链");
+    }
+
+    state.lastLongPayUrl = longLink;
+    state.lastShortPayUrl = shortLink;
+    state.payUrlMode = mode;
+    document.getElementById("payUrlInput").value = selectedLink;
+    await persistState();
+    if (mode === "short") {
+      logMessage(`支付链接获取成功，已选择短链: ${selectedLink}`);
+    } else if (mode === "auto") {
+      logMessage(`支付链接获取成功，自动模式先使用长链: ${selectedLink}`);
+    } else {
+      logMessage(`支付链接获取成功，已选择长链: ${selectedLink}`);
+    }
+    if (!shortLink) {
+      logMessage("支付链接响应未返回 checkout_session_id，短链不可用");
+    }
+    return selectedLink;
+  }
+
+  async function requestCheckoutLinkFromNewAutomationWindow(countrySel, closeReason) {
+    let automationWindowId = null;
+    try {
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
+      automationWindowId = automationWindow.windowId;
+      const tab = automationWindow.tab;
+      logMessage("已打开窗口，准备在打开的窗口里获取支付链接");
+
+      if (!(await waitForChatGptAfterRegistration(tab.id))) {
+        return { ok: false, error: "打开的窗口未成功到达 chatgpt.com" };
+      }
+
+      return await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
+    } finally {
+      await closeAutomationWindow(automationWindowId);
+      if (closeReason) {
+        logMessage(closeReason);
+      }
+    }
+  }
+
   async function createTabInActiveWindow(url) {
     let tab = null;
     try {
@@ -1498,15 +1607,13 @@
         return { ok: false };
       }
 
-      document.getElementById("payUrlInput").value = result.paymentLink;
-      await persistState();
-      logMessage("支付链接获取成功: " + result.paymentLink);
+      const selectedPaymentLink = await applyCheckoutLinkResult(result);
       await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("正在提交到第三方接口...");
       const thirdPartyResult = await submitThirdPartyAccount({
         account: registration.email,
         accessToken: result.accessToken,
-        payurl: result.paymentLink
+        payurl: selectedPaymentLink
       });
       if (thirdPartyResult.ok) {
         uploadedThirdPartyAccount = registration.email;
@@ -1515,7 +1622,10 @@
         logMessage("第三方接口提交失败: " + (thirdPartyResult.error || "未知错误"));
       }
 
-      prepared.payUrl = result.paymentLink;
+      prepared.payUrl = selectedPaymentLink;
+      prepared.longPayUrl = state.lastLongPayUrl;
+      prepared.shortPayUrl = state.lastShortPayUrl;
+      prepared.payUrlMode = state.payUrlMode;
       const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
         currentWindowId: automationWindowId,
         onWindowReopened: (nextWindow) => {
@@ -1601,12 +1711,10 @@
         return { ok: false };
       }
 
-      document.getElementById("payUrlInput").value = result.paymentLink;
-      await persistState();
-      logMessage("支付链接获取成功: " + result.paymentLink);
+      const selectedPaymentLink = await applyCheckoutLinkResult(result);
       await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("已执行到第2步，流程停止");
-      return { ok: true, email: registration.email, paymentLink: result.paymentLink };
+      return { ok: true, email: registration.email, paymentLink: selectedPaymentLink };
     } finally {
       await cleanupAutomationProxy("执行到第2步任务已关闭");
       await closeAutomationWindow(automationWindowId);
@@ -1615,31 +1723,17 @@
 
   async function getPayUrlFromCurrentTab() {
     const countrySel = document.getElementById("country").value;
-    const tab = await getCurrentWindowActiveTab();
-    const currentUrl = String(tab && tab.url || "");
-
-    if (!tab || !tab.id) {
-      logMessage("获取支付链接失败: 未找到当前活动标签页");
-      return { ok: false };
-    }
-
-    if (!currentUrl.startsWith("https://chatgpt.com/") && currentUrl !== "https://chatgpt.com") {
-      logMessage("获取支付链接失败: 请先切换到已登录的 chatgpt.com 页面");
-      return { ok: false };
-    }
 
     setActiveStep(2);
     logMessage(`主动获取支付链接，国家: ${countrySel}`);
-    const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
+    const result = await requestCheckoutLinkFromNewAutomationWindow(countrySel, "获取支付链接窗口已关闭");
     if (!result.ok || !result.paymentLink) {
       logMessage("获取支付链接失败: " + (result.error || "未知错误"));
       return { ok: false };
     }
 
-    document.getElementById("payUrlInput").value = result.paymentLink;
-    await persistState();
-    logMessage("支付链接获取成功: " + result.paymentLink);
-    return { ok: true, paymentLink: result.paymentLink };
+    const selectedPaymentLink = await applyCheckoutLinkResult(result);
+    return { ok: true, paymentLink: selectedPaymentLink };
   }
 
   async function startFromPayUrl() {
@@ -1766,6 +1860,10 @@
         throw new Error("PayURL 不是有效 URL");
       }
     }
+    const payUrlMode = getPayUrlMode();
+    const storedLongPayUrl = String(state.lastLongPayUrl || "").trim();
+    const storedShortPayUrl = String(state.lastShortPayUrl || "").trim();
+    const payUrlMatchesStoredCheckout = Boolean(payUrl && (payUrl === storedLongPayUrl || payUrl === storedShortPayUrl));
     const flowCountry = getFlowCountry();
     logMessage(`准备第3/5步流程国家: ${flowCountry}`);
     const phoneKey = await preparePhoneKeyForFlow(flowCountry);
@@ -1789,6 +1887,9 @@
       phoneKey,
       phone: preparedPhone,
       payUrl,
+      longPayUrl: payUrlMatchesStoredCheckout ? storedLongPayUrl : payUrl,
+      shortPayUrl: payUrlMatchesStoredCheckout ? storedShortPayUrl : "",
+      payUrlMode,
       settings: sanitizeFillSettings(state.fillSettings),
       paypalEmail,
       randomCardEnabled: Boolean(state.randomCardEnabled)
@@ -2094,6 +2195,27 @@
     }
     await applyCurrentIpLocationToPrepared(prepared);
     await updateTabUrl(tabId, prepared.payUrl);
+    return runPayPalFlowFromCurrentPayUrlWithFallback(tabId, prepared);
+  }
+
+  async function runPayPalFlowFromCurrentPayUrlWithFallback(tabId, prepared) {
+    const firstResult = await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+    if (firstResult || normalizePayUrlMode(prepared && prepared.payUrlMode) !== "auto") {
+      return firstResult;
+    }
+
+    const currentPayUrl = String(prepared && prepared.payUrl || "").trim();
+    const shortPayUrl = String(prepared && prepared.shortPayUrl || state.lastShortPayUrl || "").trim();
+    if (!shortPayUrl || shortPayUrl === currentPayUrl) {
+      logMessage("自动模式长链失败，但没有可用短链，停止当前任务");
+      return false;
+    }
+
+    logMessage("自动模式长链失败，切换短链重新打开支付链接");
+    prepared.payUrl = shortPayUrl;
+    document.getElementById("payUrlInput").value = shortPayUrl;
+    await persistState();
+    await updateTabUrl(tabId, shortPayUrl);
     return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
 
@@ -2163,6 +2285,7 @@
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
+    await delay()
     const shouldContinue = await ensurePayUrlAmountIsZero(tabId, prepared);
     if (!shouldContinue) {
       return false;
@@ -3671,6 +3794,10 @@
       }
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
+      state.payUrlMode = normalizePayUrlMode(saved.payUrlMode);
+      document.getElementById("payUrlModeSelect").value = state.payUrlMode;
+      state.lastLongPayUrl = typeof saved.lastLongPayUrl === "string" ? saved.lastLongPayUrl : "";
+      state.lastShortPayUrl = typeof saved.lastShortPayUrl === "string" ? saved.lastShortPayUrl : "";
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
@@ -3719,6 +3846,9 @@
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       payUrlInput: document.getElementById("payUrlInput").value,
+      payUrlMode: normalizePayUrlMode(document.getElementById("payUrlModeSelect").value),
+      lastLongPayUrl: state.lastLongPayUrl,
+      lastShortPayUrl: state.lastShortPayUrl,
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
       proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
       webshareApiKey: document.getElementById("webshareApiKeyInput").value,
@@ -3775,6 +3905,15 @@
     });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
+      persistState();
+    });
+    document.getElementById("payUrlModeSelect").addEventListener("change", () => {
+      const mode = getPayUrlMode();
+      const selectedLink = chooseStoredPaymentLinkForMode(mode);
+      if (selectedLink) {
+        document.getElementById("payUrlInput").value = selectedLink;
+        logMessage(`支付链接类型已切换，当前 PayURL 已更新为${mode === "short" ? "短链" : "长链"}`);
+      }
       persistState();
     });
     document.getElementById("jpSmsCdkInput").addEventListener("input", () => {

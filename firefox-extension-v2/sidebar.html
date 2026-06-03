@@ -118,6 +118,12 @@
   <div class="panel">
     <label for="payUrlInput">PayURL</label>
     <input id="payUrlInput" type="url" spellcheck="false" placeholder="https://...">
+    <label for="payUrlModeSelect">支付链接类型</label>
+    <select id="payUrlModeSelect">
+      <option value="long">长链</option>
+      <option value="short">短链</option>
+      <option value="auto">自动：长链失败后短链</option>
+    </select>
     <label for="flowCountrySelect">第3/5步流程国家</label>
     <select id="flowCountrySelect">
       <option value="US">美国 (US)</option>
