@@ -22,6 +22,8 @@
   const POLL_ATTEMPTS = 12;
   const POLL_DELAY_MS = 2500;
   const CHECKOUT_LINK_ATTEMPTS = 3;
+  const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
+  const PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]';
   const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
@@ -1467,26 +1469,23 @@
       const tab = automationWindow.tab;
       logMessage("步骤1: 打开 chatgpt.com");
 
-      const registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+      let registration;
+      try {
+        registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+      } catch (error) {
+        logMessage("注册异常，流程终止: " + formatError(error));
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        return { ok: false };
+      }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
-      let reachedChat = false;
-      for (let i = 0; i < 45; i += 1) {
-        try {
-          const t = await ext.tabs.get(tab.id);
-          if (t.url && t.url.startsWith("https://chatgpt.com")) {
-            reachedChat = true;
-            break;
-          }
-        } catch (_) {}
-        await delay(1500);
-      }
-
-      if (!reachedChat) {
+      if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1495,6 +1494,7 @@
       const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
+        await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1529,14 +1529,18 @@
       return { ok: automationSucceeded };
     } finally {
       await cleanupAutomationProxy("完整流程任务已关闭");
-      if (!automationSucceeded && uploadedThirdPartyAccount && prepared && prepared.payUrlAmountNonZero) {
-        logMessage(`PayURL 金额不是 0，正在删除第三方未绑定账号: ${uploadedThirdPartyAccount}`);
-        const deleteResult = await deleteThirdPartyAccount(uploadedThirdPartyAccount);
-        if (deleteResult.ok) {
-          logMessage(`第三方未绑定账号删除请求成功: ${uploadedThirdPartyAccount}`);
-        } else {
-          logMessage(
-            `第三方未绑定账号删除请求失败: ${uploadedThirdPartyAccount}，${deleteResult.error || "未知错误"}`
+      if (!automationSucceeded && uploadedThirdPartyAccount) {
+        if (prepared && prepared.payUrlAmountZero) {
+          logMessage(`PayURL 金额是 0 元，支付失败也保留第三方账号: ${uploadedThirdPartyAccount}`);
+        } else if (specifiedAccountEntry) {
+          await deleteUploadedThirdPartyAccountAfterFailure(
+            uploadedThirdPartyAccount,
+            "指定账号完整流程失败，正在删除第三方账号"
+          );
+        } else if (prepared && prepared.payUrlAmountNonZero) {
+          await deleteUploadedThirdPartyAccountAfterFailure(
+            uploadedThirdPartyAccount,
+            "PayURL 金额不是 0，正在删除第三方未绑定账号"
           );
         }
       }
@@ -1568,26 +1572,23 @@
       const tab = automationWindow.tab;
       logMessage("步骤1: 打开 chatgpt.com");
 
-      const registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+      let registration;
+      try {
+        registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+      } catch (error) {
+        logMessage("注册异常，流程终止: " + formatError(error));
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        return { ok: false };
+      }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
-      let reachedChat = false;
-      for (let i = 0; i < 45; i += 1) {
-        try {
-          const t = await ext.tabs.get(tab.id);
-          if (t.url && t.url.startsWith("https://chatgpt.com")) {
-            reachedChat = true;
-            break;
-          }
-        } catch (_) {}
-        await delay(1500);
-      }
-
-      if (!reachedChat) {
+      if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
+        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1596,6 +1597,7 @@
       const result = await requestCheckoutLinkWithRetry(() => requestChatGptCheckoutLinkFromTab(tab.id, countrySel));
       if (!result.ok || !result.paymentLink) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
+        await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1844,6 +1846,104 @@
     await removeSpecifiedAccountInput(accountEntry);
   }
 
+  async function removeSpecifiedAccountAfterCheckoutFailure(accountEntry) {
+    if (!accountEntry || !accountEntry.line) {
+      return;
+    }
+    logMessage(`指定注册账号获取支付链接连续 ${CHECKOUT_LINK_ATTEMPTS} 次失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    await removeSpecifiedAccountInput(accountEntry);
+  }
+
+  async function removeSpecifiedAccountAfterRegistrationFailure(accountEntry) {
+    if (!accountEntry || !accountEntry.line) {
+      return;
+    }
+    logMessage(`指定注册账号注册失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    await removeSpecifiedAccountInput(accountEntry);
+  }
+
+  async function deleteUploadedThirdPartyAccountAfterFailure(account, reason) {
+    if (!account) {
+      return;
+    }
+    logMessage(`${reason}: ${account}`);
+    const deleteResult = await deleteThirdPartyAccount(account);
+    if (deleteResult.ok) {
+      logMessage(`第三方账号删除请求成功: ${account}`);
+    } else {
+      logMessage(`第三方账号删除请求失败: ${account}，${deleteResult.error || "未知错误"}`);
+    }
+  }
+
+  async function waitForChatGptAfterRegistration(tabId) {
+    for (let i = 0; i < 45; i += 1) {
+      try {
+        const tab = await ext.tabs.get(tabId);
+        const currentUrl = String(tab.url || "");
+        if (currentUrl.startsWith("https://chatgpt.com")) {
+          return true;
+        }
+        if (currentUrl.startsWith(PASSKEY_ENROLL_URL_PREFIX)) {
+          const clicked = await clickPasskeyEnrollSkipIfPresent(tabId);
+          if (clicked) {
+            logMessage("检测到 passkey 注册页面，已点击跳过");
+          }
+        }
+      } catch (_) {}
+      await delay(1500);
+    }
+    return false;
+  }
+
+  async function clickPasskeyEnrollSkipIfPresent(tabId) {
+    const tab = await ext.tabs.get(tabId);
+    const currentUrl = String(tab.url || "");
+    if (!currentUrl.startsWith(PASSKEY_ENROLL_URL_PREFIX)) {
+      return false;
+    }
+    const clickSkipCode = `
+      (async function() {
+        function delay(ms) {
+          return new Promise(r => setTimeout(r, ms));
+        }
+        function simulateClick(el) {
+          if (!el) return false;
+          el.scrollIntoView({ block: 'center', inline: 'center' });
+          el.focus();
+          const rect = el.getBoundingClientRect();
+          const clientX = rect.left + rect.width / 2;
+          const clientY = rect.top + rect.height / 2;
+          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+            el.dispatchEvent(new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              buttons: type === 'mousedown' ? 1 : 0
+            }));
+          });
+          return true;
+        }
+        const selector = ${JSON.stringify(PASSKEY_ENROLL_SKIP_SELECTOR)};
+        const start = Date.now();
+        while (Date.now() - start < 15000) {
+          const skip = document.querySelector(selector);
+          if (skip) {
+            return simulateClick(skip);
+          }
+          await delay(500);
+        }
+        return false;
+      })();
+    `;
+    return Boolean((await executeScriptAfterPageReady(tabId, {
+      code: clickSkipCode,
+      runAt: "document_idle"
+    }, "跳过 passkey 注册", { loadTimeoutMs: 15000 }))[0]);
+  }
+
   async function removeSpecifiedAccountInput(accountEntry) {
     const usedLine = String(accountEntry && accountEntry.line || "").trim();
     if (!usedLine) {
@@ -2041,11 +2141,17 @@
     logMessage(`PayURL 当前金额: ${amountText}`);
     if (!isZeroCurrencyAmount(amountText)) {
       if (prepared) {
+        prepared.payUrlAmountZero = false;
         prepared.payUrlAmountNonZero = true;
         prepared.payUrlAmountText = amountText;
       }
       logMessage(`PayURL 金额不是 0 元，停止当前任务: ${amountText}`);
       return false;
+    }
+    if (prepared) {
+      prepared.payUrlAmountZero = true;
+      prepared.payUrlAmountNonZero = false;
+      prepared.payUrlAmountText = amountText;
     }
     return true;
   }
