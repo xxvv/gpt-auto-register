@@ -117,7 +117,12 @@
 
   <div class="panel">
     <label for="payUrlInput">PayURL</label>
-    <input id="payUrlInput" type="url" spellcheck="false" placeholder="https://...">
+    <textarea
+      id="payUrlInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="一行一条 PayURL，成功后自动删除当前行&#10;https://..."
+    ></textarea>
     <label for="payUrlModeSelect">支付链接类型</label>
     <select id="payUrlModeSelect">
       <option value="long">长链</option>

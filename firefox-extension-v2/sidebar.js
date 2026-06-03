@@ -72,6 +72,7 @@
     currentIpLocation: null,
     automationBatchRunning: false,
     cancelAutomationBatchRequested: false,
+    payUrlBatchRunning: false,
     runStats: {
       total: 0,
       completed: 0,
@@ -1510,8 +1511,12 @@
   function renderAutomationBatchControls() {
     const startButton = document.getElementById("startBtn");
     const cancelButton = document.getElementById("cancelBatchBtn");
+    const startPayUrlButton = document.getElementById("startPayUrlBtn");
     if (startButton) {
-      startButton.disabled = state.automationBatchRunning;
+      startButton.disabled = state.automationBatchRunning || state.payUrlBatchRunning;
+    }
+    if (startPayUrlButton) {
+      startPayUrlButton.disabled = state.automationBatchRunning || state.payUrlBatchRunning;
     }
     if (cancelButton) {
       cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
@@ -1800,22 +1805,69 @@
   }
 
   async function startFromPayUrl() {
+    if (state.payUrlBatchRunning) {
+      logMessage("PayURL 队列正在执行中");
+      return;
+    }
+
+    const totalPayUrls = getPayUrlEntries().length;
+    if (!totalPayUrls) {
+      logMessage("错误: 请输入 PayURL");
+      return;
+    }
+
+    state.payUrlBatchRunning = true;
+    renderAutomationBatchControls();
+    resetRunStats(totalPayUrls);
+    let completedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
+    try {
+      logMessage(`准备按顺序执行 ${totalPayUrls} 条 PayURL`);
+      for (let index = 1; index <= totalPayUrls; index += 1) {
+        logMessage(`===== PayURL 第 ${index}/${totalPayUrls} 条开始 =====`);
+        let result = { ok: false };
+        try {
+          result = await runSinglePayUrlPayment();
+        } catch (error) {
+          logMessage(`PayURL 第 ${index}/${totalPayUrls} 条异常结束: ${formatError(error)}`);
+        }
+        completedCount = index;
+        if (result && result.ok) {
+          successCount += 1;
+          updateRunStats("success");
+          logMessage(`===== PayURL 第 ${index}/${totalPayUrls} 条成功结束 =====`);
+        } else {
+          failCount += 1;
+          updateRunStats("fail");
+          logMessage(`PayURL 第 ${index}/${totalPayUrls} 条失败，保留当前 PayURL 并停止队列`);
+          break;
+        }
+      }
+      logMessage(`PayURL 队列执行完成，已处理 ${completedCount}/${totalPayUrls} 条，成功 ${successCount} 条，失败 ${failCount} 条`);
+    } finally {
+      state.payUrlBatchRunning = false;
+      renderAutomationBatchControls();
+    }
+  }
+
+  async function runSinglePayUrlPayment() {
     let prepared;
     try {
       prepared = await preparePaymentInputs(true);
     } catch (error) {
       logMessage("错误: " + formatError(error));
-      return;
+      return { ok: false };
     }
 
-    logMessage("从 PayURL 开始支付流程...");
+    logMessage(`从 PayURL 开始支付流程: ${prepared.payUrl}`);
     let automationWindowId = null;
     try {
       try {
         await ensureProxyForStage("第三步");
       } catch (error) {
         logMessage("第三步代理设置失败，流程终止: " + formatError(error));
-        return;
+        return { ok: false };
       }
       const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
       automationWindowId = automationWindow.windowId;
@@ -1828,7 +1880,9 @@
       });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
+        await removeUsedPayUrlInput(prepared);
       }
+      return { ok: Boolean(payFlowResult) };
     } finally {
       await cleanupAutomationProxy("PayURL 任务已关闭");
       await closeAutomationWindow(automationWindowId);
@@ -1903,7 +1957,8 @@
 
   async function preparePaymentInputs(requirePayUrl, options = {}) {
     const cardEntry = getNextCardInputEntry(document.getElementById("cardInput").value);
-    const payUrl = document.getElementById("payUrlInput").value.trim();
+    const payUrlEntry = getNextPayUrlInputEntry(document.getElementById("payUrlInput").value);
+    const payUrl = payUrlEntry ? payUrlEntry.url : "";
     if (!cardEntry) {
       throw new Error("请输入卡片信息");
     }
@@ -1950,6 +2005,7 @@
       phoneKey,
       phone: preparedPhone,
       payUrl,
+      payUrlInputLine: payUrlEntry ? payUrlEntry.line : "",
       longPayUrl: payUrlMatchesStoredCheckout ? storedLongPayUrl : payUrl,
       shortPayUrl: payUrlMatchesStoredCheckout ? storedShortPayUrl : "",
       payUrlMode,
@@ -1968,6 +2024,33 @@
       }
     }
     return null;
+  }
+
+  function getPayUrlEntries(rawInput) {
+    const input = rawInput === undefined
+      ? document.getElementById("payUrlInput").value
+      : rawInput;
+    return String(input || "")
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+  }
+
+  function getNextPayUrlInputEntry(rawInput) {
+    const payUrls = getPayUrlEntries(rawInput);
+    if (!payUrls.length) {
+      return null;
+    }
+    const payUrl = payUrls[0];
+    try {
+      new URL(payUrl);
+    } catch (error) {
+      throw new Error(`PayURL 不是有效 URL: ${payUrl}`);
+    }
+    return {
+      line: payUrl,
+      url: payUrl
+    };
   }
 
   function getSpecifiedAccountEntries(rawInput) {
@@ -2169,6 +2252,34 @@
     logMessage("注册成功，已删除本次使用的卡片信息");
   }
 
+  async function removeUsedPayUrlInput(prepared) {
+    const usedLine = String(prepared && prepared.payUrlInputLine || prepared && prepared.payUrl || "").trim();
+    if (!usedLine) {
+      return;
+    }
+    const payUrlInput = document.getElementById("payUrlInput");
+    const lines = String(payUrlInput.value || "").split(/\r?\n/);
+    const remainingLines = [];
+    let removed = false;
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (!removed && trimmed === usedLine) {
+        removed = true;
+        continue;
+      }
+      if (trimmed) {
+        remainingLines.push(trimmed);
+      }
+    }
+    if (!removed) {
+      logMessage("未找到本次使用的 PayURL，PayURL 列表未修改");
+      return;
+    }
+    payUrlInput.value = remainingLines.join("\n");
+    await persistState();
+    logMessage(`支付成功，已删除本次使用的 PayURL: ${usedLine}`);
+  }
+
   async function removeInvalidPhoneKeyInput(prepared, reason) {
     const usedLine = String(prepared && prepared.phoneKey && prepared.phoneKey.raw || "").trim();
     if (!usedLine) {
@@ -2276,8 +2387,6 @@
 
     logMessage("自动模式长链失败，切换短链重新打开支付链接");
     prepared.payUrl = shortPayUrl;
-    document.getElementById("payUrlInput").value = shortPayUrl;
-    await persistState();
     await updateTabUrl(tabId, shortPayUrl);
     return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
@@ -2559,7 +2668,7 @@
 
   async function finishPayPalConsent(tabId, prepared) {
     logMessage("等待 PayPal Hermes 授权页面...");
-    await waitForPayPalHermesPage(tabId, 30000);
+    await waitForPayPalHermesPage(tabId, 120000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
     await delay();
     await clickPageElement(tabId, {
@@ -2580,13 +2689,15 @@
   }
 
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
+    await delay(10000);
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
+    const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
     let moneyFlowModalClosed = false;
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
-      if (url.startsWith(hermesPrefix)) {
+      if (url.startsWith(hermesPrefix) || url.startsWith(hermes2)) {
         return url;
       }
       if (!moneyFlowModalClosed && isPayPalMoneyFlowAccountsNewUrl(url)) {
@@ -4012,9 +4123,11 @@
     document.getElementById("payUrlModeSelect").addEventListener("change", () => {
       const mode = getPayUrlMode();
       const selectedLink = chooseStoredPaymentLinkForMode(mode);
-      if (selectedLink) {
+      if (selectedLink && getPayUrlEntries().length <= 1) {
         document.getElementById("payUrlInput").value = selectedLink;
         logMessage(`支付链接类型已切换，当前 PayURL 已更新为${mode === "short" ? "短链" : "长链"}`);
+      } else if (selectedLink) {
+        logMessage("支付链接类型已切换，当前 PayURL 队列保持不变");
       }
       persistState();
     });
