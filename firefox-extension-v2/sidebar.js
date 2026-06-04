@@ -2594,17 +2594,46 @@
     }
     await ensureContentScript(tabId);
     await delay(2000);
-    logMessage("短链 checkout 页面已加载完成，尝试点击 PayPal tab");
-    const paypalTabResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
-      selector: "#paypal-tab",
-      timeoutMs: 3000
-    }, { allFrames: true }).catch((error) => {
-      logMessage(`短链 checkout PayPal tab 点击跳过: ${formatError(error)}`);
-      return null;
-    });
-    const paypalTabClicked = (Array.isArray(paypalTabResult) ? paypalTabResult : [paypalTabResult])
-      .some((result) => result && result.ok);
-    if (!paypalTabClicked) {
+    const waitForShortCheckoutSelector = async (selector, label, timeoutMs = 60000) => {
+      const start = Date.now();
+      let lastError = "";
+      while (Date.now() - start < timeoutMs) {
+        const result = await executePageFunction(tabId, "__gptAutoRegisterWaitForSelector", {
+          selector,
+          timeoutMs: 1000
+        }, {
+          allFrames: true,
+          loadTimeoutMs: 10000,
+          scriptableTimeoutMs: 10000
+        }).catch((error) => {
+          lastError = formatError(error);
+          return null;
+        });
+        const found = (Array.isArray(result) ? result : [result]).some((item) => item && item.ok);
+        if (found) {
+          return true;
+        }
+        await delay(500);
+      }
+      logMessage(`${label} 等待超时${lastError ? `: ${lastError}` : ""}`);
+      return false;
+    };
+    logMessage("短链 checkout 页面已加载完成，等待 PayPal tab");
+    const paypalTabExists = await waitForShortCheckoutSelector("#paypal-tab", "短链 checkout PayPal tab", 60000);
+    if (paypalTabExists) {
+      const paypalTabResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
+        selector: "#paypal-tab",
+        timeoutMs: 3000
+      }, { allFrames: true }).catch((error) => {
+        logMessage(`短链 checkout PayPal tab 点击跳过: ${formatError(error)}`);
+        return null;
+      });
+      const paypalTabClicked = (Array.isArray(paypalTabResult) ? paypalTabResult : [paypalTabResult])
+        .some((result) => result && result.ok);
+      if (!paypalTabClicked) {
+        logMessage("短链 checkout PayPal tab 已出现但点击失败，继续填写账单表单");
+      }
+    } else {
       logMessage("短链 checkout 未找到 PayPal tab，继续填写账单表单");
     }
     await delay(2000);
@@ -2615,9 +2644,17 @@
       [prepared.card.firstName, prepared.card.lastName].filter(Boolean).join(" ")
     ) || "").trim() || generateRandomName();
     const fillShortCheckoutField = async (functionName, payload, label) => {
+      const selector = String((payload && payload.selector) || "").trim();
+      if (selector) {
+        const exists = await waitForShortCheckoutSelector(selector, label, 60000);
+        if (!exists) {
+          logMessage(`${label} 未找到，继续`);
+          return false;
+        }
+      }
       const result = await executePageFunction(tabId, functionName, {
         ...payload,
-        timeoutMs: 1
+        timeoutMs: 3000
       }, { allFrames: true }).catch((error) => {
         logMessage(`${label} 跳过: ${formatError(error)}`);
         return null;
@@ -2657,13 +2694,18 @@
       value: "Jingumae",
       payUrlStyle: true
     }, "短链 checkout 账单地址字段");
-
-    logMessage("短链 checkout 表单已尝试填充，点击提交");
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    await delay();
+    logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
+    const submitResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
       selector: 'button[type="submit"]',
       timeoutMs: 30000
-    }, "短链 checkout 未找到提交按钮", { allFrames: true });
-    logMessage("短链 checkout 页面已提交");
+    }, { allFrames: true }).catch((error) => {
+      logMessage(`短链 checkout 提交按钮点击跳过: ${formatError(error)}`);
+      return null;
+    });
+    const submitClicked = (Array.isArray(submitResult) ? submitResult : [submitResult])
+      .some((result) => result && result.ok);
+    logMessage(submitClicked ? "短链 checkout 已点击提交按钮" : "短链 checkout 未找到提交按钮，继续");
     return true;
   }
 
@@ -2760,22 +2802,27 @@
     }
     logMessage("点击了按钮");
     await delay();
-    if (isShortPayUrlFlow(prepared)) {
-      logMessage("短链流程跳过 PayPal 邮箱输入和下一步点击");
-      return;
-    }
+    
     logMessage("等待插件邮箱输入框");
-    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+    const loginEmailResult = await executePageFunction(tabId, "__gptAutoRegisterSetValue", {
       selector: '#login_email, #onboardingFlowEmail',
       value: prepared.paypalEmail,
       type: true,
-      timeoutMs: 30000
-    }, "未找到 PayPal login_email");
-    logMessage(`已输入 PayPal 邮箱: ${prepared.paypalEmail}`);
-    await clickPageElement(tabId, {
-      selector: "button",
-      timeoutMs: 30000
-    }, "PayPal 页面未找到下一步按钮");
+      timeoutMs: 10000
+    });
+    if (loginEmailResult && loginEmailResult.ok) {
+      logMessage(`已输入 PayPal 邮箱: ${prepared.paypalEmail}`);
+      try {
+        await clickPageElement(tabId, {
+          selector: "button",
+          timeoutMs: 30000
+        }, "PayPal 页面未找到下一步按钮");
+      } catch (error) {
+        logMessage("PayPal 下一步按钮未找到，跳过: " + formatError(error));
+      }
+    } else {
+      logMessage("未找到 PayPal login_email，跳过邮箱输入");
+    }
   }
 
   async function runPayPalSignupPage(tabId, prepared) {
@@ -2895,7 +2942,8 @@
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
-    logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
+    const finalUrl2 = await waitForUrlExact(tabId, "https://chatgpt.com", 120000);
+    logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl2}`);
   }
 
   function isPayPalMoneyFlowAccountsNewUrl(url) {
@@ -2919,7 +2967,7 @@
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
-    await delay(20000);
+    await delay(30000);
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
