@@ -29,7 +29,6 @@
   const DEFAULT_PAY_URL_MODE = "long";
   const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
   const DEFAULT_JP_SMS_CDK = "";
-  const SHORT_PAY_URL_PREFIX = "https://chatgpt.com/checkout/openai_llc/";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
@@ -551,7 +550,6 @@
   function normalizePayUrlMode(value) {
     const mode = String(value || "").trim().toLowerCase();
     if (mode === "short") return "short";
-    if (mode === "auto") return "auto";
     return DEFAULT_PAY_URL_MODE;
   }
 
@@ -766,41 +764,197 @@
       if (!accessToken) return { ok: false, error: "accessToken: null" };
 
       const config = checkoutRegionConfig[checkoutRegion] || checkoutRegionConfig.ID;
-      const payload = {
+      const md5Hex = (value) => {
+        const rotateLeft = (num, cnt) => (num << cnt) | (num >>> (32 - cnt));
+        const addUnsigned = (a, b) => {
+          const lsw = (a & 0xffff) + (b & 0xffff);
+          const msw = (a >>> 16) + (b >>> 16) + (lsw >>> 16);
+          return (msw << 16) | (lsw & 0xffff);
+        };
+        const cmn = (q, a, b, x, s, t) => addUnsigned(rotateLeft(addUnsigned(addUnsigned(a, q), addUnsigned(x, t)), s), b);
+        const ff = (a, b, c, d, x, s, t) => cmn((b & c) | ((~b) & d), a, b, x, s, t);
+        const gg = (a, b, c, d, x, s, t) => cmn((b & d) | (c & (~d)), a, b, x, s, t);
+        const hh = (a, b, c, d, x, s, t) => cmn(b ^ c ^ d, a, b, x, s, t);
+        const ii = (a, b, c, d, x, s, t) => cmn(c ^ (b | (~d)), a, b, x, s, t);
+        const text = unescape(encodeURIComponent(String(value || "")));
+        const words = [];
+        for (let i = 0; i < text.length; i += 1) {
+          words[i >> 2] = words[i >> 2] || 0;
+          words[i >> 2] |= text.charCodeAt(i) << ((i % 4) * 8);
+        }
+        const bitLength = text.length * 8;
+        words[bitLength >> 5] = words[bitLength >> 5] || 0;
+        words[bitLength >> 5] |= 0x80 << (bitLength % 32);
+        words[(((bitLength + 64) >>> 9) << 4) + 14] = bitLength;
+
+        let a = 0x67452301;
+        let b = 0xefcdab89;
+        let c = 0x98badcfe;
+        let d = 0x10325476;
+        for (let i = 0; i < words.length; i += 16) {
+          const aa = a;
+          const bb = b;
+          const cc = c;
+          const dd = d;
+          a = ff(a, b, c, d, words[i + 0] || 0, 7, 0xd76aa478);
+          d = ff(d, a, b, c, words[i + 1] || 0, 12, 0xe8c7b756);
+          c = ff(c, d, a, b, words[i + 2] || 0, 17, 0x242070db);
+          b = ff(b, c, d, a, words[i + 3] || 0, 22, 0xc1bdceee);
+          a = ff(a, b, c, d, words[i + 4] || 0, 7, 0xf57c0faf);
+          d = ff(d, a, b, c, words[i + 5] || 0, 12, 0x4787c62a);
+          c = ff(c, d, a, b, words[i + 6] || 0, 17, 0xa8304613);
+          b = ff(b, c, d, a, words[i + 7] || 0, 22, 0xfd469501);
+          a = ff(a, b, c, d, words[i + 8] || 0, 7, 0x698098d8);
+          d = ff(d, a, b, c, words[i + 9] || 0, 12, 0x8b44f7af);
+          c = ff(c, d, a, b, words[i + 10] || 0, 17, 0xffff5bb1);
+          b = ff(b, c, d, a, words[i + 11] || 0, 22, 0x895cd7be);
+          a = ff(a, b, c, d, words[i + 12] || 0, 7, 0x6b901122);
+          d = ff(d, a, b, c, words[i + 13] || 0, 12, 0xfd987193);
+          c = ff(c, d, a, b, words[i + 14] || 0, 17, 0xa679438e);
+          b = ff(b, c, d, a, words[i + 15] || 0, 22, 0x49b40821);
+          a = gg(a, b, c, d, words[i + 1] || 0, 5, 0xf61e2562);
+          d = gg(d, a, b, c, words[i + 6] || 0, 9, 0xc040b340);
+          c = gg(c, d, a, b, words[i + 11] || 0, 14, 0x265e5a51);
+          b = gg(b, c, d, a, words[i + 0] || 0, 20, 0xe9b6c7aa);
+          a = gg(a, b, c, d, words[i + 5] || 0, 5, 0xd62f105d);
+          d = gg(d, a, b, c, words[i + 10] || 0, 9, 0x02441453);
+          c = gg(c, d, a, b, words[i + 15] || 0, 14, 0xd8a1e681);
+          b = gg(b, c, d, a, words[i + 4] || 0, 20, 0xe7d3fbc8);
+          a = gg(a, b, c, d, words[i + 9] || 0, 5, 0x21e1cde6);
+          d = gg(d, a, b, c, words[i + 14] || 0, 9, 0xc33707d6);
+          c = gg(c, d, a, b, words[i + 3] || 0, 14, 0xf4d50d87);
+          b = gg(b, c, d, a, words[i + 8] || 0, 20, 0x455a14ed);
+          a = gg(a, b, c, d, words[i + 13] || 0, 5, 0xa9e3e905);
+          d = gg(d, a, b, c, words[i + 2] || 0, 9, 0xfcefa3f8);
+          c = gg(c, d, a, b, words[i + 7] || 0, 14, 0x676f02d9);
+          b = gg(b, c, d, a, words[i + 12] || 0, 20, 0x8d2a4c8a);
+          a = hh(a, b, c, d, words[i + 5] || 0, 4, 0xfffa3942);
+          d = hh(d, a, b, c, words[i + 8] || 0, 11, 0x8771f681);
+          c = hh(c, d, a, b, words[i + 11] || 0, 16, 0x6d9d6122);
+          b = hh(b, c, d, a, words[i + 14] || 0, 23, 0xfde5380c);
+          a = hh(a, b, c, d, words[i + 1] || 0, 4, 0xa4beea44);
+          d = hh(d, a, b, c, words[i + 4] || 0, 11, 0x4bdecfa9);
+          c = hh(c, d, a, b, words[i + 7] || 0, 16, 0xf6bb4b60);
+          b = hh(b, c, d, a, words[i + 10] || 0, 23, 0xbebfbc70);
+          a = hh(a, b, c, d, words[i + 13] || 0, 4, 0x289b7ec6);
+          d = hh(d, a, b, c, words[i + 0] || 0, 11, 0xeaa127fa);
+          c = hh(c, d, a, b, words[i + 3] || 0, 16, 0xd4ef3085);
+          b = hh(b, c, d, a, words[i + 6] || 0, 23, 0x04881d05);
+          a = hh(a, b, c, d, words[i + 9] || 0, 4, 0xd9d4d039);
+          d = hh(d, a, b, c, words[i + 12] || 0, 11, 0xe6db99e5);
+          c = hh(c, d, a, b, words[i + 15] || 0, 16, 0x1fa27cf8);
+          b = hh(b, c, d, a, words[i + 2] || 0, 23, 0xc4ac5665);
+          a = ii(a, b, c, d, words[i + 0] || 0, 6, 0xf4292244);
+          d = ii(d, a, b, c, words[i + 7] || 0, 10, 0x432aff97);
+          c = ii(c, d, a, b, words[i + 14] || 0, 15, 0xab9423a7);
+          b = ii(b, c, d, a, words[i + 5] || 0, 21, 0xfc93a039);
+          a = ii(a, b, c, d, words[i + 12] || 0, 6, 0x655b59c3);
+          d = ii(d, a, b, c, words[i + 3] || 0, 10, 0x8f0ccc92);
+          c = ii(c, d, a, b, words[i + 10] || 0, 15, 0xffeff47d);
+          b = ii(b, c, d, a, words[i + 1] || 0, 21, 0x85845dd1);
+          a = ii(a, b, c, d, words[i + 8] || 0, 6, 0x6fa87e4f);
+          d = ii(d, a, b, c, words[i + 15] || 0, 10, 0xfe2ce6e0);
+          c = ii(c, d, a, b, words[i + 6] || 0, 15, 0xa3014314);
+          b = ii(b, c, d, a, words[i + 13] || 0, 21, 0x4e0811a1);
+          a = ii(a, b, c, d, words[i + 4] || 0, 6, 0xf7537e82);
+          d = ii(d, a, b, c, words[i + 11] || 0, 10, 0xbd3af235);
+          c = ii(c, d, a, b, words[i + 2] || 0, 15, 0x2ad7d2bb);
+          b = ii(b, c, d, a, words[i + 9] || 0, 21, 0xeb86d391);
+          a = addUnsigned(a, aa);
+          b = addUnsigned(b, bb);
+          c = addUnsigned(c, cc);
+          d = addUnsigned(d, dd);
+        }
+        const wordToHex = (num) => {
+          let hex = "";
+          for (let i = 0; i <= 3; i += 1) {
+            hex += (`0${((num >>> (i * 8)) & 0xff).toString(16)}`).slice(-2);
+          }
+          return hex;
+        };
+        return `${wordToHex(a)}${wordToHex(b)}${wordToHex(c)}${wordToHex(d)}`;
+      };
+      const basePayload = {
         plan_name: "chatgptplusplan",
         billing_details: { country: config.country, currency: config.currency },
         cancel_url: "https://chatgpt.com/#pricing",
-        promo_campaign: { promo_campaign_id: "plus-1-month-free", is_coupon_from_query_param: false },
-        checkout_ui_mode: "hosted"
+        promo_campaign: { promo_campaign_id: "plus-1-month-free", is_coupon_from_query_param: false }
       };
 
-      const resp = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
+      const requestCheckout = async (payload) => {
+        const resp = await fetch("https://chatgpt.com/backend-api/payments/checkout", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        let data = null;
+        try {
+          data = await resp.json();
+        } catch (error) {
+          data = null;
+        }
+        return { resp, data };
+      };
+      const requestShortCheckout = async () => {
+        const resp = await fetch("https://pay.chatai.codes/api/checkout", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            accessToken,
+            tokenHash: md5Hex(accessToken),
+            timestamp: btoa(String(Date.now())),
+            planName: "chatgptplusplan",
+            uiMode: "custom",
+            region: config.country,
+            workspaceName: "MyTeam",
+            seatQuantity: 5
+          })
+        });
+        let data = null;
+        try {
+          data = await resp.json();
+        } catch (error) {
+          data = null;
+        }
+        const link = String(data && data.link || "").trim();
+        return { resp, data, link };
+      };
+
+      const hostedCheckout = await requestCheckout({
+        ...basePayload,
+        checkout_ui_mode: "hosted"
       });
-      const data = await resp.json();
-      const paymentLink = data && (data.url || data.stripe_hosted_url || data.checkout_url) || null;
-      const checkoutSessionId = data && (
-        data.checkout_session_id ||
-        data.checkoutSessionId ||
-        data.session_id ||
-        data.sessionId ||
-        data.id
-      ) || "";
-      const shortPaymentLink = checkoutSessionId ? `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId}` : "";
+      const paymentLink = hostedCheckout.data && (
+        hostedCheckout.data.url ||
+        hostedCheckout.data.stripe_hosted_url ||
+        hostedCheckout.data.checkout_url
+      ) || null;
+
+      const shortCheckout = await requestShortCheckout();
+      const shortPaymentLink = shortCheckout.link;
+
+      const ok = Boolean(
+        hostedCheckout.resp.ok && paymentLink ||
+        shortCheckout.resp.ok && shortPaymentLink
+      );
+      const error = ok
+        ? ""
+        : `hosted HTTP ${hostedCheckout.resp.status}, short HTTP ${shortCheckout.resp.status}`;
+
       return {
-        ok: resp.ok && Boolean(paymentLink || shortPaymentLink),
+        ok,
         accessToken,
         paymentLink,
         longPaymentLink: paymentLink,
-        checkoutSessionId,
+        checkoutSessionId: "",
         shortPaymentLink,
-        error: resp.ok ? (paymentLink || shortPaymentLink ? "" : "支付链接响应缺少长链和短链") : `HTTP ${resp.status}`
+        error
       };
     } catch (e) {
       return { ok: false, error: e.message || "checkout failed" };
@@ -1319,12 +1473,7 @@
   }
 
   function getCheckoutShortPaymentLink(result) {
-    const explicitShortLink = String(result && result.shortPaymentLink || "").trim();
-    if (explicitShortLink) {
-      return explicitShortLink;
-    }
-    const checkoutSessionId = String(result && result.checkoutSessionId || "").trim();
-    return checkoutSessionId ? `${SHORT_PAY_URL_PREFIX}${checkoutSessionId}` : "";
+    return String(result && result.shortPaymentLink || "").trim();
   }
 
   function hasCheckoutPaymentLink(result) {
@@ -1336,9 +1485,9 @@
     const longLink = getCheckoutLongPaymentLink(result);
     const shortLink = getCheckoutShortPaymentLink(result);
     if (normalizedMode === "short") {
-      return shortLink || longLink;
+      return shortLink;
     }
-    return longLink || shortLink;
+    return longLink;
   }
 
   function chooseStoredPaymentLinkForMode(mode) {
@@ -1346,9 +1495,9 @@
     const longLink = String(state.lastLongPayUrl || "").trim();
     const shortLink = String(state.lastShortPayUrl || "").trim();
     if (normalizedMode === "short") {
-      return shortLink || longLink;
+      return shortLink;
     }
-    return longLink || shortLink;
+    return longLink;
   }
 
   async function applyCheckoutLinkResult(result, options = {}) {
@@ -1357,7 +1506,7 @@
     const shortLink = getCheckoutShortPaymentLink(result);
     const selectedLink = choosePaymentLinkForMode(result, mode);
     if (!selectedLink) {
-      throw new Error("支付链接响应缺少长链和短链");
+      throw new Error(mode === "short" ? "支付链接响应缺少短链" : "支付链接响应缺少长链");
     }
 
     state.lastLongPayUrl = longLink;
@@ -1367,19 +1516,11 @@
     await persistState();
     if (mode === "short") {
       logMessage(`支付链接获取成功，已选择短链: ${selectedLink}`);
-    } else if (mode === "auto") {
-      if (longLink) {
-        logMessage(`支付链接获取成功，自动模式先使用长链: ${selectedLink}`);
-      } else {
-        logMessage(`支付链接获取成功，自动模式未返回长链，直接使用短链: ${selectedLink}`);
-      }
-    } else if (!longLink && shortLink) {
-      logMessage(`支付链接获取成功，未返回长链，已使用短链: ${selectedLink}`);
     } else {
       logMessage(`支付链接获取成功，已选择长链: ${selectedLink}`);
     }
     if (!shortLink) {
-      logMessage("支付链接响应未返回 checkout_session_id，短链不可用");
+      logMessage("短链接口未返回可用短链");
     }
     return selectedLink;
   }
@@ -2340,35 +2481,6 @@
     }
     await applyCurrentIpLocationToPrepared(prepared);
     await updateTabUrl(tabId, prepared.payUrl);
-    return runPayPalFlowFromCurrentPayUrlWithFallback(tabId, prepared);
-  }
-
-  async function runPayPalFlowFromCurrentPayUrlWithFallback(tabId, prepared) {
-    let firstResult = false;
-    let firstError = null;
-    try {
-      firstResult = await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
-    } catch (error) {
-      if (isPayPalCaptchaButtonNotFoundError(error) || normalizePayUrlMode(prepared && prepared.payUrlMode) !== "auto") {
-        throw error;
-      }
-      firstError = error;
-      logMessage(`自动模式长链流程异常: ${formatError(error)}`);
-    }
-    if (firstResult || normalizePayUrlMode(prepared && prepared.payUrlMode) !== "auto") {
-      return firstResult;
-    }
-
-    const currentPayUrl = String(prepared && prepared.payUrl || "").trim();
-    const shortPayUrl = String(prepared && prepared.shortPayUrl || state.lastShortPayUrl || "").trim();
-    if (!shortPayUrl || shortPayUrl === currentPayUrl) {
-      logMessage(`自动模式长链失败${firstError ? `: ${formatError(firstError)}` : ""}，但没有可用短链，停止当前任务`);
-      return false;
-    }
-
-    logMessage(`自动模式长链失败${firstError ? `: ${formatError(firstError)}` : ""}，切换短链重新打开支付链接`);
-    prepared.payUrl = shortPayUrl;
-    await updateTabUrl(tabId, shortPayUrl);
     return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
   }
 
@@ -2445,11 +2557,113 @@
     return true;
   }
 
+  function isChatGptShortCheckoutUrl(url) {
+    try {
+      const parsed = new URL(String(url || ""));
+      return parsed.hostname === "chatgpt.com" &&
+        parsed.pathname.replace(/\/+$/, "").startsWith("/checkout");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isShortPayUrlFlow(prepared) {
+    return normalizePayUrlMode(prepared && prepared.payUrlMode) === "short" ||
+      isChatGptShortCheckoutUrl(prepared && prepared.payUrl);
+  }
+
+  async function runShortCheckoutBillingPage(tabId, prepared) {
+    logMessage("检测到 ChatGPT 短链 checkout，等待页面加载完成");
+    await waitForUrlPrefix(tabId, "https://chatgpt.com/checkout", 120000);
+    const pageLoaded = await waitForPageComplete(tabId, 120000);
+    if (!pageLoaded) {
+      logMessage("短链 checkout 页面未加载完成，停止当前任务");
+      return false;
+    }
+    await ensureContentScript(tabId);
+    await delay(2000);
+    logMessage("短链 checkout 页面已加载完成，尝试点击 PayPal tab");
+    const paypalTabResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: "#paypal-tab",
+      timeoutMs: 3000
+    }, { allFrames: true }).catch((error) => {
+      logMessage(`短链 checkout PayPal tab 点击跳过: ${formatError(error)}`);
+      return null;
+    });
+    const paypalTabClicked = (Array.isArray(paypalTabResult) ? paypalTabResult : [paypalTabResult])
+      .some((result) => result && result.ok);
+    if (!paypalTabClicked) {
+      logMessage("短链 checkout 未找到 PayPal tab，继续填写账单表单");
+    }
+    await delay(2000);
+
+    const billingName = String(prepared && prepared.card && (
+      prepared.card.billingName ||
+      prepared.card.name ||
+      [prepared.card.firstName, prepared.card.lastName].filter(Boolean).join(" ")
+    ) || "").trim() || generateRandomName();
+    const fillShortCheckoutField = async (functionName, payload, label) => {
+      const result = await executePageFunction(tabId, functionName, {
+        ...payload,
+        timeoutMs: 1
+      }, { allFrames: true }).catch((error) => {
+        logMessage(`${label} 跳过: ${formatError(error)}`);
+        return null;
+      });
+      const filled = (Array.isArray(result) ? result : [result]).some((item) => item && item.ok);
+      if (!filled) {
+        logMessage(`${label} 未找到，继续`);
+      }
+      return filled;
+    };
+    await fillShortCheckoutField("__gptAutoRegisterSetValue", {
+      selector: "#billingAddress-nameInput",
+      value: billingName,
+      payUrlStyle: true
+    }, "短链 checkout 账单姓名字段");
+    await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
+      selector: "#billingAddress-countryInput",
+      value: "JP"
+    }, "短链 checkout 国家字段");
+    await fillShortCheckoutField("__gptAutoRegisterSetValue", {
+      selector: "#billingAddress-postalCodeInput",
+      value: "150-0001",
+      payUrlStyle: true
+    }, "短链 checkout 邮编字段");
+    await delay(2000);
+    await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
+      selector: "#billingAddress-administrativeAreaInput",
+      value: "Tokyo"
+    }, "短链 checkout 都道府县字段");
+    await fillShortCheckoutField("__gptAutoRegisterSetValue", {
+      selector: "#billingAddress-localityInput",
+      value: "Shibuya",
+      payUrlStyle: true
+    }, "短链 checkout 市区町村字段");
+    await fillShortCheckoutField("__gptAutoRegisterSetValue", {
+      selector: "#billingAddress-addressLine1Input",
+      value: "Jingumae",
+      payUrlStyle: true
+    }, "短链 checkout 账单地址字段");
+
+    logMessage("短链 checkout 表单已尝试填充，点击提交");
+    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+      selector: 'button[type="submit"]',
+      timeoutMs: 30000
+    }, "短链 checkout 未找到提交按钮", { allFrames: true });
+    logMessage("短链 checkout 页面已提交");
+    return true;
+  }
+
   async function runPayUrlPage(tabId, prepared) {
     setActiveStep(3);
     logMessage("步骤3: 等待 PayURL 页面 PayPal 选项");
     await ensureContentScript(tabId);
-    await delay()
+    await delay(10000)
+    const currentTab = await ext.tabs.get(tabId);
+    if (isChatGptShortCheckoutUrl(currentTab && currentTab.url) || isChatGptShortCheckoutUrl(prepared && prepared.payUrl)) {
+      return runShortCheckoutBillingPage(tabId, prepared);
+    }
     const shouldContinue = await ensurePayUrlAmountIsZero(tabId, prepared);
     if (!shouldContinue) {
       return false;
@@ -2533,8 +2747,12 @@
       throw error;
     }
     logMessage("点击了按钮");
-    logMessage("等待插件邮箱输入框");
     await delay();
+    if (isShortPayUrlFlow(prepared)) {
+      logMessage("短链流程跳过 PayPal 邮箱输入和下一步点击");
+      return;
+    }
+    logMessage("等待插件邮箱输入框");
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
       selector: '#login_email, #onboardingFlowEmail',
       value: prepared.paypalEmail,
@@ -2646,7 +2864,7 @@
 
   async function waitForChatGptReturn(tabId) {
     logMessage("未勾选随机生成卡片，跳过 PayPal Hermes 授权等待，直接等待返回 ChatGPT");
-    const finalUrl = await waitForUrlPrefix(tabId, "https://chatgpt.com", 120000);
+    const finalUrl = await waitForUrlExact(tabId, "https://chatgpt.com", 120000);
     logMessage(`支付流程成功，已进入 ChatGPT: ${finalUrl}`);
   }
 
@@ -3065,8 +3283,16 @@
     return requirePageResult(tabId, "__gptAutoRegisterClick", payload, errorMessage);
   }
 
-  async function requirePageResult(tabId, functionName, payload, errorMessage) {
-    const result = await executePageFunction(tabId, functionName, payload);
+  async function requirePageResult(tabId, functionName, payload, errorMessage, options = {}) {
+    const result = await executePageFunction(tabId, functionName, payload, options);
+    if (Array.isArray(result)) {
+      const successful = result.find((item) => item && item.ok);
+      if (successful) {
+        return successful;
+      }
+      const failed = result.find((item) => item && item.error);
+      throw new Error((failed && failed.error) || errorMessage);
+    }
     if (!result || !result.ok) {
       throw new Error((result && result.error) || errorMessage);
     }
