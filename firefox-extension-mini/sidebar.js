@@ -851,6 +851,7 @@
       timeoutMs: 60000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
+    await delay(120000)
     const finalUrl = await waitForUrlPrefix(tabId, "https://chatgpt.com/", 120000);
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl}`);
   }
