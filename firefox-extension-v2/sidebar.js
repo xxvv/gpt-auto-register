@@ -27,6 +27,7 @@
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
+  const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
   const DEFAULT_JP_SMS_CDK = "";
   const SHORT_PAY_URL_PREFIX = "https://chatgpt.com/checkout/openai_llc/";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
@@ -791,14 +792,15 @@
         data.sessionId ||
         data.id
       ) || "";
+      const shortPaymentLink = checkoutSessionId ? `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId}` : "";
       return {
-        ok: resp.ok && Boolean(paymentLink),
+        ok: resp.ok && Boolean(paymentLink || shortPaymentLink),
         accessToken,
         paymentLink,
         longPaymentLink: paymentLink,
         checkoutSessionId,
-        shortPaymentLink: checkoutSessionId ? `https://chatgpt.com/checkout/openai_llc/${checkoutSessionId}` : "",
-        error: resp.ok ? "" : `HTTP ${resp.status}`
+        shortPaymentLink,
+        error: resp.ok ? (paymentLink || shortPaymentLink ? "" : "支付链接响应缺少长链和短链") : `HTTP ${resp.status}`
       };
     } catch (e) {
       return { ok: false, error: e.message || "checkout failed" };
@@ -1281,75 +1283,34 @@
     }
   }
 
-  async function requestOaiPayLongLink(accessToken, checkoutRegion) {
-    try {
-      const token = String(accessToken || "").trim();
-      if (!token) {
-        return { ok: false, fallback: true, error: "accessToken: null" };
+  async function requestCheckoutLinkWithOfficialRegionRetry(requestLinkForRegion, primaryRegion) {
+    const officialRegions = PAY_URL_OFFICIAL_REGION_ORDER;
+    let lastAccessToken = "";
+    let lastPrimaryResult = null;
+    const primaryErrors = [];
+
+    for (const region of officialRegions) {
+      logMessage(`尝试获取支付链接，地区: ${region}`);
+      const primaryResult = await requestLinkForRegion(region);
+      lastPrimaryResult = primaryResult;
+      if (primaryResult && primaryResult.accessToken) {
+        lastAccessToken = primaryResult.accessToken;
       }
-      const region = String(checkoutRegion || DEFAULT_FLOW_COUNTRY).trim().toUpperCase();
-      const config = regionConfig[region] || regionConfig.US;
-      const response = await fetch("https://oaipay.im-run.com/api/long-link", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          accessToken: token,
-          link_type: "hosted",
-          proxy: "",
-          billing_country: config.country,
-          checkout_ui_mode: "hosted",
-          payment_locale: config.paymentLocale,
-          stripe_publishable_key: "",
-          device_id: "",
-          user_agent: ""
-        })
-      });
-      const data = await response.json();
-      const longUrl = String(data && data.long_url || "").trim();
-      const checkoutSessionId = String(data && data.cs_id || "").trim();
-      return {
-        ok: response.ok && Boolean(data && data.ok) && Boolean(longUrl),
-        accessToken: token,
-        paymentLink: longUrl,
-        longPaymentLink: longUrl,
-        checkoutSessionId,
-        shortPaymentLink: checkoutSessionId ? `${SHORT_PAY_URL_PREFIX}${checkoutSessionId}` : "",
-        fallback: true,
-        providerError: data && data.provider_error || "",
-        error: response.ok ? (longUrl ? "" : "oaipay long_url 为空") : `HTTP ${response.status}`
-      };
-    } catch (error) {
-      return { ok: false, fallback: true, error: formatError(error) || "oaipay long-link failed" };
-    }
-  }
-
-  async function requestCheckoutLinkWithOaiPayFallback(requestLinkForRegion, primaryRegion) {
-    const region = String(primaryRegion || DEFAULT_FLOW_COUNTRY).trim().toUpperCase();
-    logMessage(`尝试获取支付链接，地区: ${region}`);
-    const primaryResult = await requestLinkForRegion(region);
-    if (primaryResult && primaryResult.ok && primaryResult.paymentLink) {
-      primaryResult.checkoutRegion = region;
-      return primaryResult;
+      if (primaryResult && primaryResult.ok && hasCheckoutPaymentLink(primaryResult)) {
+        primaryResult.checkoutRegion = region;
+        return primaryResult;
+      }
+      const regionError = primaryResult && primaryResult.error ? primaryResult.error : "未知错误";
+      primaryErrors.push(`${region}: ${regionError}`);
+      logMessage(`官方支付链接获取失败，地区 ${region}: ${regionError}`);
     }
 
-    const primaryError = primaryResult && primaryResult.error ? primaryResult.error : "未知错误";
-    logMessage(`官方支付链接获取失败: ${primaryError}，直接使用 oaipay 兜底`);
-    const fallbackResult = await requestOaiPayLongLink(primaryResult && primaryResult.accessToken, region);
-    if (fallbackResult && fallbackResult.ok && fallbackResult.paymentLink) {
-      fallbackResult.checkoutRegion = region;
-      fallbackResult.primaryError = primaryError;
-      logMessage(`oaipay 兜底长链获取成功，主渠道错误: ${primaryError}`);
-      return fallbackResult;
-    }
-
-    const fallbackError = fallbackResult && fallbackResult.error ? fallbackResult.error : "未知错误";
+    const primaryError = primaryErrors.join("; ") || "未知错误";
+    logMessage(`官方支付链接全部失败: ${primaryError}`);
     return {
       ok: false,
-      fallback: true,
-      accessToken: (fallbackResult && fallbackResult.accessToken) || (primaryResult && primaryResult.accessToken) || "",
-      error: `官方支付链接失败: ${primaryError}; oaipay 兜底失败: ${fallbackError}`
+      accessToken: lastAccessToken || (lastPrimaryResult && lastPrimaryResult.accessToken) || "",
+      error: `官方支付链接失败: ${primaryError}`
     };
   }
 
@@ -1364,6 +1325,10 @@
     }
     const checkoutSessionId = String(result && result.checkoutSessionId || "").trim();
     return checkoutSessionId ? `${SHORT_PAY_URL_PREFIX}${checkoutSessionId}` : "";
+  }
+
+  function hasCheckoutPaymentLink(result) {
+    return Boolean(getCheckoutLongPaymentLink(result) || getCheckoutShortPaymentLink(result));
   }
 
   function choosePaymentLinkForMode(result, mode) {
@@ -1403,7 +1368,13 @@
     if (mode === "short") {
       logMessage(`支付链接获取成功，已选择短链: ${selectedLink}`);
     } else if (mode === "auto") {
-      logMessage(`支付链接获取成功，自动模式先使用长链: ${selectedLink}`);
+      if (longLink) {
+        logMessage(`支付链接获取成功，自动模式先使用长链: ${selectedLink}`);
+      } else {
+        logMessage(`支付链接获取成功，自动模式未返回长链，直接使用短链: ${selectedLink}`);
+      }
+    } else if (!longLink && shortLink) {
+      logMessage(`支付链接获取成功，未返回长链，已使用短链: ${selectedLink}`);
     } else {
       logMessage(`支付链接获取成功，已选择长链: ${selectedLink}`);
     }
@@ -1425,7 +1396,7 @@
         return { ok: false, error: "打开的窗口未成功到达 chatgpt.com" };
       }
 
-      return await requestCheckoutLinkWithOaiPayFallback(
+      return await requestCheckoutLinkWithOfficialRegionRetry(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
@@ -1662,11 +1633,11 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithOaiPayFallback(
+      const result = await requestCheckoutLinkWithOfficialRegionRetry(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
-      if (!result.ok || !result.paymentLink) {
+      if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
         return { ok: false };
@@ -1769,11 +1740,11 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
-      const result = await requestCheckoutLinkWithOaiPayFallback(
+      const result = await requestCheckoutLinkWithOfficialRegionRetry(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
         countrySel
       );
-      if (!result.ok || !result.paymentLink) {
+      if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
         await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
         return { ok: false };
@@ -1795,7 +1766,7 @@
     setActiveStep(2);
     logMessage(`主动获取支付链接，国家: ${countrySel}`);
     const result = await requestCheckoutLinkFromNewAutomationWindow(countrySel, "获取支付链接窗口已关闭");
-    if (!result.ok || !result.paymentLink) {
+    if (!result.ok || !hasCheckoutPaymentLink(result)) {
       logMessage("获取支付链接失败: " + (result.error || "未知错误"));
       return { ok: false };
     }
@@ -2097,7 +2068,7 @@
     if (!accountEntry || !accountEntry.line) {
       return;
     }
-    logMessage(`指定注册账号主渠道和 oaipay 兜底获取支付链接均失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    logMessage(`指定注册账号获取支付链接失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
     await removeSpecifiedAccountInput(accountEntry);
   }
 
@@ -2373,7 +2344,17 @@
   }
 
   async function runPayPalFlowFromCurrentPayUrlWithFallback(tabId, prepared) {
-    const firstResult = await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+    let firstResult = false;
+    let firstError = null;
+    try {
+      firstResult = await runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+    } catch (error) {
+      if (isPayPalCaptchaButtonNotFoundError(error) || normalizePayUrlMode(prepared && prepared.payUrlMode) !== "auto") {
+        throw error;
+      }
+      firstError = error;
+      logMessage(`自动模式长链流程异常: ${formatError(error)}`);
+    }
     if (firstResult || normalizePayUrlMode(prepared && prepared.payUrlMode) !== "auto") {
       return firstResult;
     }
@@ -2381,11 +2362,11 @@
     const currentPayUrl = String(prepared && prepared.payUrl || "").trim();
     const shortPayUrl = String(prepared && prepared.shortPayUrl || state.lastShortPayUrl || "").trim();
     if (!shortPayUrl || shortPayUrl === currentPayUrl) {
-      logMessage("自动模式长链失败，但没有可用短链，停止当前任务");
+      logMessage(`自动模式长链失败${firstError ? `: ${formatError(firstError)}` : ""}，但没有可用短链，停止当前任务`);
       return false;
     }
 
-    logMessage("自动模式长链失败，切换短链重新打开支付链接");
+    logMessage(`自动模式长链失败${firstError ? `: ${formatError(firstError)}` : ""}，切换短链重新打开支付链接`);
     prepared.payUrl = shortPayUrl;
     await updateTabUrl(tabId, shortPayUrl);
     return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
@@ -2481,10 +2462,13 @@
     await delay();
     await fillCurrentPage(tabId, prepared, createPayUrlFillOptions(prepared, { type: true }));
     await scrollTabToBottom(tabId);
-    await requirePageResult(tabId, "__gptAutoRegisterCheck", {
+    const termsCheckboxResult = await executePageFunction(tabId, "__gptAutoRegisterCheck", {
       selector: "#termsOfServiceConsentCheckbox",
-      timeoutMs: 30000
-    }, "未找到服务条款复选框");
+      timeoutMs: 5000
+    });
+    if (!termsCheckboxResult || !termsCheckboxResult.ok) {
+      logMessage("未找到服务条款复选框，继续提交流程");
+    }
     const submitDelayMs = randomDelayMs();
     logMessage(`表单已填充，等待 ${(submitDelayMs / 1000).toFixed(1)} 秒后提交`);
     await delay(submitDelayMs);
@@ -2703,37 +2687,46 @@
   }
 
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
-    await delay(10000);
+    logMessage("等待 PayPal 页面加载完成...");
+    
+    await delay(15000);
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
     let lastLoggedUrl = "";
+    let model =false
+    let btn = false
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
       if (url.startsWith(hermesPrefix) || url.startsWith(hermes2)) {
         return url;
       }
-      if (isPayPalGenericErrorUrl(url) ) {
+      if (!btn &&isPayPalGenericErrorUrl(url) ) {
         logMessage("检测到 PayPal genericError 页面，点击 a.btn.full 继续");
         await requirePageResult(tabId, "__gptAutoRegisterClick", {
           selector: "a.btn.full",
           timeoutMs: 30000
         }, "未找到 PayPal genericError 继续按钮 a.btn.full");
         logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
+        btn = true
         await delay(1000);
         continue;
       }
-      if (isPayPalMoneyFlowAccountsNewUrl(url)) {
+      if (!model && isPayPalMoneyFlowAccountsNewUrl(url)) {
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
         await requirePageResult(tabId, "__gptAutoRegisterClick", {
           selector: "#modalClose",
           timeoutMs: 30000
         }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
         logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
+        model = true
+        await delay(1000);
+        continue;
       }
       await delay(1000);
     }
+    logMessage('??????')
     throw new Error(`等待 URL 超时: ${hermesPrefix}`);
   }
 
@@ -3145,9 +3138,9 @@
       allFrames: true
     });
     const summary = summarizeFillResults(result, probes);
-    if (!summary.success) {
-      throw new Error(summary.message);
-    }
+    // if (!summary.success) {
+    //   throw new Error(summary.message);
+    // }
     if (summary.missing.length) {
       logMessage(`已填充 ${summary.filled} 项，未找到: ${summary.missing.join(", ")}`);
     } else {
