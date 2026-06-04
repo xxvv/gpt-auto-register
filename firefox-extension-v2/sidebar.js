@@ -2698,8 +2698,8 @@
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
     const submitResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
       selector: 'button[type="submit"]',
-      timeoutMs: 30000
-    }, { allFrames: true }).catch((error) => {
+      timeoutMs: 10000
+    }).catch((error) => {
       logMessage(`短链 checkout 提交按钮点击跳过: ${formatError(error)}`);
       return null;
     });
@@ -2942,7 +2942,7 @@
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
-    const finalUrl2 = await waitForUrlExact(tabId, "https://chatgpt.com", 120000);
+    await delay(10000)
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl2}`);
   }
 
