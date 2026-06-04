@@ -3037,6 +3037,7 @@
       }
       if (!model && isPayPalMoneyFlowAccountsNewUrl(url)) {
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
+        await delay();
         await requirePageResult(tabId, "__gptAutoRegisterClick", {
           selector: "#modalClose",
           timeoutMs: 10000
