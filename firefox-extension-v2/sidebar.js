@@ -1835,30 +1835,45 @@
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
-      logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
-      logMessage("正在提交到第三方接口...");
-      const thirdPartyResult = await submitThirdPartyAccount({
-        account: registration.email,
-        accessToken: result.accessToken,
-        payurl: selectedPaymentLink
-      });
-      if (thirdPartyResult.ok) {
-        uploadedThirdPartyAccount = registration.email;
-        logMessage("第三方接口提交成功");
-      } else {
-        logMessage("第三方接口提交失败: " + (thirdPartyResult.error || "未知错误"));
+      logMessage("支付链接已写入，准备提交第三方接口并进入支付流程");
+      try {
+        logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+      } catch (error) {
+        logMessage("指定账号创建日志记录失败，继续支付流程: " + formatError(error));
+      }
+      try {
+        logMessage("正在提交到第三方接口...");
+        const thirdPartyResult = await submitThirdPartyAccount({
+          account: registration.email,
+          accessToken: result.accessToken,
+          payurl: selectedPaymentLink
+        });
+        if (thirdPartyResult.ok) {
+          uploadedThirdPartyAccount = registration.email;
+          logMessage("第三方接口提交成功");
+        } else {
+          logMessage("第三方接口提交失败，继续支付流程: " + (thirdPartyResult.error || "未知错误"));
+        }
+      } catch (error) {
+        logMessage("第三方接口提交异常，继续支付流程: " + formatError(error));
       }
 
       prepared.payUrl = selectedPaymentLink;
       prepared.longPayUrl = state.lastLongPayUrl;
       prepared.shortPayUrl = state.lastShortPayUrl;
       prepared.payUrlMode = state.payUrlMode;
-      const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
-        currentWindowId: automationWindowId,
-        onWindowReopened: (nextWindow) => {
-          automationWindowId = nextWindow.windowId;
-        }
-      });
+      let payFlowResult = false;
+      try {
+        payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
+          currentWindowId: automationWindowId,
+          onWindowReopened: (nextWindow) => {
+            automationWindowId = nextWindow.windowId;
+          }
+        });
+      } catch (error) {
+        logMessage("支付流程异常，按支付失败处理: " + formatError(error));
+        payFlowResult = false;
+      }
       automationSucceeded = Boolean(payFlowResult);
       if (automationSucceeded) {
         await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
@@ -2720,8 +2735,8 @@
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
     const submitResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
       selector: 'button[type="submit"]',
-      timeoutMs: 3000
-    }).catch((error) => {
+      timeoutMs: 30000
+    }, { allFrames: true }).catch((error) => {
       logMessage(`短链 checkout 提交按钮点击跳过: ${formatError(error)}`);
       return null;
     });
@@ -2969,9 +2984,9 @@
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
-    await delay(10000);
-    const finalTab = await ext.tabs.get(tabId).catch(() => null);
-    const finalUrlAfterDelay = String((finalTab && finalTab.url) || finalUrl || "");
+    const finalUrlAfterDelay = finalUrl.startsWith("https://chatgpt.com")
+      ? finalUrl
+      : await waitForUrlExact(tabId, "https://chatgpt.com", 120000);
     logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrlAfterDelay}`);
   }
 
