@@ -20,11 +20,10 @@
   const CONTENT_CALL_STORAGE_KEY = "__gptAutoRegisterContentCall";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
-  const POLL_ATTEMPTS = 12;
-  const POLL_DELAY_MS = 2500;
+  const POLL_ATTEMPTS = 20;
+  const POLL_DELAY_MS = 5000;
   const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
   const PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]';
-  const JP_SMS_INITIAL_DELAY_MS = 30000;
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
@@ -1807,18 +1806,18 @@
         registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1831,12 +1830,12 @@
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
-        await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
-      await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+      logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("正在提交到第三方接口...");
       const thirdPartyResult = await submitThirdPartyAccount({
         account: registration.email,
@@ -1862,7 +1861,10 @@
       });
       automationSucceeded = Boolean(payFlowResult);
       if (automationSucceeded) {
+        await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
         await removeUsedCardInput(prepared);
+      } else {
+        await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
       }
       return { ok: automationSucceeded };
     } finally {
@@ -1908,18 +1910,18 @@
         registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
-        await removeSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -1932,7 +1934,7 @@
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
-        await removeSpecifiedAccountAfterCheckoutFailure(specifiedAccountEntry);
+        keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
@@ -2240,7 +2242,7 @@
     };
   }
 
-  async function markSpecifiedAccountCreated(accountEntry, fallbackEmail) {
+  function logSpecifiedAccountCreated(accountEntry, fallbackEmail) {
     if (!accountEntry || !accountEntry.line) {
       return;
     }
@@ -2248,22 +2250,41 @@
     if (email) {
       logMessage(`指定账号创建成功: ${email}`);
     }
+  }
+
+  async function markSpecifiedAccountCreated(accountEntry, fallbackEmail) {
+    logSpecifiedAccountCreated(accountEntry, fallbackEmail);
     await removeSpecifiedAccountInput(accountEntry);
   }
 
-  async function removeSpecifiedAccountAfterCheckoutFailure(accountEntry) {
+  function keepSpecifiedAccountAfterCheckoutLinkFailure(accountEntry) {
     if (!accountEntry || !accountEntry.line) {
       return;
     }
-    logMessage(`指定注册账号获取支付链接失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    logMessage(`指定注册账号获取支付链接失败，保留对应账号: ${accountEntry.email || accountEntry.line}`);
+  }
+
+  function keepSpecifiedAccountAfterRegistrationFailure(accountEntry) {
+    if (!accountEntry || !accountEntry.line) {
+      return;
+    }
+    logMessage(`指定注册账号注册失败，保留对应账号: ${accountEntry.email || accountEntry.line}`);
+  }
+
+  async function removeSpecifiedAccountAfterPaymentSuccess(accountEntry, fallbackEmail) {
+    if (!accountEntry || !accountEntry.line) {
+      return;
+    }
+    const email = accountEntry.email || String(fallbackEmail || "").trim();
+    logMessage(`指定注册账号支付成功，删除对应账号: ${email || accountEntry.line}`);
     await removeSpecifiedAccountInput(accountEntry);
   }
 
-  async function removeSpecifiedAccountAfterRegistrationFailure(accountEntry) {
+  async function removeSpecifiedAccountAfterPaymentFailure(accountEntry) {
     if (!accountEntry || !accountEntry.line) {
       return;
     }
-    logMessage(`指定注册账号注册失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
+    logMessage(`指定注册账号支付流程失败，删除对应账号: ${accountEntry.email || accountEntry.line}`);
     await removeSpecifiedAccountInput(accountEntry);
   }
 
@@ -2628,6 +2649,7 @@
         logMessage(`短链 checkout PayPal tab 点击跳过: ${formatError(error)}`);
         return null;
       });
+      logMessage("短链 点击 PayPal tab");
       const paypalTabClicked = (Array.isArray(paypalTabResult) ? paypalTabResult : [paypalTabResult])
         .some((result) => result && result.ok);
       if (!paypalTabClicked) {
@@ -2637,7 +2659,7 @@
       logMessage("短链 checkout 未找到 PayPal tab，继续填写账单表单");
     }
     await delay(2000);
-
+    logMessage("短链 开始填写账单表单");
     const billingName = String(prepared && prepared.card && (
       prepared.card.billingName ||
       prepared.card.name ||
@@ -2698,7 +2720,7 @@
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
     const submitResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
       selector: 'button[type="submit"]',
-      timeoutMs: 10000
+      timeoutMs: 3000
     }).catch((error) => {
       logMessage(`短链 checkout 提交按钮点击跳过: ${formatError(error)}`);
       return null;
@@ -2751,7 +2773,7 @@
   async function runPayPalLoginPage(tabId, prepared) {
     setActiveStep(4);
     logMessage("步骤4: 等待进入 paypal.com");
-    await waitForUrlPrefix(tabId, "https://www.paypal.com", 90000);
+    await waitForUrlPrefix(tabId, "https://www.paypal.com", 30000);
     await delay();
     await ensureContentScript(tabId);
     await delay();
@@ -2835,12 +2857,14 @@
         await fillPayPalSignupForm(tabId, prepared);
         await delay();
 
+        const previousSmsCode = await fetchCurrentPhoneVerificationCode(prepared.phoneKey);
+        logMessage(`提交前短信验证码基线: ${previousSmsCode || "null"}`);
         await submitSignupForm(tabId);
         logMessage("已提交 signup，等待短信验证码输入框");
-        await delay(30000);
         await refillSignupFormIfCleared(tabId, prepared);
         const otpReady = await waitForSmsOtpInput(tabId, 120000);
         if (otpReady) {
+          prepared.previousSmsCode = previousSmsCode;
           break;
         }
 
@@ -2850,7 +2874,10 @@
           throw new Error("未找到短信验证码输入框，已删除当前手机号，但手机区域没有可用的新手机号");
         }
       }
-      const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey, { tabId });
+      const smsCode = await fetchPhoneVerificationCode(prepared.phoneKey, {
+        tabId,
+        previousCode: prepared.previousSmsCode
+      });
       logMessage("开始输入短信验证码");
       await requirePageResult(tabId, "__gptAutoRegisterSetOtpDigits", {
         selectors: [
@@ -2937,13 +2964,15 @@
       timeoutMs: 30000
     }, "未找到 PayPal 授权按钮 #consentButton");
     logMessage("已点击 PayPal 授权按钮，等待返回 ChatGPT");
-    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 60000);
+    const finalUrl = await waitForChatGptOrPayPalGenericError(tabId, 120000);
     if (String(finalUrl || "").startsWith("https://www.paypal.com/checkoutweb/genericError")) {
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
-    await delay(10000)
-    logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrl2}`);
+    await delay(10000);
+    const finalTab = await ext.tabs.get(tabId).catch(() => null);
+    const finalUrlAfterDelay = String((finalTab && finalTab.url) || finalUrl || "");
+    logMessage(`支付流程成功，已返回 ChatGPT: ${finalUrlAfterDelay}`);
   }
 
   function isPayPalMoneyFlowAccountsNewUrl(url) {
@@ -2995,7 +3024,7 @@
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
         await requirePageResult(tabId, "__gptAutoRegisterClick", {
           selector: "#modalClose",
-          timeoutMs: 30000
+          timeoutMs: 10000
         }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
         logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
         model = true
@@ -3014,7 +3043,7 @@
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
-      if (url === "https://chatgpt.com/" || url.startsWith("https://chatgpt.com/")) {
+      if (url.startsWith("https://chatgpt.com")) {
         return url;
       }
       if (url.startsWith(errorPrefix)) {
@@ -3477,32 +3506,30 @@
 
   async function fetchPhoneVerificationCode(phoneKey, options = {}) {
     if (phoneKey && phoneKey.provider === "oapi") {
-      return fetchOapiPhoneVerificationCode(phoneKey);
+      return fetchOapiPhoneVerificationCode(phoneKey, options);
     }
     if (phoneKey && phoneKey.country === "JP") {
       return fetchJapanLegacyPhoneVerificationCode(phoneKey, options);
     }
+    const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
     let lastError = "";
     for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-      try {
-        const response = await fetch(phoneKey.smsUrl, {
-          method: "GET",
-          cache: "no-store",
-          headers: { Accept: "text/plain,application/json,text/html,*/*" }
-        });
-        const body = await response.text();
-        const code = extractSmsCodeFromResponseBody(phoneKey, body);
-        if (response.ok && code) {
-          state.lastPhoneCode = code;
+      const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
+      if (result.code) {
+        const isNewCode = !seenCodes.has(result.code);
+        logObservedSmsCode(phoneKey, result.code);
+        seenCodes.add(result.code);
+        if (isNewCode) {
+          state.lastPhoneCode = result.code;
           await persistState();
-          return code;
+          return result.code;
         }
-        lastError = response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`;
-      } catch (error) {
-        lastError = formatError(error);
+        lastError = `验证码 ${result.code} 与提交前验证码重复，继续等待新验证码`;
+      } else {
+        lastError = result.error || "没有匹配到 6 位验证码";
       }
       if (attempt < POLL_ATTEMPTS) {
-        logMessage(`第 ${attempt}/${POLL_ATTEMPTS} 次未取到短信码，继续轮询`);
+        logMessage(`第 ${attempt}/${POLL_ATTEMPTS} 次未取到新短信码，继续轮询: ${lastError}`);
         await delay(POLL_DELAY_MS);
       }
     }
@@ -3510,35 +3537,24 @@
   }
 
   async function fetchJapanLegacyPhoneVerificationCode(phoneKey, options = {}) {
-    await waitBeforeJapanSmsFetch();
-    const seenCodes = createSeenSmsCodes(phoneKey);
+    const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
     let lastError = "";
 
     async function pollJapanLegacySmsCode(roundLabel) {
       for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-        try {
-          const response = await fetch(phoneKey.smsUrl, {
-            method: "GET",
-            cache: "no-store",
-            headers: { Accept: "text/plain,application/json,text/html,*/*" }
-          });
-          const body = await response.text();
-          const code = extractSixDigitCode(body);
-          if (response.ok && code) {
-            const isNewCode = !seenCodes.has(code);
-            logObservedSmsCode(phoneKey, code);
-            seenCodes.add(code);
-            if (isNewCode) {
-              state.lastPhoneCode = code;
-              await persistState();
-              return code;
-            }
-            lastError = `验证码 ${code} 与上一次重复，继续等待新验证码`;
-          } else {
-            lastError = response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`;
+        const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
+        if (result.code) {
+          const isNewCode = !seenCodes.has(result.code);
+          logObservedSmsCode(phoneKey, result.code);
+          seenCodes.add(result.code);
+          if (isNewCode) {
+            state.lastPhoneCode = result.code;
+            await persistState();
+            return result.code;
           }
-        } catch (error) {
-          lastError = formatError(error);
+          lastError = `验证码 ${result.code} 与提交前验证码重复，继续等待新验证码`;
+        } else {
+          lastError = result.error || "没有匹配到 6 位验证码";
         }
         if (attempt < POLL_ATTEMPTS) {
           logMessage(`日本短信${roundLabel}第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
@@ -3575,54 +3591,91 @@
     logMessage("已点击短信验证码重发按钮，继续轮询验证码");
   }
 
-  async function fetchOapiPhoneVerificationCode(phoneKey) {
+  async function fetchOapiPhoneVerificationCode(phoneKey, options = {}) {
     const code = String(phoneKey && phoneKey.code || "").trim();
     if (!code) {
       throw new Error("日本短信 CDK 为空");
     }
-    await waitBeforeJapanSmsFetch();
-    const seenCodes = createSeenSmsCodes(phoneKey);
+    const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
     let lastError = "";
     for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-      try {
-        const payload = await postOapiSms("get_sms", { code });
-        const smsCode = String((payload && (payload.code || payload.sms)) || "").trim();
-        const matchedCode = extractSixDigitCode(smsCode);
-        if (payload && payload.ok && matchedCode) {
-          const isNewCode = !seenCodes.has(matchedCode);
-          logObservedSmsCode(phoneKey, matchedCode);
-          seenCodes.add(matchedCode);
-          if (isNewCode) {
-            state.lastPhoneCode = matchedCode;
-            await persistState();
-            return matchedCode;
-          }
-          lastError = `验证码 ${matchedCode} 与上一次重复，继续等待新验证码`;
-        } else {
-          lastError = payload && payload.error ? payload.error : "日本短信响应里没有匹配到 6 位验证码";
+      const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
+      if (result.code) {
+        const isNewCode = !seenCodes.has(result.code);
+        logObservedSmsCode(phoneKey, result.code);
+        seenCodes.add(result.code);
+        if (isNewCode) {
+          state.lastPhoneCode = result.code;
+          await persistState();
+          return result.code;
         }
-      } catch (error) {
-        lastError = formatError(error);
+        lastError = `验证码 ${result.code} 与提交前验证码重复，继续等待新验证码`;
+      } else {
+        lastError = result.error || "日本短信响应里没有匹配到 6 位验证码";
       }
       if (attempt < POLL_ATTEMPTS) {
         logMessage(`日本短信第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
-        await delay(5000);
+        await delay(POLL_DELAY_MS);
       }
     }
     throw new Error(`获取日本短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
   }
 
-  async function waitBeforeJapanSmsFetch() {
-    logMessage("日本短信提交后等待 30 秒再获取验证码");
-    await delay(JP_SMS_INITIAL_DELAY_MS);
+  async function fetchCurrentPhoneVerificationCode(phoneKey) {
+    const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
+    return result.code || null;
   }
 
-  function createSeenSmsCodes(phoneKey) {
-    const history = Array.isArray(phoneKey && phoneKey.smsCodeHistory) ? phoneKey.smsCodeHistory : [];
-    const codes = history.map((item) => String(item && item.code || "").trim()).filter(Boolean);
-    const lastPhoneCode = String(state.lastPhoneCode || "").trim();
-    if (lastPhoneCode) {
-      codes.push(lastPhoneCode);
+  async function fetchCurrentPhoneVerificationCodeResult(phoneKey) {
+    if (phoneKey && phoneKey.provider === "oapi") {
+      return fetchCurrentOapiPhoneVerificationCodeResult(phoneKey);
+    }
+    try {
+      const response = await fetch(phoneKey.smsUrl, {
+        method: "GET",
+        cache: "no-store",
+        headers: { Accept: "text/plain,application/json,text/html,*/*" }
+      });
+      const body = await response.text();
+      const code = extractSmsCodeFromResponseBody(phoneKey, body);
+      if (response.ok && code) {
+        return { code, error: "" };
+      }
+      return {
+        code: "",
+        error: response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`
+      };
+    } catch (error) {
+      return { code: "", error: formatError(error) };
+    }
+  }
+
+  async function fetchCurrentOapiPhoneVerificationCodeResult(phoneKey) {
+    const code = String(phoneKey && phoneKey.code || "").trim();
+    if (!code) {
+      return { code: "", error: "日本短信 CDK 为空" };
+    }
+    try {
+      const payload = await postOapiSms("get_sms", { code });
+      const smsCode = String((payload && (payload.code || payload.sms)) || "").trim();
+      const matchedCode = extractSixDigitCode(smsCode);
+      if (payload && payload.ok && matchedCode) {
+        return { code: matchedCode, error: "" };
+      }
+      return {
+        code: "",
+        error: payload && payload.error ? payload.error : "日本短信响应里没有匹配到 6 位验证码"
+      };
+    } catch (error) {
+      return { code: "", error: formatError(error) };
+    }
+  }
+
+  function createSeenSmsCodes(phoneKey, previousCode = null) {
+    const codes = [];
+    const normalizedPreviousCode = String(previousCode || "").trim();
+    if (normalizedPreviousCode) {
+      codes.push(normalizedPreviousCode);
     }
     return new Set(codes);
   }
@@ -3641,9 +3694,9 @@
     });
     const last = phoneKey.smsCodeHistory[phoneKey.smsCodeHistory.length - 2];
     if (last && String(last.code || "") === normalizedCode) {
-      logMessage(`日本短信验证码记录: ${normalizedCode}，与上一次重复`);
+      logMessage(`短信验证码记录: ${normalizedCode}，与上一次重复`);
     } else {
-      logMessage(`日本短信验证码记录: ${normalizedCode}`);
+      logMessage(`短信验证码记录: ${normalizedCode}`);
     }
   }
 
