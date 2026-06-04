@@ -17,6 +17,7 @@
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const IPAPI_LOCATION_API = "https://ipapi.co/json/?token=T6UkBSJpmZgNZELN7QsJk5uCZTF8c6aVHUYZiLwEsHnUQqqeJg";
   const STORAGE_KEY = "gptAutoRegisterV2State";
+  const CONTENT_CALL_STORAGE_KEY = "__gptAutoRegisterContentCall";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 12;
@@ -745,8 +746,9 @@
     DE: { country: "DE", currency: "EUR", paymentLocale: "de-DE" }
   };
 
-  async function requestChatGptCheckoutLinkOnly(checkoutRegion) {
+  async function requestChatGptCheckoutLinkOnly(checkoutRegion, payUrlMode) {
     try {
+      const selectedPayUrlMode = String(payUrlMode || "").trim().toLowerCase() === "short" ? "short" : "long";
       const checkoutRegionConfig = {
         CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
         ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
@@ -926,26 +928,34 @@
         return { resp, data, link };
       };
 
-      const hostedCheckout = await requestCheckout({
-        ...basePayload,
-        checkout_ui_mode: "hosted"
-      });
-      const paymentLink = hostedCheckout.data && (
-        hostedCheckout.data.url ||
-        hostedCheckout.data.stripe_hosted_url ||
-        hostedCheckout.data.checkout_url
-      ) || null;
+      let hostedCheckout = null;
+      let paymentLink = "";
+      let shortCheckout = null;
+      let shortPaymentLink = "";
 
-      const shortCheckout = await requestShortCheckout();
-      const shortPaymentLink = shortCheckout.link;
+      if (selectedPayUrlMode === "short") {
+        shortCheckout = await requestShortCheckout();
+        shortPaymentLink = shortCheckout.link;
+      } else {
+        hostedCheckout = await requestCheckout({
+          ...basePayload,
+          checkout_ui_mode: "hosted"
+        });
+        paymentLink = hostedCheckout.data && (
+          hostedCheckout.data.url ||
+          hostedCheckout.data.stripe_hosted_url ||
+          hostedCheckout.data.checkout_url
+        ) || "";
+      }
 
-      const ok = Boolean(
-        hostedCheckout.resp.ok && paymentLink ||
-        shortCheckout.resp.ok && shortPaymentLink
-      );
+      const ok = selectedPayUrlMode === "short"
+        ? Boolean(shortCheckout && shortCheckout.resp.ok && shortPaymentLink)
+        : Boolean(hostedCheckout && hostedCheckout.resp.ok && paymentLink);
       const error = ok
         ? ""
-        : `hosted HTTP ${hostedCheckout.resp.status}, short HTTP ${shortCheckout.resp.status}`;
+        : selectedPayUrlMode === "short"
+          ? `short HTTP ${shortCheckout ? shortCheckout.resp.status : "not requested"}`
+          : `hosted HTTP ${hostedCheckout ? hostedCheckout.resp.status : "not requested"}`;
 
       return {
         ok,
@@ -1065,7 +1075,11 @@
       })();
     `;
     await scrollTabToBottom(tabId);
-    await executeScriptAfterPageReady(tabId, { code: clickRegisterCode }, "点击注册按钮");
+    await executePageFunction(tabId, "__gptAutoRegisterClickButtonByText", {
+      pattern: "注册|Sign up|Create account"
+    }, {
+      loadTimeoutMs: 15000
+    });
     logMessage("已点击注册按钮，等待 3 秒...");
     await delay(3000);
 
@@ -1080,7 +1094,11 @@
         return false;
       })();
     `;
-    const hasEmail = (await executeScriptAfterPageReady(tabId, { code: waitEmailCode }, "等待邮箱输入框"))[0];
+    const hasEmailResult = await executePageFunction(tabId, "__gptAutoRegisterWaitForSelector", {
+      selector: "#email",
+      timeoutMs: 60000
+    });
+    const hasEmail = Boolean(hasEmailResult && hasEmailResult.ok);
     if (!hasEmail) {
       logMessage("错误: #email 未出现，超时");
       return { ok: false };
@@ -1135,7 +1153,12 @@
         return { email: Boolean(input), nameAge: Boolean(nameInput && ageOrBirthday) };
       })();
     `;
-    const fillEmailResult = (await executeScriptAfterPageReady(tabId, { code: fillEmailCode }, "填写邮箱"))[0] || {};
+    const fillEmailResult = await executePageFunction(tabId, "__gptAutoRegisterFillRegistrationEmail", {
+      email,
+      randomName,
+      randomAge,
+      randomBirthday
+    }) || {};
     const nameAgeFilledOnEmailPage = Boolean(fillEmailResult.nameAge);
     if (fillEmailResult.nameAge) {
       logMessage("检测到姓名和年龄输入框，已一起填写");
@@ -1256,13 +1279,18 @@
       })();
     `;
     await scrollTabToBottom(tabId);
-    await executeScriptAfterPageReady(tabId, { code: clickSubmitCode }, "提交邮箱");
+    await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: 'button[type="submit"]',
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
     if (nameAgeFilledOnEmailPage) {
       await delay(3000);
-      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode);
+      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId);
       if (clickedTryAgain) {
         logMessage("邮箱页提交后仍在 about-you 页面，检测到 Try again，已点击后重新填写姓名和年龄");
-        const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, clickSubmitCode, clickTryAgainCode);
+        const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday);
         if (!nameAgeSubmitted) {
           return { ok: false };
         }
@@ -1303,7 +1331,11 @@
         return false;
       })();
     `;
-    await executeScriptAfterPageReady(tabId, { code: fillCodeOnly }, "填写验证码");
+    await executePageFunction(tabId, "__gptAutoRegisterSetValue", {
+      selector: 'input[name="code"]',
+      value: code,
+      timeoutMs: 30000
+    });
     await delay(3000);
 
     const submitCodeBtn = `
@@ -1332,11 +1364,16 @@
       })();
     `;
     await scrollTabToBottom(tabId);
-    await executeScriptAfterPageReady(tabId, { code: submitCodeBtn }, "提交验证码");
+    await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: 'button[type="submit"], button[data-testid="submit"]',
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
 
     if (!nameAgeFilledOnEmailPage) {
       logMessage("验证码已提交，等待姓名和年龄输入框...");
-      const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, submitCodeBtn, clickTryAgainCode);
+      const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday);
       if (!nameAgeSubmitted) {
         return { ok: false };
       }
@@ -1346,9 +1383,14 @@
     return { ok: true, email };
   }
 
-  async function submitNameAgeWithTryAgainRetry(tabId, fillNameAgeCode, submitCodeBtn, clickTryAgainCode) {
+  async function submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday) {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      const fillNameAgeResult = (await executeScriptAfterPageReady(tabId, { code: fillNameAgeCode }, "填写姓名和年龄"))[0] || {};
+      const fillNameAgeResult = await executePageFunction(tabId, "__gptAutoRegisterFillRegistrationNameAge", {
+        randomName,
+        randomAge,
+        randomBirthday,
+        timeoutMs: 60000
+      }) || {};
       if (!fillNameAgeResult.ok) {
         logMessage("错误: 姓名和年龄输入框未出现，超时");
         return false;
@@ -1356,11 +1398,16 @@
 
       await delay(1000);
       await scrollTabToBottom(tabId);
-      await executeScriptAfterPageReady(tabId, { code: submitCodeBtn }, "提交姓名和年龄");
+      await executePageFunction(tabId, "__gptAutoRegisterClick", {
+        selector: 'button[type="submit"], button[data-testid="submit"]',
+        timeoutMs: 15000
+      }, {
+        loadTimeoutMs: 15000
+      });
       logMessage(attempt === 1 ? "姓名和年龄已提交，等待进入 chatgpt.com" : `姓名和年龄已重新提交，第 ${attempt} 次，等待进入 chatgpt.com`);
       await delay(3000);
 
-      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode);
+      const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId);
       if (!clickedTryAgain) {
         return true;
       }
@@ -1373,13 +1420,18 @@
     return false;
   }
 
-  async function clickAboutYouTryAgainIfPresent(tabId, clickTryAgainCode) {
+  async function clickAboutYouTryAgainIfPresent(tabId) {
     const tab = await ext.tabs.get(tabId);
     const currentUrl = String(tab.url || "");
     if (!currentUrl.startsWith("https://auth.openai.com/about-you")) {
       return false;
     }
-    return Boolean((await executeScriptAfterPageReady(tabId, { code: clickTryAgainCode }, "检测并点击 Try again"))[0]);
+    const result = await executePageFunction(tabId, "__gptAutoRegisterClickTryAgain", {
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    return Boolean(result && result.ok);
   }
 
   async function getCurrentWindowActiveTab() {
@@ -1420,13 +1472,14 @@
     }
   }
 
-  async function requestChatGptCheckoutLinkFromTab(tabId, checkoutRegion) {
+  async function requestChatGptCheckoutLinkFromTab(tabId, checkoutRegion, payUrlMode) {
     try {
-      const results = await executeScriptAfterPageReady(tabId, {
-        code: `(${requestChatGptCheckoutLinkOnly.toString()})(${JSON.stringify(checkoutRegion)})`,
-        runAt: "document_idle"
-      }, "隐私窗口获取支付链接");
-      const result = Array.isArray(results) ? results[0] : results;
+      const result = await executePageFunction(tabId, "__gptAutoRegisterCheckoutLink", {
+        checkoutRegion,
+        payUrlMode
+      }, {
+        loadTimeoutMs: 45000
+      });
       logMessage("隐私窗口支付链接任务结果", JSON.stringify(result));
       return result || { ok: false, error: "隐私窗口未返回支付链接任务结果" };
     } catch (error) {
@@ -1519,13 +1572,10 @@
     } else {
       logMessage(`支付链接获取成功，已选择长链: ${selectedLink}`);
     }
-    if (!shortLink) {
-      logMessage("短链接口未返回可用短链");
-    }
     return selectedLink;
   }
 
-  async function requestCheckoutLinkFromNewAutomationWindow(countrySel, closeReason) {
+  async function requestCheckoutLinkFromNewAutomationWindow(countrySel, closeReason, payUrlMode = getPayUrlMode()) {
     let automationWindowId = null;
     try {
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
@@ -1538,7 +1588,7 @@
       }
 
       return await requestCheckoutLinkWithOfficialRegionRetry(
-        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region, payUrlMode),
         countrySel
       );
     } finally {
@@ -1598,10 +1648,10 @@
       if (!loaded) {
         logMessage(`${label || "页面"} 页面仍在加载，继续读取 navigator.userAgent`);
       }
-      const pageUserAgent = (await executeScriptWithRetry(tabId, {
-        code: "navigator.userAgent",
-        runAt: "document_idle"
-      }, `${label || "页面"} navigator.userAgent`))[0];
+      const pageUserAgentResult = await executePageFunction(tabId, "__gptAutoRegisterGetNavigatorUserAgent", {}, {
+        loadTimeoutMs: 15000
+      });
+      const pageUserAgent = pageUserAgentResult && pageUserAgentResult.userAgent;
       logMessage(`${label || "页面"} window navigator.userAgent: ${pageUserAgent || ""}`);
     } catch (error) {
       logMessage(`${label || "页面"} window navigator.userAgent 读取失败: ${formatError(error)}`);
@@ -1774,8 +1824,9 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
+      const payUrlMode = getPayUrlMode();
       const result = await requestCheckoutLinkWithOfficialRegionRetry(
-        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region, payUrlMode),
         countrySel
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
@@ -1784,7 +1835,7 @@
         return { ok: false };
       }
 
-      const selectedPaymentLink = await applyCheckoutLinkResult(result);
+      const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
       await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("正在提交到第三方接口...");
       const thirdPartyResult = await submitThirdPartyAccount({
@@ -1817,19 +1868,12 @@
     } finally {
       await cleanupAutomationProxy("完整流程任务已关闭");
       if (!automationSucceeded && uploadedThirdPartyAccount) {
-        if (prepared && prepared.payUrlAmountZero) {
-          logMessage(`PayURL 金额是 0 元，支付失败也保留第三方账号: ${uploadedThirdPartyAccount}`);
-        } else if (specifiedAccountEntry) {
-          await deleteUploadedThirdPartyAccountAfterFailure(
-            uploadedThirdPartyAccount,
-            "指定账号完整流程失败，正在删除第三方账号"
-          );
-        } else if (prepared && prepared.payUrlAmountNonZero) {
-          await deleteUploadedThirdPartyAccountAfterFailure(
-            uploadedThirdPartyAccount,
-            "PayURL 金额不是 0，正在删除第三方未绑定账号"
-          );
-        }
+        const cleanupReason = specifiedAccountEntry
+          ? "指定账号完整流程失败，正在删除第三方账号"
+          : prepared && prepared.payUrlAmountNonZero
+            ? "PayURL 金额不是 0，正在删除第三方未绑定账号"
+            : "获取到 PayURL 后流程失败，正在删除第三方账号";
+        await deleteUploadedThirdPartyAccountAfterFailure(uploadedThirdPartyAccount, cleanupReason);
       }
       await closeAutomationWindow(automationWindowId);
     }
@@ -1881,8 +1925,9 @@
 
       setActiveStep(2);
       logMessage("步骤2: 获取支付链接");
+      const payUrlMode = getPayUrlMode();
       const result = await requestCheckoutLinkWithOfficialRegionRetry(
-        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region),
+        (region) => requestChatGptCheckoutLinkFromTab(tab.id, region, payUrlMode),
         countrySel
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
@@ -1891,7 +1936,7 @@
         return { ok: false };
       }
 
-      const selectedPaymentLink = await applyCheckoutLinkResult(result);
+      const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
       await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("已执行到第2步，流程停止");
       return { ok: true, email: registration.email, paymentLink: selectedPaymentLink };
@@ -1903,16 +1948,17 @@
 
   async function getPayUrlFromCurrentTab() {
     const countrySel = document.getElementById("country").value;
+    const payUrlMode = getPayUrlMode();
 
     setActiveStep(2);
     logMessage(`主动获取支付链接，国家: ${countrySel}`);
-    const result = await requestCheckoutLinkFromNewAutomationWindow(countrySel, "获取支付链接窗口已关闭");
+    const result = await requestCheckoutLinkFromNewAutomationWindow(countrySel, "获取支付链接窗口已关闭", payUrlMode);
     if (!result.ok || !hasCheckoutPaymentLink(result)) {
       logMessage("获取支付链接失败: " + (result.error || "未知错误"));
       return { ok: false };
     }
 
-    const selectedPaymentLink = await applyCheckoutLinkResult(result);
+    const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
     return { ok: true, paymentLink: selectedPaymentLink };
   }
 
@@ -2260,47 +2306,13 @@
     if (!currentUrl.startsWith(PASSKEY_ENROLL_URL_PREFIX)) {
       return false;
     }
-    const clickSkipCode = `
-      (async function() {
-        function delay(ms) {
-          return new Promise(r => setTimeout(r, ms));
-        }
-        function simulateClick(el) {
-          if (!el) return false;
-          el.scrollIntoView({ block: 'center', inline: 'center' });
-          el.focus();
-          const rect = el.getBoundingClientRect();
-          const clientX = rect.left + rect.width / 2;
-          const clientY = rect.top + rect.height / 2;
-          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
-            el.dispatchEvent(new MouseEvent(type, {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX,
-              clientY,
-              button: 0,
-              buttons: type === 'mousedown' ? 1 : 0
-            }));
-          });
-          return true;
-        }
-        const selector = ${JSON.stringify(PASSKEY_ENROLL_SKIP_SELECTOR)};
-        const start = Date.now();
-        while (Date.now() - start < 15000) {
-          const skip = document.querySelector(selector);
-          if (skip) {
-            return simulateClick(skip);
-          }
-          await delay(500);
-        }
-        return false;
-      })();
-    `;
-    return Boolean((await executeScriptAfterPageReady(tabId, {
-      code: clickSkipCode,
-      runAt: "document_idle"
-    }, "跳过 passkey 注册", { loadTimeoutMs: 15000 }))[0]);
+    const result = await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: PASSKEY_ENROLL_SKIP_SELECTOR,
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    return Boolean(result && result.ok);
   }
 
   async function removeSpecifiedAccountInput(accountEntry) {
@@ -2533,12 +2545,12 @@
       return false;
     }
     logMessage("PayURL 页面已加载完成，检查是否包含 1 Month Free");
-    const results = await executeScriptAfterPageReady(tabId, {
-      code: "document.body && document.body.innerHTML.indexOf('1 Month Free') > -1",
-      allFrames: true,
-      runAt: "document_idle"
-    }, "检查 PayURL 1 Month Free");
-    const hasOneMonthFree = (Array.isArray(results) ? results : [results]).some(Boolean);
+    const results = await executePageFunction(tabId, "__gptAutoRegisterBodyContainsText", {
+      text: "1 Month Free"
+    }, {
+      allFrames: true
+    });
+    const hasOneMonthFree = (Array.isArray(results) ? results : [results]).some((result) => result && result.ok);
     if (!hasOneMonthFree) {
       if (prepared) {
         prepared.payUrlAmountZero = false;
@@ -2907,7 +2919,7 @@
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
-    await delay(15000);
+    await delay(20000);
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
@@ -3141,10 +3153,13 @@
     while (Date.now() - start < timeoutMs) {
       try {
         const tab = await ext.tabs.get(tabId);
-        const readyState = (await ext.tabs.executeScript(tabId, {
-          code: "document.readyState"
-        }))[0];
-        if ((!tab.status || tab.status === "complete") && readyState === "complete") {
+        let readyState = "";
+        try {
+          const readyStateResults = await executeContentFunctionRaw(tabId, "__gptAutoRegisterGetReadyState", {}, {}, "读取页面 readyState");
+          const readyStateResult = Array.isArray(readyStateResults) ? readyStateResults[0] : readyStateResults;
+          readyState = String(readyStateResult && readyStateResult.readyState || "");
+        } catch (_) {}
+        if ((!tab.status || tab.status === "complete") && (!readyState || readyState === "complete")) {
           return true;
         }
       } catch (_) {}
@@ -3154,14 +3169,58 @@
   }
 
   async function executePageFunction(tabId, functionName, payload, options = {}) {
-    await ensureContentScript(tabId, Boolean(options.allFrames));
-    const code = `window.${functionName} && window.${functionName}(${JSON.stringify(payload || {})})`;
-    const results = await executeScriptAfterPageReady(tabId, {
-      code,
-      allFrames: Boolean(options.allFrames),
-      runAt: "document_idle"
-    }, functionName);
+    await waitForScriptableTab(tabId, Number(options.scriptableTimeoutMs) || 15000);
+    const loaded = await waitForPageComplete(tabId, Number(options.loadTimeoutMs) || 45000);
+    if (!loaded) {
+      logMessage(`${functionName || "页面函数"}: 页面仍在加载，继续尝试调用`);
+    }
+    const results = await executeContentFunctionRaw(tabId, functionName, payload, options, functionName);
     return options.allFrames ? results : (Array.isArray(results) ? results[0] : results);
+  }
+
+  function storageSet(values) {
+    const result = ext.storage.local.set(values);
+    if (result && typeof result.then === "function") {
+      return result;
+    }
+    return new Promise((resolve) => ext.storage.local.set(values, resolve));
+  }
+
+  function storageRemove(key) {
+    const result = ext.storage.local.remove(key);
+    if (result && typeof result.then === "function") {
+      return result;
+    }
+    return new Promise((resolve) => ext.storage.local.remove(key, resolve));
+  }
+
+  async function executeContentFunctionRaw(tabId, functionName, payload, options = {}, label = "") {
+    const callId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await storageSet({
+      [CONTENT_CALL_STORAGE_KEY]: {
+        id: callId,
+        functionName,
+        payload: payload || {}
+      }
+    });
+    try {
+      const details = {
+        allFrames: Boolean(options.allFrames),
+        runAt: "document_idle"
+      };
+      await executeScriptWithRetry(tabId, {
+        ...details,
+        file: "content-script.js"
+      }, `${label || functionName || "页面函数"} content-script`);
+      return await executeScriptWithRetry(tabId, {
+        ...details,
+        file: "content-call-runner.js"
+      }, label || functionName || "页面函数");
+    } finally {
+      try {
+        await storageRemove(CONTENT_CALL_STORAGE_KEY);
+      } catch (_) {}
+    }
   }
 
   async function executeScriptAfterPageReady(tabId, details, label, options = {}) {
@@ -3211,70 +3270,9 @@
 
   async function scrollTabToBottom(tabId) {
     try {
-      await executeScriptAfterPageReady(tabId, {
-        code: `
-          (async function() {
-            function fireScrollEvent(target) {
-              if (!target || typeof target.dispatchEvent !== 'function') {
-                return;
-              }
-              target.dispatchEvent(new Event('scroll', {
-                bubbles: true,
-                cancelable: false
-              }));
-            }
-
-            function scrollElementToBottom(element) {
-              if (!element) {
-                return false;
-              }
-              const bottom = Math.max(element.scrollHeight || 0, element.clientHeight || 0);
-              const before = element.scrollTop;
-              element.scrollTop = bottom;
-              fireScrollEvent(element);
-              return element.scrollTop !== before;
-            }
-
-            function isScrollableElement(element) {
-              if (!element || element === document.documentElement || element === document.body) {
-                return false;
-              }
-              const style = window.getComputedStyle(element);
-              const overflowY = style.overflowY;
-              return /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight;
-            }
-
-            const root = document.scrollingElement || document.documentElement || document.body;
-            const bottom = Math.max(
-              root ? root.scrollHeight : 0,
-              document.documentElement ? document.documentElement.scrollHeight : 0,
-              document.body ? document.body.scrollHeight : 0
-            );
-            window.scrollTo(0, bottom);
-            if (root) {
-              root.scrollTop = bottom;
-              fireScrollEvent(root);
-            }
-            fireScrollEvent(window);
-            fireScrollEvent(document);
-            fireScrollEvent(document.body);
-
-            Array.from(document.querySelectorAll('*'))
-              .filter(isScrollableElement)
-              .forEach(scrollElementToBottom);
-
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            window.scrollTo(0, Math.max(bottom, root ? root.scrollHeight : 0));
-            if (root) {
-              root.scrollTop = root.scrollHeight;
-              fireScrollEvent(root);
-            }
-            fireScrollEvent(window);
-            return true;
-          })();
-        `,
-        runAt: "document_idle"
-      }, "滚动页面", { loadTimeoutMs: 15000 });
+      await executePageFunction(tabId, "__gptAutoRegisterScrollToBottom", {}, {
+        loadTimeoutMs: 15000
+      });
     } catch (_) {}
   }
 
