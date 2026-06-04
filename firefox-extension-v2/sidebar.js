@@ -2984,7 +2984,7 @@
       await removeInvalidPhoneKeyInput(prepared);
       throw new Error(`PayPal Hermes 授权失败，进入错误页面: ${finalUrl}`);
     }
-    await delay(10000)
+    await delay(20000)
     const finalUrlAfterDelay = finalUrl.startsWith("https://chatgpt.com")
       ? finalUrl
       : await waitForUrlExact(tabId, "https://chatgpt.com", 120000);
