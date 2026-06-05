@@ -1872,10 +1872,7 @@
       let payFlowResult = false;
       try {
         payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
-          currentWindowId: automationWindowId,
-          onWindowReopened: (nextWindow) => {
-            automationWindowId = nextWindow.windowId;
-          }
+          currentWindowId: automationWindowId
         });
       } catch (error) {
         logMessage("支付流程异常，按支付失败处理: " + formatError(error));
@@ -2055,10 +2052,7 @@
       automationWindowId = automationWindow.windowId;
       const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(automationWindow.tab.id, prepared, {
         proxyReady: true,
-        currentWindowId: automationWindowId,
-        onWindowReopened: (nextWindow) => {
-          automationWindowId = nextWindow.windowId;
-        }
+        currentWindowId: automationWindowId
       });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
@@ -2101,10 +2095,7 @@
       }
       const payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
         proxyReady: true,
-        currentWindowId: tab.incognito ? tab.windowId : null,
-        onWindowReopened: (nextWindow) => {
-          retryAutomationWindowId = nextWindow.windowId;
-        }
+        currentWindowId: tab.incognito ? tab.windowId : null
       });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
@@ -2500,26 +2491,15 @@
 
   async function runPayPalFlowWithCaptchaWindowRetry(tabId, prepared, options = {}) {
     let activeTabId = tabId;
-    let retryWindowId = null;
     try {
       return await runPayPalFlow(activeTabId, prepared, options);
     } catch (error) {
       if (!isPayPalCaptchaButtonNotFoundError(error) || options.captchaWindowRetry === false) {
         throw error;
       }
-      logMessage("滑块验证码后找不到点击按钮，关闭窗口并重新打开窗口进行第三步");
-      if (options.currentWindowId !== undefined && options.currentWindowId !== null) {
-        await closeAutomationWindow(options.currentWindowId, { immediate: true });
-      }
-      const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
-      retryWindowId = automationWindow.windowId;
-      if (typeof options.onWindowReopened === "function") {
-        options.onWindowReopened(automationWindow);
-      }
-      activeTabId = automationWindow.tab.id;
+      logMessage("滑块验证码后找不到点击按钮，在当前窗口重新访问支付链接进行第三步");
       return await runPayPalFlow(activeTabId, prepared, {
         ...options,
-        currentWindowId: retryWindowId,
         proxyReady: true,
         captchaWindowRetry: false
       });
@@ -2746,7 +2726,7 @@
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
     const submitResult = await executePageFunction(tabId, "__gptAutoRegisterClick", {
       selector: 'button[type="submit"]',
-      timeoutMs: 30000
+      timeoutMs: 10000
     }, { allFrames: true }).catch((error) => {
       logMessage(`短链 checkout 提交按钮点击跳过: ${formatError(error)}`);
       return null;
