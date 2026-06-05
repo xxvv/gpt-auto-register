@@ -3024,7 +3024,6 @@
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
-    await delay(20000);
     // const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
