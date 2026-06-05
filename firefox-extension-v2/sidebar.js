@@ -20,6 +20,7 @@
   const CONTENT_CALL_STORAGE_KEY = "__gptAutoRegisterContentCall";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
+  const EMAIL_CODE_POLL_ATTEMPTS = 10;
   const POLL_ATTEMPTS = 20;
   const POLL_DELAY_MS = 5000;
   const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
@@ -1312,10 +1313,10 @@
     logMessage("已提交邮箱，轮询验证码...");
 
     let code = null;
-    for (let i = 0; i < 25; i += 1) {
+    for (let i = 0; i < EMAIL_CODE_POLL_ATTEMPTS; i += 1) {
       code = await fetchVerificationCode(email);
       if (code) break;
-      await delay(2500);
+      await delay(POLL_DELAY_MS);
     }
 
     if (!code) {
@@ -3041,7 +3042,7 @@
           timeoutMs: 10000
         }, "未找到 PayPal genericError 继续按钮 a.btn.full");
         logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
-        await delay(5000);
+        throw new Error(`到失败页面了，准备重试`);
         continue;
       }
       if (isPayPalMoneyFlowAccountsNewUrl(url)) {
