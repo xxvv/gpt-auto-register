@@ -119,6 +119,10 @@
     return `${generateLocalPart()}@gmail.com`;
   }
 
+  function generateDomainEmail() {
+    return `${generateLocalPart()}@${DOMAINS[Math.floor(Math.random() * DOMAINS.length)]}`;
+  }
+
   function generateRandomName() {
     const firstNames = ["James", "Emma", "Liam", "Olivia", "Noah", "Ava", "Mia", "Lucas"];
     const lastNames = ["Smith", "Johnson", "Williams", "Brown", "Jones"];
@@ -1053,8 +1057,41 @@
     }
   }
 
-  async function runRegistration(tabId, specifiedAccountEmail = "") {
+  async function prepareRegistrationEmail(specifiedAccountEntry) {
+    const specifiedEmail = specifiedAccountEntry && specifiedAccountEntry.email
+      ? String(specifiedAccountEntry.email || "").trim()
+      : "";
+    if (specifiedEmail) {
+      logMessage(`使用指定注册邮箱: ${specifiedEmail}`);
+      return specifiedEmail;
+    }
+
+    try {
+      const response = await ext.runtime.sendMessage({
+        type: "gptAutoRegisterICloudHme",
+        action: "generateAndReserve",
+        label: "chatgpt.com"
+      });
+      const email = response && response.ok ? String(response.email || "").trim() : "";
+      if (email) {
+        logMessage(`主窗口已获取 iCloud 隐藏邮箱: ${email}`);
+        return email;
+      }
+      throw new Error((response && response.error) || "background 未返回 iCloud 邮箱");
+    } catch (error) {
+      const fallbackEmail = generateDomainEmail();
+      logMessage(`iCloud 隐藏邮箱获取失败，使用域名邮箱兜底: ${fallbackEmail}，原因: ${formatError(error)}`);
+      return fallbackEmail;
+    }
+  }
+
+  async function runRegistration(tabId, preparedEmail = "") {
     setActiveStep(1);
+    const email = String(preparedEmail || "").trim();
+    if (!email) {
+      logMessage("错误: 注册邮箱为空");
+      return { ok: false };
+    }
     logMessage("等待 chatgpt.com 页面加载完成...");
     const pageLoaded = await waitForPageComplete(tabId, 90000);
     if (!pageLoaded) {
@@ -1118,12 +1155,10 @@
       return { ok: false };
     }
 
-    const normalizedSpecifiedEmail = String(specifiedAccountEmail || "").trim();
-    const email = normalizedSpecifiedEmail || `${generateLocalPart()}@${DOMAINS[Math.floor(Math.random() * DOMAINS.length)]}`;
     const randomName = generateRandomName();
     const randomAge = generateRandomAge();
     const randomBirthday = generateRandomBirthday();
-    logMessage(normalizedSpecifiedEmail ? `使用指定注册邮箱: ${email}` : `生成注册邮箱: ${email}`);
+    logMessage(`注册窗口填入邮箱: ${email}`);
 
     const fillEmailCode = `
       (function() {
@@ -1810,6 +1845,7 @@
     }
 
     logMessage("开始完整自动化流程...");
+    const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
     let automationWindowId = null;
     let uploadedThirdPartyAccount = null;
     let automationSucceeded = false;
@@ -1827,7 +1863,7 @@
 
       let registration;
       try {
-        registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+        registration = await runRegistration(tab.id, registrationEmail);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
         keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
@@ -1928,6 +1964,7 @@
     }
 
     logMessage("开始执行到第2步...");
+    const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
     let automationWindowId = null;
     let step2Succeeded = false;
     try {
@@ -1944,7 +1981,7 @@
 
       let registration;
       try {
-        registration = await runRegistration(tab.id, specifiedAccountEntry ? specifiedAccountEntry.email : null);
+        registration = await runRegistration(tab.id, registrationEmail);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
         keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
