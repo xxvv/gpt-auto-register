@@ -54,6 +54,7 @@
     randomCardEnabled: false,
     useCurrentIpLocation: false,
     specifiedAccountInput: "",
+    deleteThirdPartyAccountEnabled: true,
     phoneKeyInput: "",
     phoneKey: null,
     flowCountry: DEFAULT_FLOW_COUNTRY,
@@ -563,6 +564,12 @@
     const input = document.getElementById("payUrlModeSelect");
     state.payUrlMode = normalizePayUrlMode(input ? input.value : state.payUrlMode);
     return state.payUrlMode;
+  }
+
+  function isDeleteThirdPartyAccountEnabled() {
+    const input = document.getElementById("deleteThirdPartyAccountCheckbox");
+    state.deleteThirdPartyAccountEnabled = input ? Boolean(input.checked) : true;
+    return state.deleteThirdPartyAccountEnabled;
   }
 
   function getJpSmsCdkInput() {
@@ -2305,6 +2312,10 @@
 
   async function deleteUploadedThirdPartyAccountAfterFailure(account, reason) {
     if (!account) {
+      return;
+    }
+    if (!isDeleteThirdPartyAccountEnabled()) {
+      logMessage(`已关闭失败删除第三方账号，保留: ${account}`);
       return;
     }
     logMessage(`${reason}: ${account}`);
@@ -4371,6 +4382,8 @@
       state.lastShortPayUrl = typeof saved.lastShortPayUrl === "string" ? saved.lastShortPayUrl : "";
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
+      state.deleteThirdPartyAccountEnabled = saved.deleteThirdPartyAccountEnabled === undefined ? true : Boolean(saved.deleteThirdPartyAccountEnabled);
+      document.getElementById("deleteThirdPartyAccountCheckbox").checked = state.deleteThirdPartyAccountEnabled;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
       state.flowCountry = normalizeFlowCountry(saved.flowCountry);
       document.getElementById("flowCountrySelect").value = state.flowCountry;
@@ -4416,6 +4429,7 @@
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
+      deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
       payUrlInput: document.getElementById("payUrlInput").value,
       payUrlMode: normalizePayUrlMode(document.getElementById("payUrlModeSelect").value),
       lastLongPayUrl: state.lastLongPayUrl,
@@ -4473,6 +4487,11 @@
     document.getElementById("specifiedAccountInput").addEventListener("input", () => {
       state.specifiedAccountInput = document.getElementById("specifiedAccountInput").value.trim();
       persistState();
+    });
+    document.getElementById("deleteThirdPartyAccountCheckbox").addEventListener("change", () => {
+      state.deleteThirdPartyAccountEnabled = document.getElementById("deleteThirdPartyAccountCheckbox").checked;
+      persistState();
+      logMessage(state.deleteThirdPartyAccountEnabled ? "失败时将删除第三方账号" : "失败时将保留第三方账号");
     });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
