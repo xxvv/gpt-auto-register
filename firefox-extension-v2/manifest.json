@@ -6,9 +6,6 @@
   "permissions": [
     "tabs",
     "storage",
-    "contextualIdentities",
-    "cookies",
-    "browsingData",
     "clipboardWrite",
     "scripting",
     "activeTab",
