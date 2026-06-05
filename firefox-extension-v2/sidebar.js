@@ -3024,14 +3024,14 @@
     logMessage("等待 PayPal 页面加载完成...");
     
     await delay(20000);
-    const hermesPrefix = "https://www.paypal.com/webapps/hermes";
+    // const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
     let lastLoggedUrl = "";
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
-      if (url.startsWith(hermesPrefix) || url.startsWith(hermes2)) {
+      if (url.startsWith(hermes2)) {
         return url;
       }
       if (isPayPalGenericErrorUrl(url) ) {
@@ -3059,7 +3059,7 @@
       await delay(1000);
     }
     logMessage('??????')
-    throw new Error(`等待 URL 超时: ${hermesPrefix}`);
+    throw new Error(`等待 URL 超时: ${hermes2}`);
   }
 
   async function waitForChatGptOrPayPalGenericError(tabId, timeoutMs) {
