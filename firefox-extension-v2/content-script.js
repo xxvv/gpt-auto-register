@@ -785,7 +785,7 @@
         buttons: 1
       }));
 
-      await delay(300);
+      await delay(100);
 
       const steps = 20;
       for (let i = 1; i <= steps; i++) {
@@ -799,10 +799,10 @@
           button: 0,
           buttons: 1
         }));
-        await delay(400);
+        await delay(200);
       }
 
-      await delay(500);
+      await delay(200);
 
       sliderElement.dispatchEvent(new MouseEvent("mouseup", {
         bubbles: true,

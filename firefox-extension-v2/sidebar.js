@@ -55,6 +55,7 @@
     useCurrentIpLocation: false,
     specifiedAccountInput: "",
     deleteThirdPartyAccountEnabled: true,
+    debugModeEnabled: false,
     phoneKeyInput: "",
     phoneKey: null,
     flowCountry: DEFAULT_FLOW_COUNTRY,
@@ -570,6 +571,12 @@
     const input = document.getElementById("deleteThirdPartyAccountCheckbox");
     state.deleteThirdPartyAccountEnabled = input ? Boolean(input.checked) : true;
     return state.deleteThirdPartyAccountEnabled;
+  }
+
+  function isDebugModeEnabled() {
+    const input = document.getElementById("debugModeCheckbox");
+    state.debugModeEnabled = input ? Boolean(input.checked) : false;
+    return state.debugModeEnabled;
   }
 
   function getJpSmsCdkInput() {
@@ -1466,15 +1473,21 @@
 
   async function closeAutomationWindow(windowId, options = {}) {
     if (windowId === undefined || windowId === null) {
-      return;
+      return false;
+    }
+    if (options.failed && isDebugModeEnabled()) {
+      logMessage("调试模式已开启，失败后保留自动化窗口");
+      return false;
     }
     try {
       if (!options.immediate) {
         await delay(AUTOMATION_WINDOW_CLOSE_DELAY_MS);
       }
       await ext.windows.remove(windowId);
+      return true;
     } catch (error) {
       console.warn("Failed to close automation private window", error);
+      return false;
     }
   }
 
@@ -1583,6 +1596,7 @@
 
   async function requestCheckoutLinkFromNewAutomationWindow(countrySel, closeReason, payUrlMode = getPayUrlMode()) {
     let automationWindowId = null;
+    let checkoutLinkSucceeded = false;
     try {
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
@@ -1593,13 +1607,15 @@
         return { ok: false, error: "打开的窗口未成功到达 chatgpt.com" };
       }
 
-      return await requestCheckoutLinkWithOfficialRegionRetry(
+      const result = await requestCheckoutLinkWithOfficialRegionRetry(
         (region) => requestChatGptCheckoutLinkFromTab(tab.id, region, payUrlMode),
         countrySel
       );
+      checkoutLinkSucceeded = Boolean(result && result.ok && hasCheckoutPaymentLink(result));
+      return result;
     } finally {
-      await closeAutomationWindow(automationWindowId);
-      if (closeReason) {
+      const windowClosed = await closeAutomationWindow(automationWindowId, { failed: !checkoutLinkSucceeded });
+      if (closeReason && windowClosed) {
         logMessage(closeReason);
       }
     }
@@ -1896,7 +1912,7 @@
             : "获取到 PayURL 后流程失败，正在删除第三方账号";
         await deleteUploadedThirdPartyAccountAfterFailure(uploadedThirdPartyAccount, cleanupReason);
       }
-      await closeAutomationWindow(automationWindowId);
+      await closeAutomationWindow(automationWindowId, { failed: !automationSucceeded });
     }
   }
 
@@ -1912,6 +1928,7 @@
 
     logMessage("开始执行到第2步...");
     let automationWindowId = null;
+    let step2Succeeded = false;
     try {
       try {
         await ensureProxyForStage("第一步");
@@ -1960,10 +1977,11 @@
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
       await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
       logMessage("已执行到第2步，流程停止");
+      step2Succeeded = true;
       return { ok: true, email: registration.email, paymentLink: selectedPaymentLink };
     } finally {
       await cleanupAutomationProxy("执行到第2步任务已关闭");
-      await closeAutomationWindow(automationWindowId);
+      await closeAutomationWindow(automationWindowId, { failed: !step2Succeeded });
     }
   }
 
@@ -2041,6 +2059,7 @@
 
     logMessage(`从 PayURL 开始支付流程: ${prepared.payUrl}`);
     let automationWindowId = null;
+    let paymentSucceeded = false;
     try {
       try {
         await ensureProxyForStage("第三步");
@@ -2054,6 +2073,7 @@
         proxyReady: true,
         currentWindowId: automationWindowId
       });
+      paymentSucceeded = Boolean(payFlowResult);
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
         await removeUsedPayUrlInput(prepared);
@@ -2061,7 +2081,7 @@
       return { ok: Boolean(payFlowResult) };
     } finally {
       await cleanupAutomationProxy("PayURL 任务已关闭");
-      await closeAutomationWindow(automationWindowId);
+      await closeAutomationWindow(automationWindowId, { failed: !paymentSucceeded });
     }
   }
 
@@ -3003,40 +3023,37 @@
   async function waitForPayPalHermesPage(tabId, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
-    await delay(30000);
+    await delay(20000);
     const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
     let lastLoggedUrl = "";
-    let model =false
-    let btn = false
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
       if (url.startsWith(hermesPrefix) || url.startsWith(hermes2)) {
         return url;
       }
-      if (!btn &&isPayPalGenericErrorUrl(url) ) {
+      if (isPayPalGenericErrorUrl(url) ) {
         logMessage("检测到 PayPal genericError 页面，点击 a.btn.full 继续");
-        await requirePageResult(tabId, "__gptAutoRegisterClick", {
+        await executePageFunction(tabId, "__gptAutoRegisterClick", {
           selector: "a.btn.full",
-          timeoutMs: 30000
+          timeoutMs: 10000
         }, "未找到 PayPal genericError 继续按钮 a.btn.full");
         logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
-        btn = true
-        await delay(1000);
+        await delay(5000);
         continue;
       }
-      if (!model && isPayPalMoneyFlowAccountsNewUrl(url)) {
+      if (isPayPalMoneyFlowAccountsNewUrl(url)) {
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
         await delay();
-        await requirePageResult(tabId, "__gptAutoRegisterClick", {
+        await executePageFunction(tabId, "__gptAutoRegisterClick", {
           selector: "#modalClose",
           timeoutMs: 10000
         }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
         logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
-        model = true
-        await delay(1000);
+        
+        await delay(5000);
         continue;
       }
       await delay(1000);
@@ -4364,6 +4381,8 @@
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
       state.deleteThirdPartyAccountEnabled = saved.deleteThirdPartyAccountEnabled === undefined ? true : Boolean(saved.deleteThirdPartyAccountEnabled);
       document.getElementById("deleteThirdPartyAccountCheckbox").checked = state.deleteThirdPartyAccountEnabled;
+      state.debugModeEnabled = Boolean(saved.debugModeEnabled);
+      document.getElementById("debugModeCheckbox").checked = state.debugModeEnabled;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
       state.flowCountry = normalizeFlowCountry(saved.flowCountry);
       document.getElementById("flowCountrySelect").value = state.flowCountry;
@@ -4410,6 +4429,7 @@
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
+      debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
       payUrlInput: document.getElementById("payUrlInput").value,
       payUrlMode: normalizePayUrlMode(document.getElementById("payUrlModeSelect").value),
       lastLongPayUrl: state.lastLongPayUrl,
@@ -4472,6 +4492,11 @@
       state.deleteThirdPartyAccountEnabled = document.getElementById("deleteThirdPartyAccountCheckbox").checked;
       persistState();
       logMessage(state.deleteThirdPartyAccountEnabled ? "失败时将删除第三方账号" : "失败时将保留第三方账号");
+    });
+    document.getElementById("debugModeCheckbox").addEventListener("change", () => {
+      state.debugModeEnabled = document.getElementById("debugModeCheckbox").checked;
+      persistState();
+      logMessage(state.debugModeEnabled ? "调试模式已开启，失败时将保留窗口" : "调试模式已关闭");
     });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
