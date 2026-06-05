@@ -2511,20 +2511,7 @@
   }
 
   async function runPayPalFlowWithCaptchaWindowRetry(tabId, prepared, options = {}) {
-    let activeTabId = tabId;
-    try {
-      return await runPayPalFlow(activeTabId, prepared, options);
-    } catch (error) {
-      if (!isPayPalCaptchaButtonNotFoundError(error) || options.captchaWindowRetry === false) {
-        throw error;
-      }
-      logMessage("滑块验证码后找不到点击按钮，在当前窗口重新访问支付链接进行第三步");
-      return await runPayPalFlow(activeTabId, prepared, {
-        ...options,
-        proxyReady: true,
-        captchaWindowRetry: false
-      });
-    }
+    return runPayPalFlow(tabId, prepared, options);
   }
 
   async function runPayPalFlow(tabId, prepared, options = {}) {
@@ -2983,7 +2970,7 @@
 
   async function finishPayPalConsent(tabId, prepared) {
     logMessage("等待 PayPal Hermes 授权页面...");
-    await waitForPayPalHermesPage(tabId, 120000);
+    await waitForPayPalHermesPage(tabId, prepared, 120000);
     logMessage("已进入 Hermes 页面，等待点击授权按钮");
     await delay();
     await clickPageElement(tabId, {
@@ -3021,7 +3008,7 @@
     return String(url || "").startsWith("https://www.paypal.com/checkoutweb/genericError");
   }
 
-  async function waitForPayPalHermesPage(tabId, timeoutMs) {
+  async function waitForPayPalHermesPage(tabId, prepared, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
     // const hermesPrefix = "https://www.paypal.com/webapps/hermes";
@@ -3035,14 +3022,9 @@
         return url;
       }
       if (isPayPalGenericErrorUrl(url) ) {
-        logMessage("检测到 PayPal genericError 页面，点击 a.btn.full 继续");
-        await executePageFunction(tabId, "__gptAutoRegisterClick", {
-          selector: "a.btn.full",
-          timeoutMs: 10000
-        }, "未找到 PayPal genericError 继续按钮 a.btn.full");
-        logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
-        throw new Error(`到失败页面了，准备重试`);
-        continue;
+        logMessage("检测到 PayPal genericError 页面，支付失败，停止当前流程");
+        await removeInvalidPhoneKeyInput(prepared);
+        throw new Error(`PayPal 支付失败，进入错误页面: ${url}`);
       }
       if (isPayPalMoneyFlowAccountsNewUrl(url)) {
         logMessage("检测到 PayPal money-flow 中间页，先关闭弹窗 #modalClose");
