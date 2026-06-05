@@ -43,7 +43,6 @@
     "www.paypal.com",
     "checkout.paypal.com"
   ]);
-  const AUTOMATION_TASK_TIMEOUT_MS = 10 * 60 * 1000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
     cardNumberSelector: ["#cardNumber", ""],
@@ -96,7 +95,6 @@
     }
   };
   let usZip3StateRangesPromise = null;
-  const automationWindowIds = new Set();
 
   function randomDelayMs(minMs = 3000, maxMs = 5000) {
     const min = Math.ceil(Number(minMs) || 3000);
@@ -107,43 +105,6 @@
   function delay(ms) {
     const waitMs = Number.isFinite(Number(ms)) ? Number(ms) : randomDelayMs();
     return new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
-
-  async function cleanupTimedOutAutomationTask(taskName) {
-    logMessage(`${taskName || "自动化任务"}执行超过 10 分钟，正在强制关闭窗口并清理代理`);
-    await cleanupAutomationProxy("任务超时");
-    const windowIds = Array.from(automationWindowIds);
-    for (const windowId of windowIds) {
-      await closeAutomationWindow(windowId, { immediate: true });
-    }
-  }
-
-  async function runAutomationTaskWithTimeout(taskName, task) {
-    let timeoutId = null;
-    let timedOut = false;
-    const timeoutPromise = new Promise((resolve) => {
-      timeoutId = setTimeout(() => {
-        timedOut = true;
-        cleanupTimedOutAutomationTask(taskName).catch((error) => {
-          logMessage(`任务超时清理失败: ${formatError(error)}`);
-        });
-        resolve({ ok: false, timeout: true, error: `${taskName || "自动化任务"}执行超过 10 分钟` });
-      }, AUTOMATION_TASK_TIMEOUT_MS);
-    });
-    const taskPromise = Promise.resolve()
-      .then(task)
-      .catch((error) => {
-        if (timedOut) {
-          return { ok: false, timeout: true, error: formatError(error) };
-        }
-        throw error;
-      });
-    const result = await Promise.race([taskPromise, timeoutPromise]);
-    clearTimeout(timeoutId);
-    if (timedOut && result && result.timeout) {
-      logMessage(`${taskName || "自动化任务"}已因超时结束`);
-    }
-    return result;
   }
 
   function generateLocalPart() {
@@ -1655,7 +1616,6 @@
     if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
       throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
     }
-    automationWindowIds.add(createdWindow.id);
     const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
     await ext.tabs.update(tab.id, { url, active: true });
     logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "隐私窗口新 URL");
@@ -1676,126 +1636,7 @@
       await ext.windows.remove(windowId);
     } catch (error) {
       console.warn("Failed to close automation private window", error);
-    } finally {
-      automationWindowIds.delete(windowId);
     }
-  }
-
-  function getHostnameFromUrl(url) {
-    try {
-      return new URL(String(url || "")).hostname.toLowerCase();
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function collectCleanupHostnames(taskContext, prepared) {
-    const hosts = new Set(AUTOMATION_CLEANUP_HOSTS);
-    [
-      prepared && prepared.payUrl,
-      prepared && prepared.longPayUrl,
-      prepared && prepared.shortPayUrl,
-      taskContext && taskContext.selectedPaymentLink
-    ].forEach((url) => {
-      const host = getHostnameFromUrl(url);
-      if (host) hosts.add(host);
-    });
-    return Array.from(hosts);
-  }
-
-  async function clearPageStorageInTab(tabId) {
-    if (!tabId) {
-      return;
-    }
-    const cleanupCode = `
-      (async function() {
-        const result = { localStorage: false, sessionStorage: false, caches: 0, indexedDB: 0 };
-        try { localStorage.clear(); result.localStorage = true; } catch (_) {}
-        try { sessionStorage.clear(); result.sessionStorage = true; } catch (_) {}
-        try {
-          if (self.caches && caches.keys) {
-            const keys = await caches.keys();
-            result.caches = keys.length;
-            await Promise.all(keys.map((key) => caches.delete(key)));
-          }
-        } catch (_) {}
-        try {
-          if (indexedDB && indexedDB.databases) {
-            const databases = await indexedDB.databases();
-            const names = databases.map((db) => db && db.name).filter(Boolean);
-            result.indexedDB = names.length;
-            await Promise.all(names.map((name) => new Promise((resolve) => {
-              const request = indexedDB.deleteDatabase(name);
-              request.onsuccess = request.onerror = request.onblocked = resolve;
-            })));
-          }
-        } catch (_) {}
-        return result;
-      })();
-    `;
-    try {
-      await waitForScriptableTab(tabId, 5000);
-      await executeScriptWithRetry(tabId, { code: cleanupCode, allFrames: true, runAt: "document_idle" }, "页面本地存储清理");
-    } catch (error) {
-      logMessage(`页面本地存储清理跳过: ${formatError(error)}`);
-    }
-  }
-
-  async function clearContainerCookies(cookieStoreId) {
-    if (!cookieStoreId || !ext.cookies || typeof ext.cookies.getAll !== "function") {
-      return;
-    }
-    try {
-      const cookies = await ext.cookies.getAll({ storeId: cookieStoreId });
-      await Promise.all((cookies || []).map((cookie) => {
-        const domain = String(cookie.domain || "").replace(/^\./, "");
-        const protocol = cookie.secure ? "https:" : "http:";
-        const path = cookie.path || "/";
-        return ext.cookies.remove({
-          url: `${protocol}//${domain}${path}`,
-          name: cookie.name,
-          storeId: cookieStoreId
-        }).catch(() => null);
-      }));
-      logMessage(`容器 Cookie 清理完成: ${cookies.length} 个`);
-    } catch (error) {
-      logMessage(`容器 Cookie 清理失败: ${formatError(error)}`);
-    }
-  }
-
-  async function clearBrowsingDataForContainer(cookieStoreId, hostnames) {
-    if (!cookieStoreId || !ext.browsingData || typeof ext.browsingData.remove !== "function") {
-      return;
-    }
-    const options = {
-      cookieStoreId,
-      hostnames: hostnames.filter(Boolean)
-    };
-    const dataTypes = {
-      cookies: true,
-      indexedDB: true,
-      localStorage: true,
-      cacheStorage: true,
-      serviceWorkers: true,
-      cache: true
-    };
-    try {
-      await ext.browsingData.remove(options, dataTypes);
-      logMessage("容器 browsingData 清理完成");
-    } catch (error) {
-      logMessage(`容器 browsingData 精确清理失败，继续收尾: ${formatError(error)}`);
-    }
-  }
-
-  async function cleanupAutomationContainer(taskContext, prepared, tabId) {
-    const cookieStoreId = taskContext && taskContext.cookieStoreId;
-    if (!cookieStoreId) {
-      return;
-    }
-    const hostnames = collectCleanupHostnames(taskContext, prepared);
-    await clearPageStorageInTab(tabId);
-    await clearContainerCookies(cookieStoreId);
-    await clearBrowsingDataForContainer(cookieStoreId, hostnames);
   }
 
   function getHostnameFromUrl(url) {
@@ -2401,7 +2242,7 @@
           let result = { ok: false };
           let failed = false;
           try {
-            result = await runAutomationTaskWithTimeout(`完整流程第 ${index}/${runCount} 次`, startAutomationtask, workerState);
+            result = await startAutomation(task, workerState);
           } catch (error) {
             failed = true;
             logMessage(`[任务 ${task.index}/${runCount}] 异常结束: ${formatError(error)}`);
@@ -2744,7 +2585,7 @@
         logMessage(`===== PayURL 第 ${index}/${totalPayUrls} 条开始 =====`);
         let result = { ok: false };
         try {
-          result = await runAutomationTaskWithTimeout(`PayURL 第 ${index}/${totalPayUrls} 条`, runSinglePayUrlPayment);
+          result = await runSinglePayUrlPayment();
         } catch (error) {
           logMessage(`PayURL 第 ${index}/${totalPayUrls} 条异常结束: ${formatError(error)}`);
         }
@@ -3776,7 +3617,7 @@
         }, "未找到 PayPal genericError 继续按钮 a.btn.full");
         logMessage("已点击 PayPal genericError 继续按钮，继续等待 Hermes 页面");
         btn = true
-        await delay(5000);
+        await delay(1000);
         continue;
       }
       if (!model && isPayPalMoneyFlowAccountsNewUrl(url)) {
@@ -5199,11 +5040,11 @@
 
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(runAutomationBatch));
-    document.getElementById("startToStep2Btn").addEventListener("click", () => runWithErrorHandling(() => runAutomationTaskWithTimeout("执行到第2步任务", startToStep2)));
+    document.getElementById("startToStep2Btn").addEventListener("click", () => runWithErrorHandling(startToStep2));
     document.getElementById("cancelBatchBtn").addEventListener("click", requestCancelAutomationBatch);
-    document.getElementById("getPayUrlBtn").addEventListener("click", () => runWithErrorHandling(() => runAutomationTaskWithTimeout("获取支付链接任务", getPayUrlFromCurrentTab)));
+    document.getElementById("getPayUrlBtn").addEventListener("click", () => runWithErrorHandling(getPayUrlFromCurrentTab));
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
-    document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(() => runAutomationTaskWithTimeout("第3步任务", startFromStep3)));
+    document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
     document.getElementById("getWebshareProxyButton").addEventListener("click", () => runWithErrorHandling(getCurrentWebshareProxy));
     document.getElementById("setProxyButton").addEventListener("click", () => runWithErrorHandling(setCurrentProxy));
