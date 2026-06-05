@@ -2,20 +2,24 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const PROXY_ROUTE_STORAGE_KEY = "gptAutoRegisterProxyRoutes";
+  const DEFAULT_PROXY_ROUTE_KEY = "__default__";
   const TAB_USER_AGENT_TTL_MS = 30 * 60 * 1000;
-  let proxyAuth = {};
+
+  let proxyRoutes = {};
   const tabUserAgents = new Map();
 
-  ext.storage.local.get(PROXY_AUTH_KEY).then((saved) => {
-    proxyAuth = saved && saved[PROXY_AUTH_KEY] ? saved[PROXY_AUTH_KEY] : {};
+  ext.storage.local.get(PROXY_ROUTE_STORAGE_KEY).then((saved) => {
+    proxyRoutes = normalizeProxyRoutes(saved && saved[PROXY_ROUTE_STORAGE_KEY]);
   });
 
   ext.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || !changes[PROXY_AUTH_KEY]) {
+    if (areaName !== "local") {
       return;
     }
-    proxyAuth = changes[PROXY_AUTH_KEY].newValue || {};
+    if (changes[PROXY_ROUTE_STORAGE_KEY]) {
+      proxyRoutes = normalizeProxyRoutes(changes[PROXY_ROUTE_STORAGE_KEY].newValue);
+    }
   });
 
   ext.runtime.onMessage.addListener((message, sender) => {
@@ -33,25 +37,52 @@
       return handleUserAgentMessage(message, sender);
     }
 
+    if (message.action === "assignRoute") {
+      return assignProxyRoute(message);
+    }
     if (message.action === "apply") {
-      return applyFirefoxProxy(message.proxy);
+      return assignProxyRoute({
+        cookieStoreId: DEFAULT_PROXY_ROUTE_KEY,
+        proxy: message.proxy
+      });
+    }
+    if (message.action === "removeRoute") {
+      return removeProxyRoute(message);
     }
     if (message.action === "clear") {
-      return clearFirefoxProxy();
+      return removeProxyRoute({ cookieStoreId: DEFAULT_PROXY_ROUTE_KEY });
+    }
+    if (message.action === "clearRoutes") {
+      return clearProxyRoutes();
+    }
+    if (message.action === "getRoutes") {
+      return Promise.resolve({ ok: true, routes: proxyRoutes });
     }
     return Promise.resolve({ ok: false, error: `Unknown proxy action: ${message.action || ""}` });
   });
 
+  ext.proxy.onRequest.addListener(
+    (details) => {
+      const cookieStoreId = String(details && details.cookieStoreId || "");
+      const route = proxyRoutes[cookieStoreId] || proxyRoutes[DEFAULT_PROXY_ROUTE_KEY];
+      if (!route || !route.enabled) {
+        return { type: "direct" };
+      }
+      return buildProxyInfo(route);
+    },
+    { urls: ["<all_urls>"] }
+  );
+
   ext.webRequest.onAuthRequired.addListener(
     (details) => {
-      if (!shouldUseProxyAuth(details)) {
+      const route = getProxyRouteForDetails(details);
+      if (!route || !route.username) {
         return {};
       }
-
       return {
         authCredentials: {
-          username: String(proxyAuth.username || ""),
-          password: String(proxyAuth.password || "")
+          username: String(route.username || ""),
+          password: String(route.password || "")
         }
       };
     },
@@ -84,31 +115,91 @@
     });
   }
 
-  function shouldUseProxyAuth(details) {
-    if (!details || !details.isProxy || !proxyAuth || !proxyAuth.enabled) {
-      return false;
-    }
+  function normalizeProxyRoutes(rawRoutes) {
+    const input = rawRoutes && typeof rawRoutes === "object" ? rawRoutes : {};
+    return Object.entries(input).reduce((acc, [cookieStoreId, route]) => {
+      try {
+        acc[String(cookieStoreId)] = requireRuntimeProxy(route);
+      } catch (_) {}
+      return acc;
+    }, {});
+  }
 
-    const username = String(proxyAuth.username || "");
-    if (!username) {
-      return false;
-    }
+  async function saveProxyRoutes() {
+    await ext.storage.local.set({ [PROXY_ROUTE_STORAGE_KEY]: proxyRoutes });
+  }
 
-    const authHost = String(proxyAuth.host || "").trim();
-    const authPort = Number(proxyAuth.port || 0);
+  async function assignProxyRoute(message) {
+    const cookieStoreId = String(message.cookieStoreId || "").trim();
+    if (!cookieStoreId) {
+      return { ok: false, error: "Missing cookieStoreId" };
+    }
+    const proxy = requireRuntimeProxy(message.proxy);
+    proxyRoutes = {
+      ...proxyRoutes,
+      [cookieStoreId]: proxy
+    };
+    await saveProxyRoutes();
+    return { ok: true, cookieStoreId, proxy };
+  }
+
+  async function removeProxyRoute(message) {
+    const cookieStoreId = String(message.cookieStoreId || "").trim();
+    if (!cookieStoreId) {
+      return { ok: false, error: "Missing cookieStoreId" };
+    }
+    if (proxyRoutes[cookieStoreId]) {
+      delete proxyRoutes[cookieStoreId];
+      proxyRoutes = { ...proxyRoutes };
+      await saveProxyRoutes();
+    }
+    return { ok: true, cookieStoreId };
+  }
+
+  async function clearProxyRoutes() {
+    proxyRoutes = {};
+    await ext.storage.local.remove(PROXY_ROUTE_STORAGE_KEY);
+    return { ok: true };
+  }
+
+  function getProxyRouteForDetails(details) {
+    if (!details) {
+      return null;
+    }
+    const cookieStoreId = String(details.cookieStoreId || "");
+    if (cookieStoreId && proxyRoutes[cookieStoreId]) {
+      return proxyRoutes[cookieStoreId];
+    }
+    if (proxyRoutes[DEFAULT_PROXY_ROUTE_KEY]) {
+      return proxyRoutes[DEFAULT_PROXY_ROUTE_KEY];
+    }
     const challenger = details.challenger || {};
     const challengerHost = String(challenger.host || "").trim();
     const challengerPort = Number(challenger.port || 0);
+    return Object.values(proxyRoutes).find((route) => {
+      return route &&
+        route.enabled &&
+        String(route.host || "").trim() === challengerHost &&
+        Number(route.port || 0) === challengerPort;
+    }) || null;
+  }
 
-    if (authHost && challengerHost && authHost !== challengerHost) {
-      return false;
+  function buildProxyInfo(route) {
+    const proxyType = String(route.type || "http").toLowerCase();
+    const result = {
+      type: proxyType,
+      host: route.host,
+      port: Number(route.port || 0)
+    };
+    if (proxyType === "socks" || proxyType === "socks4" || proxyType === "socks5") {
+      result.proxyDNS = proxyType !== "socks4";
+      result.username = route.username || undefined;
+      result.password = route.password || undefined;
+    } else {
+      result.username = route.username || undefined;
+      result.password = route.password || undefined;
     }
-
-    if (authPort > 0 && challengerPort > 0 && authPort !== challengerPort) {
-      return false;
-    }
-
-    return true;
+    return result;
   }
 
   function handleUserAgentMessage(message, sender) {
@@ -176,57 +267,6 @@
     return Math.floor(Math.random() * (high - low + 1)) + low;
   }
 
-  async function applyFirefoxProxy(proxy) {
-    const runtimeProxy = requireRuntimeProxy(proxy);
-    const proxyType = String(runtimeProxy.type || "http").toLowerCase();
-    if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
-      throw new Error(`Firefox 不支持的代理类型: ${runtimeProxy.type}`);
-    }
-
-    if (!ext.proxy || !ext.proxy.settings || typeof ext.proxy.settings.set !== "function") {
-      throw new Error("Firefox proxy API 不可用，请确认已重新加载扩展并授予 proxy 权限");
-    }
-
-    await ext.storage.local.set({
-      [PROXY_AUTH_KEY]: {
-        enabled: Boolean(runtimeProxy.username),
-        host: runtimeProxy.host,
-        port: runtimeProxy.port,
-        username: runtimeProxy.username || "",
-        password: runtimeProxy.password || ""
-      }
-    });
-
-    const proxyAddress = `${runtimeProxy.host}:${runtimeProxy.port}`;
-    const settingsValue = {
-      proxyType: "manual",
-      passthrough: "localhost, 127.0.0.1, ::1"
-    };
-
-    if (proxyType === "http") {
-      settingsValue.http = proxyAddress;
-      settingsValue.httpProxyAll = true;
-    } else if (proxyType === "https") {
-      settingsValue.ssl = proxyAddress;
-    } else {
-      settingsValue.socks = proxyAddress;
-      settingsValue.socksVersion = proxyType === "socks4" ? 4 : 5;
-      settingsValue.proxyDNS = proxyType !== "socks4";
-    }
-
-    await ext.proxy.settings.set({ value: settingsValue, scope: "regular" });
-    return { ok: true };
-  }
-
-  async function clearFirefoxProxy() {
-    if (!ext.proxy || !ext.proxy.settings || typeof ext.proxy.settings.clear !== "function") {
-      throw new Error("Firefox proxy API 不可用，请确认已重新加载扩展并授予 proxy 权限");
-    }
-    await ext.proxy.settings.clear({});
-    await ext.storage.local.remove(PROXY_AUTH_KEY);
-    return { ok: true };
-  }
-
   function requireRuntimeProxy(proxy) {
     if (!proxy || !proxy.enabled) {
       throw new Error("代理数据缺少 enabled");
@@ -236,6 +276,16 @@
     if (!host || port <= 0) {
       throw new Error("代理数据缺少 host/port");
     }
-    return proxy;
+    return {
+      enabled: true,
+      type: String(proxy.type || "http").toLowerCase(),
+      host,
+      port,
+      username: String(proxy.username || ""),
+      password: String(proxy.password || ""),
+      use_auth: Boolean(proxy.use_auth || proxy.username),
+      country_code: String(proxy.country_code || ""),
+      city_name: String(proxy.city_name || "")
+    };
   }
 }());

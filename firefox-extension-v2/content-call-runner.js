@@ -2,7 +2,7 @@
   "use strict";
 
   const extApi = typeof browser !== "undefined" ? browser : chrome;
-  const storageKey = "__gptAutoRegisterContentCall";
+  const storageKey = window.__gptAutoRegisterContentCallStorageKey || "__gptAutoRegisterContentCall";
 
   function storageGet(key) {
     const result = extApi.storage.local.get(key);

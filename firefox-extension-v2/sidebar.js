@@ -15,9 +15,10 @@
   const THIRD_PARTY_API_KEY = "aa102911";
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
+  const WEBSHARE_REPLACED_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/replaced/";
   const IPAPI_LOCATION_API = "https://ipapi.co/json/?token=T6UkBSJpmZgNZELN7QsJk5uCZTF8c6aVHUYZiLwEsHnUQqqeJg";
   const STORAGE_KEY = "gptAutoRegisterV2State";
-  const CONTENT_CALL_STORAGE_KEY = "__gptAutoRegisterContentCall";
+  const CONTENT_CALL_STORAGE_KEY_PREFIX = "__gptAutoRegisterContentCall";
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
   const US_ZIP3_STATE_RANGES_PATH = "us_zip3_state_ranges.json";
   const POLL_ATTEMPTS = 20;
@@ -25,12 +26,23 @@
   const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
   const PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]';
   const DEFAULT_RUN_COUNT = 1;
+  const DEFAULT_THREAD_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
   const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
   const DEFAULT_JP_SMS_CDK = "";
   const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
+  const AUTOMATION_CONTAINER_COLORS = Object.freeze(["blue", "turquoise", "green", "yellow", "orange", "red", "pink", "purple", "toolbar"]);
+  const AUTOMATION_CONTAINER_ICONS = Object.freeze(["circle", "fingerprint", "briefcase", "cart", "chill", "dollar", "gift", "vacation"]);
+  const DEFAULT_PROXY_ROUTE_KEY = "__default__";
+  const AUTOMATION_CLEANUP_HOSTS = Object.freeze([
+    "chatgpt.com",
+    "auth.openai.com",
+    "paypal.com",
+    "www.paypal.com",
+    "checkout.paypal.com"
+  ]);
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
     cardNumberSelector: ["#cardNumber", ""],
@@ -69,8 +81,10 @@
     step1ProxyCountry: "US",
     step3ProxyCountry: "US",
     currentProxy: null,
+    threadProxyAssignments: {},
     currentIpLocation: null,
     automationBatchRunning: false,
+    automationBatchSharedProxy: false,
     cancelAutomationBatchRequested: false,
     payUrlBatchRunning: false,
     runStats: {
@@ -184,6 +198,10 @@
   }
 
   async function ensureProxyForStage(stage) {
+    if (state.automationBatchSharedProxy) {
+      logMessage(`多线程共享代理模式，跳过${stage}代理切换`);
+      return false;
+    }
     if (!isProxyEnabled()) {
       logMessage(`代理未开启，跳过${stage}代理设置`);
       return false;
@@ -244,7 +262,7 @@
         const apiKey = requireWebshareApiKey();
         state.currentProxy = await getCurrentWebshareProxyDirect(apiKey, getProxyProtocol());
       }
-      await applyFirefoxProxy(state.currentProxy);
+      await assignProxyRoute(DEFAULT_PROXY_ROUTE_KEY, state.currentProxy);
       renderProxyStatus();
       await persistState();
       logMessage(`代理设置成功，Firefox 已写入 ${formatProxy(state.currentProxy)}`);
@@ -274,7 +292,7 @@
 
   async function clearProxy() {
     try {
-      await clearFirefoxProxyState();
+      await removeProxyRoute(DEFAULT_PROXY_ROUTE_KEY);
       state.currentProxy = null;
       state.currentIpLocation = null;
       renderProxyStatus();
@@ -287,7 +305,7 @@
 
   async function cleanupAutomationProxy(reason) {
     try {
-      await clearFirefoxProxyState();
+      await removeProxyRoute(DEFAULT_PROXY_ROUTE_KEY);
       state.currentProxy = null;
       state.currentIpLocation = null;
       renderProxyStatus();
@@ -328,9 +346,20 @@
     return requireRuntimeProxy(mapWebshareItemToProxy(items[0], protocol));
   }
 
-  async function replaceWebshareProxyDirect(apiKey, country, protocol) {
+  async function getWebshareProxiesDirect(apiKey, protocol, limit) {
+    const items = await fetchWebshareProxyList(apiKey);
+    const count = Math.max(1, Number(limit) || 1);
+    const proxies = items.map((item) => requireRuntimeProxy(mapWebshareItemToProxy(item, protocol)));
+    return dedupeProxyList(proxies).slice(0, count);
+  }
+
+  async function replaceWebshareProxyDirect(apiKey, country, protocol, currentHostOverride = "") {
     const currentItems = await fetchWebshareProxyList(apiKey);
-    const currentProxy = mapWebshareItemToProxy(currentItems[0], protocol);
+    const normalizedCurrentHost = String(currentHostOverride || "").trim();
+    const matchedItem = normalizedCurrentHost
+      ? currentItems.find((item) => String(item && (item.proxy_address || item.host || item.ip || item.ip_address) || "").trim() === normalizedCurrentHost)
+      : null;
+    const currentProxy = mapWebshareItemToProxy(matchedItem || currentItems[0], protocol);
     const response = await fetch(WEBSHARE_REPLACE_API, {
       method: "POST",
       headers: buildWebshareHeaders(apiKey),
@@ -384,7 +413,33 @@
       throw new Error(`Webshare 代理替换超时: status=${lastStatus || "unknown"}`);
     }
 
-    return getCurrentWebshareProxyDirect(apiKey, protocol);
+    const replacedProxy = await fetchReplacedWebshareProxy(apiKey, replacementId, protocol);
+    if (replacedProxy) {
+      return replacedProxy;
+    }
+    const refreshedItems = await fetchWebshareProxyList(apiKey);
+    const fallbackItem = refreshedItems.find((item) => {
+      const host = String(item && (item.proxy_address || item.host || item.ip || item.ip_address) || "").trim();
+      return host && host !== currentProxy.host;
+    });
+    return requireRuntimeProxy(mapWebshareItemToProxy(fallbackItem || refreshedItems[0], protocol));
+  }
+
+  async function fetchReplacedWebshareProxy(apiKey, replacementId, protocol) {
+    const response = await fetch(`${WEBSHARE_REPLACED_LIST_API}?replacement_id=${encodeURIComponent(replacementId)}`, {
+      method: "GET",
+      headers: buildWebshareHeaders(apiKey),
+      cache: "no-store"
+    });
+    const payload = await readJsonResponse(response, "Webshare replaced 代理列表");
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || payload.message || `HTTP ${response.status}`);
+    }
+    const items = extractWebshareItems(payload);
+    if (!items.length) {
+      return null;
+    }
+    return requireRuntimeProxy(mapWebshareItemToProxy(items[0], protocol));
   }
 
   async function fetchWebshareProxyList(apiKey) {
@@ -457,6 +512,27 @@
     return proxy;
   }
 
+  function getProxyIdentity(proxy) {
+    if (!isRuntimeProxy(proxy)) {
+      return "";
+    }
+    return `${String(proxy.host || "").trim()}:${Number(proxy.port || 0)}`;
+  }
+
+  function dedupeProxyList(proxies) {
+    const seen = new Set();
+    const result = [];
+    for (const proxy of proxies || []) {
+      const identity = getProxyIdentity(proxy);
+      if (!identity || seen.has(identity)) {
+        continue;
+      }
+      seen.add(identity);
+      result.push(proxy);
+    }
+    return result;
+  }
+
   function isRuntimeProxy(proxy) {
     if (!proxy || !proxy.enabled) {
       return false;
@@ -470,19 +546,23 @@
     const proxyStatus = document.getElementById("proxyStatus");
     if (!proxyStatus) return;
     const proxy = state.currentProxy;
-    if (!isRuntimeProxy(proxy)) {
+    const assignments = Object.entries(state.threadProxyAssignments || {}).filter(([, item]) => item && isRuntimeProxy(item.proxy));
+    if (!isRuntimeProxy(proxy) && !assignments.length) {
       proxyStatus.classList.add("empty");
       proxyStatus.textContent = "代理状态: 未设置";
       return;
     }
     proxyStatus.classList.remove("empty");
-    proxyStatus.textContent = [
-      `代理状态: 已设置`,
-      `类型: ${String(proxy.type || "http").toLowerCase()}`,
-      `地址: ${proxy.host}:${proxy.port}`,
-      `国家: ${String(proxy.country_code || proxy.country || "-").toUpperCase()}`,
-      `用户名: ${proxy.username || "-"}`
-    ].join("\n");
+    const lines = ["代理状态: 已设置"];
+    if (isRuntimeProxy(proxy)) {
+      lines.push(`默认: ${formatProxy(proxy)} / ${String(proxy.country_code || proxy.country || "-").toUpperCase()}`);
+    }
+    assignments.forEach(([workerKey, item]) => {
+      const ipText = item.ip ? ` / IP ${item.ip}` : "";
+      const windowText = item.windowId ? ` / 窗口 ${item.windowId}` : "";
+      lines.push(`${workerKey}: ${formatProxy(item.proxy)}${ipText}${windowText}`);
+    });
+    proxyStatus.textContent = lines.join("\n");
   }
 
   function formatProxy(proxy) {
@@ -501,6 +581,22 @@
     }
     state.webshareApiKey = apiKey;
     return apiKey;
+  }
+
+  async function assignProxyRoute(cookieStoreId, proxy) {
+    const runtimeProxy = requireRuntimeProxy(proxy);
+    return sendProxyMessage({
+      action: "assignRoute",
+      cookieStoreId,
+      proxy: runtimeProxy
+    });
+  }
+
+  async function removeProxyRoute(cookieStoreId) {
+    return sendProxyMessage({
+      action: "removeRoute",
+      cookieStoreId
+    });
   }
 
   function isProxyEnabled() {
@@ -658,7 +754,10 @@
       logMessage("未启用当前 IP 定位填表，继续使用默认卡片地址");
       return;
     }
-    const location = await refreshIpLocation();
+    const location = prepared.proxyIpLocation ||
+      (state.automationBatchSharedProxy && state.currentIpLocation
+        ? state.currentIpLocation
+        : await refreshIpLocation());
     const changed = applyIpLocationToCard(prepared.card, location);
     if (changed) {
       logMessage(`已按当前 IP 定位更新卡片地址: ${formatIpLocation(location)}`);
@@ -1438,12 +1537,81 @@
     return tabs && tabs[0] ? tabs[0] : null;
   }
 
-  async function createPrivateAutomationWindow(url) {
-    const createdWindow = await ext.windows.create({
+  function requireContextualIdentityApi() {
+    if (!ext.contextualIdentities || typeof ext.contextualIdentities.create !== "function") {
+      throw new Error("Firefox Containers API 不可用，请确认已启用 contextualIdentities 权限并重新加载扩展");
+    }
+    if (!ext.contextualIdentities.remove || typeof ext.contextualIdentities.remove !== "function") {
+      throw new Error("Firefox Containers 清理 API 不可用，请确认已重新加载扩展");
+    }
+  }
+
+  async function createAutomationContainer(taskContext) {
+    requireContextualIdentityApi();
+    const taskIndex = Number(taskContext && taskContext.index || 0);
+    const color = AUTOMATION_CONTAINER_COLORS[(Math.max(taskIndex, 1) - 1) % AUTOMATION_CONTAINER_COLORS.length];
+    const icon = AUTOMATION_CONTAINER_ICONS[(Math.max(taskIndex, 1) - 1) % AUTOMATION_CONTAINER_ICONS.length];
+    const identity = await ext.contextualIdentities.create({
+      name: `GPT Auto ${taskIndex || Date.now()}`,
+      color,
+      icon
+    });
+    if (!identity || !identity.cookieStoreId) {
+      throw new Error("创建 Firefox 容器失败，未返回 cookieStoreId");
+    }
+    return identity;
+  }
+
+  async function removeAutomationContainer(cookieStoreId) {
+    if (!cookieStoreId || !ext.contextualIdentities || typeof ext.contextualIdentities.remove !== "function") {
+      return;
+    }
+    try {
+      await ext.contextualIdentities.remove(cookieStoreId);
+      logMessage(`已删除任务容器: ${cookieStoreId}`);
+    } catch (error) {
+      logMessage(`删除任务容器失败: ${formatError(error)}`);
+    }
+  }
+
+  async function createPrivateAutomationWindow(url, options = {}) {
+    const createOptions = {
       url: "about:blank",
       incognito: true,
       focused: true
-    });
+    };
+    if (options.cookieStoreId) {
+      createOptions.cookieStoreId = options.cookieStoreId;
+      delete createOptions.incognito;
+    }
+    let createdWindow;
+    try {
+      createdWindow = await ext.windows.create(createOptions);
+    } catch (error) {
+      if (!options.cookieStoreId) {
+        throw error;
+      }
+      const fallbackWindow = await ext.windows.create({
+        url: "about:blank",
+        focused: true
+      });
+      const firstTab = fallbackWindow && fallbackWindow.tabs && fallbackWindow.tabs[0];
+      const containerTab = await ext.tabs.create({
+        windowId: fallbackWindow.id,
+        cookieStoreId: options.cookieStoreId,
+        url: "about:blank",
+        active: true
+      });
+      if (firstTab && firstTab.id && firstTab.id !== containerTab.id) {
+        try {
+          await ext.tabs.remove(firstTab.id);
+        } catch (_) {}
+      }
+      createdWindow = {
+        ...fallbackWindow,
+        tabs: [containerTab]
+      };
+    }
     const tab = createdWindow && createdWindow.tabs && createdWindow.tabs[0];
     if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
       throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
@@ -1469,6 +1637,123 @@
     } catch (error) {
       console.warn("Failed to close automation private window", error);
     }
+  }
+
+  function getHostnameFromUrl(url) {
+    try {
+      return new URL(String(url || "")).hostname.toLowerCase();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function collectCleanupHostnames(taskContext, prepared) {
+    const hosts = new Set(AUTOMATION_CLEANUP_HOSTS);
+    [
+      prepared && prepared.payUrl,
+      prepared && prepared.longPayUrl,
+      prepared && prepared.shortPayUrl,
+      taskContext && taskContext.selectedPaymentLink
+    ].forEach((url) => {
+      const host = getHostnameFromUrl(url);
+      if (host) hosts.add(host);
+    });
+    return Array.from(hosts);
+  }
+
+  async function clearPageStorageInTab(tabId) {
+    if (!tabId) {
+      return;
+    }
+    const cleanupCode = `
+      (async function() {
+        const result = { localStorage: false, sessionStorage: false, caches: 0, indexedDB: 0 };
+        try { localStorage.clear(); result.localStorage = true; } catch (_) {}
+        try { sessionStorage.clear(); result.sessionStorage = true; } catch (_) {}
+        try {
+          if (self.caches && caches.keys) {
+            const keys = await caches.keys();
+            result.caches = keys.length;
+            await Promise.all(keys.map((key) => caches.delete(key)));
+          }
+        } catch (_) {}
+        try {
+          if (indexedDB && indexedDB.databases) {
+            const databases = await indexedDB.databases();
+            const names = databases.map((db) => db && db.name).filter(Boolean);
+            result.indexedDB = names.length;
+            await Promise.all(names.map((name) => new Promise((resolve) => {
+              const request = indexedDB.deleteDatabase(name);
+              request.onsuccess = request.onerror = request.onblocked = resolve;
+            })));
+          }
+        } catch (_) {}
+        return result;
+      })();
+    `;
+    try {
+      await waitForScriptableTab(tabId, 5000);
+      await executeScriptWithRetry(tabId, { code: cleanupCode, allFrames: true, runAt: "document_idle" }, "页面本地存储清理");
+    } catch (error) {
+      logMessage(`页面本地存储清理跳过: ${formatError(error)}`);
+    }
+  }
+
+  async function clearContainerCookies(cookieStoreId) {
+    if (!cookieStoreId || !ext.cookies || typeof ext.cookies.getAll !== "function") {
+      return;
+    }
+    try {
+      const cookies = await ext.cookies.getAll({ storeId: cookieStoreId });
+      await Promise.all((cookies || []).map((cookie) => {
+        const domain = String(cookie.domain || "").replace(/^\./, "");
+        const protocol = cookie.secure ? "https:" : "http:";
+        const path = cookie.path || "/";
+        return ext.cookies.remove({
+          url: `${protocol}//${domain}${path}`,
+          name: cookie.name,
+          storeId: cookieStoreId
+        }).catch(() => null);
+      }));
+      logMessage(`容器 Cookie 清理完成: ${cookies.length} 个`);
+    } catch (error) {
+      logMessage(`容器 Cookie 清理失败: ${formatError(error)}`);
+    }
+  }
+
+  async function clearBrowsingDataForContainer(cookieStoreId, hostnames) {
+    if (!cookieStoreId || !ext.browsingData || typeof ext.browsingData.remove !== "function") {
+      return;
+    }
+    const options = {
+      cookieStoreId,
+      hostnames: hostnames.filter(Boolean)
+    };
+    const dataTypes = {
+      cookies: true,
+      indexedDB: true,
+      localStorage: true,
+      cacheStorage: true,
+      serviceWorkers: true,
+      cache: true
+    };
+    try {
+      await ext.browsingData.remove(options, dataTypes);
+      logMessage("容器 browsingData 清理完成");
+    } catch (error) {
+      logMessage(`容器 browsingData 精确清理失败，继续收尾: ${formatError(error)}`);
+    }
+  }
+
+  async function cleanupAutomationContainer(taskContext, prepared, tabId) {
+    const cookieStoreId = taskContext && taskContext.cookieStoreId;
+    if (!cookieStoreId) {
+      return;
+    }
+    const hostnames = collectCleanupHostnames(taskContext, prepared);
+    await clearPageStorageInTab(tabId);
+    await clearContainerCookies(cookieStoreId);
+    await clearBrowsingDataForContainer(cookieStoreId, hostnames);
   }
 
   async function requestChatGptCheckoutLinkFromTab(tabId, checkoutRegion, payUrlMode) {
@@ -1561,11 +1846,13 @@
       throw new Error(mode === "short" ? "支付链接响应缺少短链" : "支付链接响应缺少长链");
     }
 
-    state.lastLongPayUrl = longLink;
-    state.lastShortPayUrl = shortLink;
-    state.payUrlMode = mode;
-    document.getElementById("payUrlInput").value = selectedLink;
-    await persistState();
+    if (!options.skipStateUpdate) {
+      state.lastLongPayUrl = longLink;
+      state.lastShortPayUrl = shortLink;
+      state.payUrlMode = mode;
+      document.getElementById("payUrlInput").value = selectedLink;
+      await persistState();
+    }
     if (mode === "short") {
       logMessage(`支付链接获取成功，已选择短链: ${selectedLink}`);
     } else {
@@ -1669,6 +1956,222 @@
     return DEFAULT_RUN_COUNT;
   }
 
+  function getThreadCount() {
+    const input = document.getElementById("threadCountInput");
+    const value = Math.floor(Number(input && input.value));
+    if (Number.isFinite(value) && value >= 1) {
+      return value;
+    }
+    if (input) {
+      input.value = String(DEFAULT_THREAD_COUNT);
+    }
+    return DEFAULT_THREAD_COUNT;
+  }
+
+  function getNonEmptyLines(rawInput) {
+    return String(rawInput || "")
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+  }
+
+  function createAutomationBatchSnapshot(runCount) {
+    const specifiedAccounts = getSpecifiedAccountEntries();
+    const invalidAccount = specifiedAccounts.find((account) => !isValidSpecifiedAccountEmail(account));
+    if (invalidAccount) {
+      throw new Error(`指定注册账号格式无效，流程终止: ${invalidAccount}`);
+    }
+
+    const cardLines = getNonEmptyLines(document.getElementById("cardInput").value);
+    if (!cardLines.length) {
+      throw new Error("请输入卡片信息");
+    }
+    if (!state.randomCardEnabled && cardLines.length < runCount) {
+      logMessage(`卡片信息只有 ${cardLines.length} 条，本次完整流程执行次数调整为 ${cardLines.length}`);
+      runCount = cardLines.length;
+    }
+    if (specifiedAccounts.length && runCount > specifiedAccounts.length) {
+      logMessage(`指定注册账号只有 ${specifiedAccounts.length} 个，本次完整流程执行次数调整为 ${specifiedAccounts.length}`);
+      runCount = specifiedAccounts.length;
+    }
+
+    const countrySel = document.getElementById("country").value;
+    const flowCountry = getFlowCountry();
+    const payUrlMode = getPayUrlMode();
+    const randomCardEnabled = Boolean(state.randomCardEnabled);
+    const tasks = [];
+    for (let index = 1; index <= runCount; index += 1) {
+      const account = specifiedAccounts[index - 1] || "";
+      const cardLine = randomCardEnabled ? cardLines[(index - 1) % cardLines.length] : cardLines[index - 1];
+      tasks.push({
+        index,
+        total: runCount,
+        countrySel,
+        flowCountry,
+        payUrlMode,
+        specifiedAccountEntry: account ? { line: account, email: account } : null,
+        cardEntry: { line: cardLine }
+      });
+    }
+    return {
+      runCount,
+      tasks
+    };
+  }
+
+  function setThreadProxyAssignment(workerKey, payload) {
+    state.threadProxyAssignments = {
+      ...(state.threadProxyAssignments || {}),
+      [workerKey]: payload
+    };
+    renderProxyStatus();
+  }
+
+  function clearThreadProxyAssignment(workerKey) {
+    if (!state.threadProxyAssignments || !state.threadProxyAssignments[workerKey]) {
+      return;
+    }
+    const nextAssignments = { ...state.threadProxyAssignments };
+    delete nextAssignments[workerKey];
+    state.threadProxyAssignments = nextAssignments;
+    renderProxyStatus();
+  }
+
+  async function fetchCurrentIpWithAssignedProxy(tabId, logPrefix = "") {
+    if (!tabId) {
+      return null;
+    }
+    const results = await executeScriptAfterPageReady(tabId, {
+      code: `(async function() {
+        const response = await fetch(${JSON.stringify(IPAPI_LOCATION_API)}, { method: "GET", cache: "no-store" });
+        return await response.json();
+      })();`,
+      runAt: "document_idle"
+    }, "获取线程代理 IP", {
+      loadTimeoutMs: 45000,
+      scriptableTimeoutMs: 15000
+    });
+    const payload = Array.isArray(results) ? results[0] : results;
+    const ip = String(payload && (payload.ip || payload.ip_address) || "").trim();
+    if (ip) {
+      logMessage(`${logPrefix}代理出口 IP: ${ip}`);
+    }
+    return {
+      ip,
+      city: String(payload && payload.city || ""),
+      region: String(payload && payload.region || ""),
+      regionCode: String(payload && payload.region_code || ""),
+      postal: String(payload && payload.postal || ""),
+      countryCode: String(payload && payload.country_code || "")
+    };
+  }
+
+  async function prepareThreadProxyPool(threadCount) {
+    if (!isProxyEnabled()) {
+      state.automationBatchSharedProxy = false;
+      state.threadProxyAssignments = {};
+      renderProxyStatus();
+      return Array.from({ length: Math.max(1, threadCount) }, (_, index) => ({
+        workerIndex: index + 1,
+        workerKey: `线程${index + 1}`,
+        proxy: null,
+        cookieStoreId: "",
+        windowId: null,
+        ipLocation: null
+      }));
+    }
+    const apiKey = requireWebshareApiKey();
+    const protocol = getProxyProtocol();
+    const proxies = await getWebshareProxiesDirect(apiKey, protocol, threadCount);
+    if (!proxies.length) {
+      throw new Error("Webshare 代理列表为空，无法启动多线程");
+    }
+    const effectiveCount = Math.min(threadCount, proxies.length);
+    if (effectiveCount < threadCount) {
+      logMessage(`可用代理只有 ${proxies.length} 个，多线程数自动降为 ${effectiveCount}`);
+    }
+    const pool = [];
+    state.threadProxyAssignments = {};
+    const country = getStep1ProxyCountry();
+    const assignedProxyIds = new Set();
+    for (let index = 0; index < effectiveCount; index += 1) {
+      const workerKey = `线程${index + 1}`;
+      let proxy = proxies[index];
+      if (country !== "NONE") {
+        proxy = await replaceWebshareProxyDirect(apiKey, country, protocol, proxy.host);
+        logMessage(`[${workerKey}] 初始化已替换一次代理: ${formatProxy(proxy)} / ${String(proxy.country_code || "-").toUpperCase()}`);
+      }
+      const proxyIdentity = getProxyIdentity(proxy);
+      if (!proxyIdentity || assignedProxyIds.has(proxyIdentity)) {
+        logMessage(`[${workerKey}] 初始化后代理重复，跳过该线程: ${formatProxy(proxy)}`);
+        continue;
+      }
+      assignedProxyIds.add(proxyIdentity);
+      pool.push({
+        workerIndex: index + 1,
+        workerKey,
+        proxy,
+        cookieStoreId: "",
+        windowId: null,
+        ipLocation: null
+      });
+      setThreadProxyAssignment(workerKey, {
+        proxy,
+        ip: "",
+        windowId: null
+      });
+      logMessage(`[${workerKey}] 已占用代理槽位: ${formatProxy(proxy)} / ${String(proxy.country_code || "-").toUpperCase()}`);
+    }
+    if (!pool.length) {
+      throw new Error("初始化替换代理后没有拿到可用的唯一 IP，无法启动多线程");
+    }
+    if (pool.length < effectiveCount) {
+      logMessage(`初始化替换后可用唯一代理只有 ${pool.length} 个，实际并发降为 ${pool.length}`);
+    }
+    state.automationBatchSharedProxy = false;
+    return pool;
+  }
+
+  async function refreshWorkerProxyRoute(workerState, taskContext, reasonLabel) {
+    if (!workerState || !isRuntimeProxy(workerState.proxy)) {
+      return;
+    }
+    if (!taskContext || !taskContext.cookieStoreId) {
+      throw new Error("缺少 cookieStoreId，无法绑定线程代理");
+    }
+    await assignProxyRoute(taskContext.cookieStoreId, workerState.proxy);
+    workerState.cookieStoreId = taskContext.cookieStoreId;
+    taskContext.proxy = workerState.proxy;
+    taskContext.workerKey = workerState.workerKey;
+    setThreadProxyAssignment(workerState.workerKey, {
+      proxy: workerState.proxy,
+      ip: "",
+      windowId: workerState.windowId || null
+    });
+  }
+
+  async function renewWorkerProxyForNextTask(workerState) {
+    if (!workerState || !isRuntimeProxy(workerState.proxy)) {
+      return;
+    }
+    if (!isProxyEnabled()) {
+      return;
+    }
+    const apiKey = requireWebshareApiKey();
+    const country = getStep1ProxyCountry();
+    if (country === "NONE") {
+      return;
+    }
+    workerState.proxy = await replaceWebshareProxyDirect(apiKey, country, getProxyProtocol(), workerState.proxy.host);
+    workerState.ipLocation = null;
+    setThreadProxyAssignment(workerState.workerKey, {
+      proxy: workerState.proxy,
+      ip: "",
+      windowId: null
+    });
+    logMessage(`[${workerState.workerKey}] 已为新任务替换代理: ${formatProxy(workerState.proxy)} / ${String(workerState.proxy.country_code || "-").toUpperCase()}`);
+  }
+
   function renderAutomationBatchControls() {
     const startButton = document.getElementById("startBtn");
     const cancelButton = document.getElementById("cancelBatchBtn");
@@ -1707,53 +2210,57 @@
     state.automationBatchRunning = true;
     state.cancelAutomationBatchRequested = false;
     renderAutomationBatchControls();
-    let runCount = getRunCount();
-    const specifiedAccounts = getSpecifiedAccountEntries();
-    if (specifiedAccounts.length) {
-      const invalidAccount = specifiedAccounts.find((account) => !isValidSpecifiedAccountEmail(account));
-      if (invalidAccount) {
-        logMessage(`指定注册账号格式无效，流程终止: ${invalidAccount}`);
-        state.automationBatchRunning = false;
-        state.cancelAutomationBatchRequested = false;
-        renderAutomationBatchControls();
-        return;
-      }
-      if (runCount > specifiedAccounts.length) {
-        logMessage(`指定注册账号只有 ${specifiedAccounts.length} 个，本次完整流程执行次数调整为 ${specifiedAccounts.length}`);
-        runCount = specifiedAccounts.length;
-      }
-    }
-    resetRunStats(runCount);
+    let runCount = 0;
+    let threadCount = 1;
+    let effectiveThreadCount = 1;
+    let tasks = [];
+    let workerPool = [];
+    let nextTaskIndex = 0;
     let completedCount = 0;
     let successCount = 0;
     let failCount = 0;
     try {
-      logMessage(`准备连续执行 ${runCount} 次完整流程`);
-      for (let index = 1; index <= runCount; index += 1) {
-        logMessage(`===== 第 ${index}/${runCount} 次开始 =====`);
-        try {
-          const result = await startAutomation();
-          completedCount = index;
-          if (result && result.ok) {
+      threadCount = getThreadCount();
+      const snapshot = createAutomationBatchSnapshot(getRunCount());
+      runCount = snapshot.runCount;
+      tasks = snapshot.tasks;
+      resetRunStats(runCount);
+      workerPool = await prepareThreadProxyPool(threadCount);
+      effectiveThreadCount = Math.min(workerPool.length || 1, runCount || 1);
+      tasks = tasks.slice(0, runCount);
+      logMessage(`准备执行 ${runCount} 次完整流程，多线程数 ${threadCount}，有效并发 ${effectiveThreadCount}`);
+
+      const runWorker = async (workerState) => {
+        while (!state.cancelAutomationBatchRequested) {
+          const task = tasks[nextTaskIndex];
+          nextTaskIndex += 1;
+          if (!task) {
+            return;
+          }
+          task.workerKey = workerState.workerKey;
+          logMessage(`[任务 ${task.index}/${runCount}] ===== 开始（${workerState.workerKey}）=====`);
+          let result = { ok: false };
+          let failed = false;
+          try {
+            result = await startAutomation(task, workerState);
+          } catch (error) {
+            failed = true;
+            logMessage(`[任务 ${task.index}/${runCount}] 异常结束: ${formatError(error)}`);
+          }
+          completedCount += 1;
+          if (!failed && result && result.ok) {
             successCount += 1;
             updateRunStats("success");
-            logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
+            logMessage(`[任务 ${task.index}/${runCount}] ===== 成功结束 =====`);
           } else {
             failCount += 1;
             updateRunStats("fail");
-            logMessage(`第 ${index}/${runCount} 次失败结束`);
+            logMessage(`[任务 ${task.index}/${runCount}] 失败结束`);
           }
-        } catch (error) {
-          completedCount = index;
-          failCount += 1;
-          updateRunStats("fail");
-          logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
         }
-        if (state.cancelAutomationBatchRequested) {
-          logMessage(`已取消后续任务，停止在第 ${completedCount}/${runCount} 次之后`);
-          break;
-        }
-      }
+      };
+
+      await Promise.all(workerPool.slice(0, effectiveThreadCount).map((workerState) => runWorker(workerState)));
       if (state.cancelAutomationBatchRequested && completedCount < runCount) {
         logMessage(
           `连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
@@ -1761,25 +2268,40 @@
       } else {
         logMessage(`连续执行完成，共 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次`);
       }
+    } catch (error) {
+      logMessage("完整流程批次失败: " + formatError(error));
     } finally {
+      for (const workerState of workerPool) {
+        if (workerState && workerState.cookieStoreId) {
+          try {
+            await removeProxyRoute(workerState.cookieStoreId);
+          } catch (_) {}
+        }
+        if (workerState && workerState.workerKey) {
+          clearThreadProxyAssignment(workerState.workerKey);
+        }
+      }
+      state.threadProxyAssignments = {};
+      state.automationBatchSharedProxy = false;
       state.automationBatchRunning = false;
       state.cancelAutomationBatchRequested = false;
+      renderProxyStatus();
       renderAutomationBatchControls();
     }
   }
 
-  async function startAutomation() {
-    const countrySel = document.getElementById("country").value;
-    let specifiedAccountEntry;
-    try {
-      specifiedAccountEntry = getNextSpecifiedAccountEntry();
-    } catch (error) {
-      logMessage("错误: " + formatError(error));
-      return { ok: false };
-    }
+  async function startAutomation(taskContext = {}, workerState = null) {
+    const countrySel = taskContext.countrySel || document.getElementById("country").value;
+    const specifiedAccountEntry = taskContext.specifiedAccountEntry !== undefined
+      ? taskContext.specifiedAccountEntry
+      : getNextSpecifiedAccountEntry();
     let prepared;
     try {
-      prepared = await preparePaymentInputs(false);
+      prepared = await preparePaymentInputs(false, {
+        cardEntry: taskContext.cardEntry,
+        flowCountry: taskContext.flowCountry,
+        payUrlMode: taskContext.payUrlMode
+      });
     } catch (error) {
       logMessage("错误: " + formatError(error));
       return { ok: false };
@@ -1787,18 +2309,54 @@
 
     logMessage("开始完整自动化流程...");
     let automationWindowId = null;
+    let activeTabId = null;
     let uploadedThirdPartyAccount = null;
     let automationSucceeded = false;
+    let containerCreated = false;
+    let routeAssigned = false;
     try {
-      try {
-        await ensureProxyForStage("第一步");
-      } catch (error) {
-        logMessage("第一步代理设置失败，流程终止: " + formatError(error));
-        return { ok: false };
+      if (workerState) {
+        await renewWorkerProxyForNextTask(workerState);
       }
-      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
+      if (!taskContext.cookieStoreId) {
+        const identity = await createAutomationContainer(taskContext);
+        taskContext.cookieStoreId = identity.cookieStoreId;
+        containerCreated = true;
+      }
+      if (workerState) {
+        await refreshWorkerProxyRoute(workerState, taskContext, "任务开始");
+        routeAssigned = true;
+      } else if (!state.automationBatchSharedProxy) {
+        try {
+          await ensureProxyForStage("第一步");
+        } catch (error) {
+          logMessage("第一步代理设置失败，流程终止: " + formatError(error));
+          return { ok: false };
+        }
+      }
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com", {
+        cookieStoreId: taskContext.cookieStoreId
+      });
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
+      activeTabId = tab.id;
+      if (workerState) {
+        workerState.windowId = automationWindowId;
+        try {
+          const ipLocation = await fetchCurrentIpWithAssignedProxy(tab.id, `[${workerState.workerKey}] 窗口已打开 `);
+          workerState.ipLocation = ipLocation;
+          taskContext.proxyIpLocation = ipLocation;
+        } catch (error) {
+          logMessage(`[${workerState.workerKey}] 获取窗口代理 IP 失败: ${formatError(error)}`);
+          workerState.ipLocation = null;
+          taskContext.proxyIpLocation = null;
+        }
+        setThreadProxyAssignment(workerState.workerKey, {
+          proxy: workerState.proxy,
+          ip: workerState.ipLocation && workerState.ipLocation.ip || "",
+          windowId: automationWindowId
+        });
+      }
       logMessage("步骤1: 打开 chatgpt.com");
 
       let registration;
@@ -1834,7 +2392,11 @@
         return { ok: false };
       }
 
-      const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
+      const selectedPaymentLink = await applyCheckoutLinkResult(result, {
+        mode: payUrlMode,
+        skipStateUpdate: Boolean(taskContext.cookieStoreId)
+      });
+      taskContext.selectedPaymentLink = selectedPaymentLink;
       logMessage("支付链接已写入，准备提交第三方接口并进入支付流程");
       try {
         logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
@@ -1859,15 +2421,17 @@
       }
 
       prepared.payUrl = selectedPaymentLink;
-      prepared.longPayUrl = state.lastLongPayUrl;
-      prepared.shortPayUrl = state.lastShortPayUrl;
-      prepared.payUrlMode = state.payUrlMode;
+      prepared.longPayUrl = getCheckoutLongPaymentLink(result);
+      prepared.shortPayUrl = getCheckoutShortPaymentLink(result);
+      prepared.payUrlMode = payUrlMode;
       let payFlowResult = false;
       try {
         payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
+          cookieStoreId: taskContext.cookieStoreId,
           currentWindowId: automationWindowId,
           onWindowReopened: (nextWindow) => {
             automationWindowId = nextWindow.windowId;
+            activeTabId = nextWindow.tab && nextWindow.tab.id;
           }
         });
       } catch (error) {
@@ -1883,7 +2447,9 @@
       }
       return { ok: automationSucceeded };
     } finally {
-      await cleanupAutomationProxy("完整流程任务已关闭");
+      if (!workerState && !state.automationBatchSharedProxy) {
+        await cleanupAutomationProxy("完整流程任务已关闭");
+      }
       if (!automationSucceeded && uploadedThirdPartyAccount) {
         const cleanupReason = specifiedAccountEntry
           ? "指定账号完整流程失败，正在删除第三方账号"
@@ -1892,7 +2458,23 @@
             : "获取到 PayURL 后流程失败，正在删除第三方账号";
         await deleteUploadedThirdPartyAccountAfterFailure(uploadedThirdPartyAccount, cleanupReason);
       }
+      await cleanupAutomationContainer(taskContext, prepared, activeTabId);
+      if (routeAssigned && taskContext.cookieStoreId) {
+        await removeProxyRoute(taskContext.cookieStoreId);
+      }
       await closeAutomationWindow(automationWindowId);
+      if (containerCreated) {
+        await removeAutomationContainer(taskContext.cookieStoreId);
+      }
+      if (workerState) {
+        workerState.windowId = null;
+        workerState.cookieStoreId = "";
+        setThreadProxyAssignment(workerState.workerKey, {
+          proxy: workerState.proxy,
+          ip: "",
+          windowId: null
+        });
+      }
     }
   }
 
@@ -2131,8 +2713,8 @@
   }
 
   async function preparePaymentInputs(requirePayUrl, options = {}) {
-    const cardEntry = getNextCardInputEntry(document.getElementById("cardInput").value);
-    const payUrlEntry = getNextPayUrlInputEntry(document.getElementById("payUrlInput").value);
+    const cardEntry = options.cardEntry || getNextCardInputEntry(document.getElementById("cardInput").value);
+    const payUrlEntry = options.payUrlEntry || getNextPayUrlInputEntry(document.getElementById("payUrlInput").value);
     const payUrl = payUrlEntry ? payUrlEntry.url : "";
     if (!cardEntry) {
       throw new Error("请输入卡片信息");
@@ -2153,11 +2735,11 @@
         throw new Error("PayURL 不是有效 URL");
       }
     }
-    const payUrlMode = getPayUrlMode();
-    const storedLongPayUrl = String(state.lastLongPayUrl || "").trim();
-    const storedShortPayUrl = String(state.lastShortPayUrl || "").trim();
+    const payUrlMode = normalizePayUrlMode(options.payUrlMode || getPayUrlMode());
+    const storedLongPayUrl = String(options.longPayUrl || state.lastLongPayUrl || "").trim();
+    const storedShortPayUrl = String(options.shortPayUrl || state.lastShortPayUrl || "").trim();
     const payUrlMatchesStoredCheckout = Boolean(payUrl && (payUrl === storedLongPayUrl || payUrl === storedShortPayUrl));
-    const flowCountry = getFlowCountry();
+    const flowCountry = normalizeFlowCountry(options.flowCountry || getFlowCountry());
     logMessage(`准备第3/5步流程国家: ${flowCountry}`);
     const phoneKey = await preparePhoneKeyForFlow(flowCountry);
     state.phoneKey = phoneKey;
@@ -2500,7 +3082,9 @@
       if (options.currentWindowId !== undefined && options.currentWindowId !== null) {
         await closeAutomationWindow(options.currentWindowId, { immediate: true });
       }
-      const automationWindow = await createPrivateAutomationWindow(prepared.payUrl);
+      const automationWindow = await createPrivateAutomationWindow(prepared.payUrl, {
+        cookieStoreId: options.cookieStoreId
+      });
       retryWindowId = automationWindow.windowId;
       if (typeof options.onWindowReopened === "function") {
         options.onWindowReopened(automationWindow);
@@ -3290,8 +3874,9 @@
 
   async function executeContentFunctionRaw(tabId, functionName, payload, options = {}, label = "") {
     const callId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const storageKey = `${CONTENT_CALL_STORAGE_KEY_PREFIX}:${tabId}:${callId}`;
     await storageSet({
-      [CONTENT_CALL_STORAGE_KEY]: {
+      [storageKey]: {
         id: callId,
         functionName,
         payload: payload || {}
@@ -3306,13 +3891,24 @@
         ...details,
         file: "content-script.js"
       }, `${label || functionName || "页面函数"} content-script`);
+      await executeScriptWithRetry(tabId, {
+        ...details,
+        code: `window.__gptAutoRegisterContentCallStorageKey = ${JSON.stringify(storageKey)};`
+      }, `${label || functionName || "页面函数"} call key`);
       return await executeScriptWithRetry(tabId, {
         ...details,
         file: "content-call-runner.js"
       }, label || functionName || "页面函数");
     } finally {
       try {
-        await storageRemove(CONTENT_CALL_STORAGE_KEY);
+        await storageRemove(storageKey);
+      } catch (_) {}
+      try {
+        await executeScriptWithRetry(tabId, {
+          allFrames: Boolean(options.allFrames),
+          runAt: "document_idle",
+          code: "try { delete window.__gptAutoRegisterContentCallStorageKey; } catch (_) { window.__gptAutoRegisterContentCallStorageKey = ''; }"
+        }, `${label || functionName || "页面函数"} clear call key`);
       } catch (_) {}
     }
   }
@@ -4363,6 +4959,11 @@
         const savedRunCount = Math.floor(Number(saved.runCount));
         runCountInput.value = String(Number.isFinite(savedRunCount) && savedRunCount >= 1 ? savedRunCount : DEFAULT_RUN_COUNT);
       }
+      const threadCountInput = document.getElementById("threadCountInput");
+      if (threadCountInput) {
+        const savedThreadCount = Math.floor(Number(saved.threadCount));
+        threadCountInput.value = String(Number.isFinite(savedThreadCount) && savedThreadCount >= 1 ? savedThreadCount : DEFAULT_THREAD_COUNT);
+      }
       if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       state.payUrlMode = normalizePayUrlMode(saved.payUrlMode);
@@ -4412,6 +5013,7 @@
       flowCountry: normalizeFlowCountry(document.getElementById("flowCountrySelect").value),
       jpSmsCdk: getJpSmsCdkInput(),
       runCount: getRunCount(),
+      threadCount: getThreadCount(),
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
@@ -4494,6 +5096,7 @@
       persistState();
     });
     document.getElementById("runCountInput").addEventListener("input", persistState);
+    document.getElementById("threadCountInput").addEventListener("input", persistState);
     document.getElementById("cardInput").addEventListener("input", persistState);
     document.getElementById("randomCardCheckbox").addEventListener("change", () => {
       state.randomCardEnabled = document.getElementById("randomCardCheckbox").checked;
