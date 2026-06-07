@@ -554,12 +554,12 @@
     }
     if (payload && payload.paste) {
       pasteNativeValue(element, payload.value);
+    } else if (payload && payload.type && isTextEntryElement(element)) {
+      await typeNativeValue(element, payload.value, payload);
     } else if (payload && payload.payUrlStyle) {
       element.focus();
       setNativeValue(element, payload.value);
       element.blur();
-    } else if (payload && payload.type) {
-      await typeNativeValue(element, payload.value, payload);
     } else {
       element.focus();
       setNativeValue(element, payload && payload.value);

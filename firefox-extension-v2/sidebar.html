@@ -40,6 +40,7 @@
     .run-stat.success strong { color: #2e7d32; }
     .run-stat.fail strong { color: #c62828; }
     #logOutput { height: 210px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+    #paymentFailureLogOutput { min-height: 90px; max-height: 150px; overflow-y: auto; border: 1px solid #ffcdd2; padding: 8px; background: #fff7f7; font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #b71c1c; }
     .log-line { margin-bottom: 4px; }
   </style>
 </head>
@@ -84,6 +85,16 @@
       <option value="SG">新加坡 (SG)</option>
     </select>
     <div id="proxyStatus" class="proxy-status empty" aria-live="polite">代理状态: 未设置</div>
+    <label for="step4ProxyCountrySelect">第四步代理国家</label>
+    <select id="step4ProxyCountrySelect">
+      <option value="KEEP_STEP3">不修改代理（沿用第三步）</option>
+      <option value="NONE">无</option>
+      <option value="US">美国 (US)</option>
+      <option value="CA">加拿大 (CA)</option>
+      <option value="DE">德国 (DE)</option>
+      <option value="JP">日本 (JP)</option>
+      <option value="SG">新加坡 (SG)</option>
+    </select>
     <div class="actions">
       <button id="getWebshareProxyButton" class="secondary" type="button">获取当前</button>
       <button id="setProxyButton" class="secondary" type="button">设置代理</button>
@@ -103,6 +114,16 @@
       <option value="BR">巴西 (BR)</option>
       <option value="DE">德国 (DE)</option>
     </select>
+    <div id="pixCdkPanel" hidden>
+      <label for="pixCdkInput">PIX CDK</label>
+      <textarea
+        id="pixCdkInput"
+        rows="4"
+        spellcheck="false"
+        placeholder="一行一个 PIX CDK"
+      ></textarea>
+      <p class="hint">选择巴西后，注册成功会跳过 PayURL 和 PayPal，直接调用 PIX 接口完成支付。</p>
+    </div>
   </div>
 
   <div class="panel">
@@ -157,13 +178,16 @@
       spellcheck="false"
       placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=...&#10;+14484490909|http://a.62-us.com/api/get_sms?key=..."
     ></textarea>
-    <label for="jpSmsCdkInput">日本短信 CDK</label>
-    <textarea
-      id="jpSmsCdkInput"
-      rows="3"
-      spellcheck="false"
-      placeholder="SMS-6WA3-MUJH-5FAT&#10;SMS-XXXX-XXXX-XXXX"
-    ></textarea>
+    <div id="nextPhoneStatus" class="proxy-status empty">下一次手机号: 未设置</div>
+    <label for="phoneFailureCooldownMinutesInput">失败手机号冷却分钟</label>
+    <input
+      id="phoneFailureCooldownMinutesInput"
+      type="number"
+      min="0"
+      step="1"
+      value="30"
+      placeholder="30"
+    >
   </div>
 
   <div class="panel">
@@ -222,6 +246,10 @@
       <div class="run-stat fail"><span>失败</span><strong id="runStatsFail">0</strong></div>
     </div>
     <div id="logOutput"></div>
+    <label style="margin-top: 10px;">支付失败手机号日志</label>
+    <div id="paymentFailureLogOutput">
+      <div class="log-line">等待支付失败手机号...</div>
+    </div>
   </div>
 
   <script src="sidebar.js"></script>

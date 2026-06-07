@@ -7,7 +7,8 @@
     "xvmit.edu.kg",
     "ciat.edu.kg",
     "cars.edu.kg",
-    "xymit.edu.kg"
+    "xymit.edu.kg",
+    "nnai.uk"
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
@@ -28,9 +29,14 @@
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
+  const DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES = 30;
+  const CHECKOUT_REGION_CODES = Object.freeze(["CA", "ID", "IE", "JP", "BR", "US", "DE"]);
   const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
-  const DEFAULT_JP_SMS_CDK = "";
-  const OAPI_SMS_API = "https://sms.oapi.vip/api.php";
+  const BRAZIL_PIX_API_BASE = "https://scan.amazo.indevs.in";
+  const BRAZIL_PIX_GENERATE_API = "https://payment.nuo.cm/api/pix-generate";
+  const BRAZIL_PIX_POLL_INTERVAL_MS = 4000;
+  const BRAZIL_PIX_POLL_TIMEOUT_MS = 300000;
+  const BRAZIL_PIX_FAILED_STATUSES = new Set(["failed", "expired", "canceled"]);
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
@@ -58,12 +64,16 @@
     deleteThirdPartyAccountEnabled: true,
     debugModeEnabled: false,
     phoneKeyInput: "",
+    pixCdkInput: "",
     phoneKey: null,
+    phoneKeyCursor: 0,
+    phoneFailureCooldownMinutes: DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES,
+    phoneFailureCooldowns: {},
     flowCountry: DEFAULT_FLOW_COUNTRY,
     payUrlMode: DEFAULT_PAY_URL_MODE,
     lastLongPayUrl: "",
     lastShortPayUrl: "",
-    jpSmsCdk: DEFAULT_JP_SMS_CDK,
+    lastCheckoutRegion: "",
     lastPhoneCode: "",
     lastPaypalEmail: "",
     proxyEnabled: true,
@@ -71,6 +81,7 @@
     proxyProtocol: "http",
     step1ProxyCountry: "US",
     step3ProxyCountry: "US",
+    step4ProxyCountry: "KEEP_STEP3",
     currentProxy: null,
     currentIpLocation: null,
     automationBatchRunning: false,
@@ -151,6 +162,184 @@
     logDiv.scrollTop = logDiv.scrollHeight;
   }
 
+  function normalizePhoneCooldownMinutes(value) {
+    const minutes = Math.floor(Number(value));
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      return DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES;
+    }
+    return minutes;
+  }
+
+  function getPhoneFailureCooldownMinutes() {
+    const input = document.getElementById("phoneFailureCooldownMinutesInput");
+    state.phoneFailureCooldownMinutes = normalizePhoneCooldownMinutes(
+      input ? input.value : state.phoneFailureCooldownMinutes
+    );
+    if (input) {
+      input.value = String(state.phoneFailureCooldownMinutes);
+    }
+    return state.phoneFailureCooldownMinutes;
+  }
+
+  function getPhoneCooldownKey(phoneKey) {
+    return String(phoneKey && (phoneKey.raw || phoneKey.phone || phoneKey.code) || "").trim();
+  }
+
+  function pruneExpiredPhoneCooldowns(nowMs = Date.now()) {
+    const cooldowns = state.phoneFailureCooldowns || {};
+    for (const [key, entry] of Object.entries(cooldowns)) {
+      const untilMs = Number(entry && entry.untilMs);
+      if (!Number.isFinite(untilMs) || untilMs <= nowMs) {
+        delete cooldowns[key];
+      }
+    }
+    state.phoneFailureCooldowns = cooldowns;
+  }
+
+  function getPhoneCooldownEntry(phoneKey, nowMs = Date.now()) {
+    pruneExpiredPhoneCooldowns(nowMs);
+    const key = getPhoneCooldownKey(phoneKey);
+    return key ? state.phoneFailureCooldowns[key] || null : null;
+  }
+
+  function isPhoneKeyCoolingDown(phoneKey, nowMs = Date.now()) {
+    const entry = getPhoneCooldownEntry(phoneKey, nowMs);
+    return Boolean(entry && Number(entry.untilMs) > nowMs);
+  }
+
+  function formatCooldownTime(untilMs) {
+    const date = new Date(Number(untilMs));
+    return Number.isFinite(date.getTime()) ? date.toLocaleTimeString() : "未知时间";
+  }
+
+  function readPhoneKeyEntriesForStatus() {
+    const flowCountry = normalizeFlowCountry(state.flowCountry || (document.getElementById("flowCountrySelect") || {}).value);
+    const text = String((document.getElementById("phoneKeyInput") || {}).value || state.phoneKeyInput || "").trim();
+    if (!text) {
+      return [];
+    }
+    try {
+      return parsePhoneKeyLines(text, flowCountry === "JP" ? parseJapanPhoneKeyInput : parsePhoneKeyInput);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function getNextPhoneStatusText() {
+    const phoneKeys = readPhoneKeyEntriesForStatus();
+    if (!phoneKeys.length) {
+      return "下一次手机号: 未设置";
+    }
+    const cursor = Number.isInteger(state.phoneKeyCursor) && state.phoneKeyCursor >= 0
+      ? state.phoneKeyCursor % phoneKeys.length
+      : 0;
+    let earliestUntilMs = 0;
+    for (let offset = 0; offset < phoneKeys.length; offset += 1) {
+      const index = (cursor + offset) % phoneKeys.length;
+      const picked = phoneKeys[index];
+      const cooldown = getPhoneCooldownEntry(picked);
+      if (cooldown && Number(cooldown.untilMs) > Date.now()) {
+        earliestUntilMs = earliestUntilMs
+          ? Math.min(earliestUntilMs, Number(cooldown.untilMs))
+          : Number(cooldown.untilMs);
+        continue;
+      }
+      return `下一次手机号: ${picked.phone || picked.rawPhone || picked.raw}（下标 ${index + 1}/${phoneKeys.length}）`;
+    }
+    return `下一次手机号: 全部冷却中，最早 ${formatCooldownTime(earliestUntilMs)} 可用（当前下标 ${cursor + 1}/${phoneKeys.length}）`;
+  }
+
+  async function advancePhoneCursorAfterSuccess(phoneKey) {
+    if (!phoneKey) {
+      return;
+    }
+    if (Number.isInteger(phoneKey.phoneCursorIndex) && Number.isInteger(phoneKey.phoneCursorTotal) && phoneKey.phoneCursorTotal > 0) {
+      state.phoneKeyCursor = (phoneKey.phoneCursorIndex + 1) % phoneKey.phoneCursorTotal;
+    }
+    await persistState();
+    renderNextPhoneStatus();
+    if (phoneKey.phone) {
+      logMessage(`手机号支付成功，轮询下标已推进到下一位: ${phoneKey.phone}`);
+    }
+  }
+
+  function renderNextPhoneStatus() {
+    const node = document.getElementById("nextPhoneStatus");
+    if (!node) {
+      return;
+    }
+    const text = getNextPhoneStatusText();
+    node.textContent = text;
+    node.classList.toggle("empty", text.includes("未设置"));
+  }
+
+  async function waitForPhoneCooldown(untilMs, label) {
+    const targetMs = Number(untilMs);
+    if (!Number.isFinite(targetMs)) {
+      throw new Error(`${label || "手机号"}全部处于冷却期，等待时间无效`);
+    }
+    let remainingMs = Math.max(0, targetMs - Date.now());
+    logMessage(`${label || "手机号"}全部处于冷却期，暂停任务轮询，预计 ${formatCooldownTime(targetMs)} 恢复`);
+    while (remainingMs > 0) {
+      if (state.cancelAutomationBatchRequested) {
+        throw new Error("任务已取消，停止等待手机号冷却");
+      }
+      await delay(Math.min(remainingMs, 15000));
+      remainingMs = Math.max(0, targetMs - Date.now());
+    }
+    pruneExpiredPhoneCooldowns();
+    await persistState();
+    renderNextPhoneStatus();
+    logMessage(`${label || "手机号"}冷却结束，继续任务`);
+  }
+
+  function startPhoneFailureCooldown(phoneKey, reason) {
+    const key = getPhoneCooldownKey(phoneKey);
+    if (!key) {
+      return null;
+    }
+    const minutes = getPhoneFailureCooldownMinutes();
+    const untilMs = Date.now() + minutes * 60 * 1000;
+    state.phoneFailureCooldowns[key] = {
+      untilMs,
+      phone: String(phoneKey && phoneKey.phone || "").trim(),
+      reason: String(reason || "支付流程失败").slice(0, 500)
+    };
+    persistState();
+    renderNextPhoneStatus();
+    return { untilMs, minutes };
+  }
+
+  function logPaymentFailurePhone(phoneKey, reason) {
+    const phone = String(phoneKey && phoneKey.phone || "").trim();
+    if (!phone) {
+      return;
+    }
+    if (phoneKey.paymentFailureLogged) {
+      return;
+    }
+    phoneKey.paymentFailureLogged = true;
+    const detail = String(reason || "支付流程失败").trim();
+    const cooldown = startPhoneFailureCooldown(phoneKey, detail);
+    const cooldownText = cooldown
+      ? `，冷却 ${cooldown.minutes} 分钟，至 ${formatCooldownTime(cooldown.untilMs)}`
+      : "";
+    const message = `支付失败手机号: ${phone}${cooldownText}，原因: ${detail}`;
+    const logDiv = document.getElementById("paymentFailureLogOutput");
+    if (logDiv) {
+      const placeholder = logDiv.querySelector(".log-line");
+      if (placeholder && placeholder.textContent.includes("等待支付失败手机号")) {
+        placeholder.remove();
+      }
+      const line = document.createElement("div");
+      line.className = "log-line";
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logDiv.appendChild(line);
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    logMessage(message);
+  }
+
   function resetRunStats(total) {
     state.runStats = {
       total: Math.max(0, Number(total) || 0),
@@ -196,7 +385,7 @@
       return false;
     }
 
-    const country = stage === "第一步" ? getStep1ProxyCountry() : getStep3ProxyCountry();
+    const country = getProxyCountryForStage(stage);
     if (stage === "第三步" && country === "KEEP_STEP1") {
       logMessage(`${stage}: 选择不修改代理，沿用第一步当前代理`);
       if (isCurrentIpLocationEnabled()) {
@@ -204,8 +393,25 @@
       }
       return false;
     }
+    if (stage === "第四步" && country === "KEEP_STEP3") {
+      logMessage(`${stage}: 选择不修改代理，沿用第三步当前代理`);
+      if (isCurrentIpLocationEnabled()) {
+        await refreshIpLocation(`${stage}: `);
+      }
+      return false;
+    }
     if (country === "NONE") {
-      logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
+      if (isRuntimeProxy(state.currentProxy)) {
+        logMessage(`${stage}: 代理国家设置为'无'，正在清除当前 Firefox 代理`);
+        await clearFirefoxProxyState();
+        state.currentProxy = null;
+        state.currentIpLocation = null;
+        renderProxyStatus();
+        await persistState();
+        logMessage(`${stage}: 当前 Firefox 代理已清除`);
+      } else {
+        logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
+      }
       return false;
     }
 
@@ -534,6 +740,18 @@
     return state.step3ProxyCountry;
   }
 
+  function getStep4ProxyCountry() {
+    const value = document.getElementById("step4ProxyCountrySelect").value;
+    state.step4ProxyCountry = normalizeProxyCountry(value);
+    return state.step4ProxyCountry;
+  }
+
+  function getProxyCountryForStage(stage) {
+    if (stage === "第一步") return getStep1ProxyCountry();
+    if (stage === "第四步") return getStep4ProxyCountry();
+    return getStep3ProxyCountry();
+  }
+
   function normalizeProxyProtocol(value) {
     return String(value || "").toLowerCase() === "socks5" ? "socks5" : "http";
   }
@@ -541,6 +759,7 @@
   function normalizeProxyCountry(value) {
     const country = String(value || "").trim().toUpperCase();
     if (country === "KEEP_STEP1") return "KEEP_STEP1";
+    if (country === "KEEP_STEP3") return "KEEP_STEP3";
     if (country === "CA") return "CA";
     if (country === "DE") return "DE";
     if (country === "JP") return "JP";
@@ -558,6 +777,16 @@
     const mode = String(value || "").trim().toLowerCase();
     if (mode === "short") return "short";
     return DEFAULT_PAY_URL_MODE;
+  }
+
+  function normalizeCheckoutRegion(value) {
+    const region = String(value || "").trim().toUpperCase();
+    return CHECKOUT_REGION_CODES.includes(region) ? region : "ID";
+  }
+
+  function normalizeOptionalCheckoutRegion(value) {
+    const region = String(value || "").trim().toUpperCase();
+    return CHECKOUT_REGION_CODES.includes(region) ? region : "";
   }
 
   function getFlowCountry() {
@@ -584,21 +813,6 @@
     return state.debugModeEnabled;
   }
 
-  function getJpSmsCdkInput() {
-    const input = document.getElementById("jpSmsCdkInput");
-    const value = String(input ? input.value : state.jpSmsCdk || "").trim();
-    state.jpSmsCdk = value;
-    return value;
-  }
-
-  function pickRandomJpSmsCdk() {
-    const cdks = getJpSmsCdkInput()
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return cdks.length ? cdks[Math.floor(Math.random() * cdks.length)] : "";
-  }
-
   function normalizeWebshareStatus(payload) {
     return String(
       (payload && (payload.state || payload.status)) ||
@@ -621,6 +835,156 @@
     } catch (error) {
       throw new Error(`${label}返回不是 JSON: HTTP ${response.status} ${text.slice(0, 200)}`);
     }
+  }
+
+  async function executeScriptInTab(tabId, fn, ...args) {
+    if (typeof fn !== "function") {
+      throw new Error("页面脚本必须是函数");
+    }
+    const results = await executeScriptAfterPageReady(tabId, {
+      code: `(${fn.toString()}).apply(null, ${JSON.stringify(args)})`,
+      runAt: "document_idle"
+    }, "页面脚本");
+    return Array.isArray(results) ? results[0] : results;
+  }
+
+  function readPixCdkCodes() {
+    const input = document.getElementById("pixCdkInput");
+    return String(input && input.value || state.pixCdkInput || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  function updatePixCdkVisibility() {
+    const panel = document.getElementById("pixCdkPanel");
+    const country = document.getElementById("country").value;
+    if (panel) {
+      panel.hidden = country !== "BR";
+    }
+  }
+
+  async function getChatGptAccessTokenFromTab(tabId) {
+    const result = await executeScriptInTab(tabId, async () => {
+      const response = await fetch("https://chatgpt.com/api/auth/session", {
+        cache: "no-store",
+        credentials: "include"
+      });
+      const data = await response.json();
+      return data && data.accessToken || "";
+    });
+    const accessToken = String(result || "").trim();
+    if (!accessToken) {
+      throw new Error("accessToken: null");
+    }
+    return accessToken;
+  }
+
+  async function generateBrazilPixCode(accessToken) {
+    logMessage("巴西 PIX: 正在生成 PIX 付款码");
+    const response = await fetch(BRAZIL_PIX_GENERATE_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessToken })
+    });
+    const payload = await readJsonResponse(response, "生成 PIX 付款码");
+    if (!response.ok) {
+      throw new Error(payload.message || `生成 PIX 付款码失败: HTTP ${response.status}`);
+    }
+    const qrCodeData = String(payload && payload.qrCodeData || "").trim();
+    if (!qrCodeData) {
+      throw new Error("生成 PIX 付款码响应缺少 qrCodeData");
+    }
+    logMessage("巴西 PIX: PIX 付款码已生成");
+    return qrCodeData;
+  }
+
+  async function findUsableBrazilPixCdk(codes) {
+    let lastMessage = "";
+    for (let index = 0; index < codes.length; index += 1) {
+      const code = codes[index];
+      logMessage(`巴西 PIX: 查询 CDK ${index + 1}/${codes.length}`);
+      const response = await fetch(`${BRAZIL_PIX_API_BASE}/buyer/api/code-info`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code })
+      });
+      const payload = await readJsonResponse(response, "查询 PIX CDK");
+      if (!response.ok) {
+        lastMessage = payload.message || `HTTP ${response.status}`;
+        logMessage(`巴西 PIX: CDK 查询失败，继续下一条 (${lastMessage})`);
+        continue;
+      }
+      const remaining = Number(payload.remaining || 0);
+      if (payload.ok === true && remaining > 0) {
+        logMessage(`巴西 PIX: CDK 可用，剩余额度 ${remaining}`);
+        return code;
+      }
+      lastMessage = payload.message || `remaining=${remaining}`;
+      logMessage(`巴西 PIX: CDK 不可用，继续下一条 (${lastMessage})`);
+    }
+    throw new Error(`没有可用 PIX CDK${lastMessage ? `: ${lastMessage}` : ""}`);
+  }
+
+  async function submitBrazilPixOrder(code, pixCode) {
+    const response = await fetch(`${BRAZIL_PIX_API_BASE}/buyer/api/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, pix_code: pixCode })
+    });
+    const payload = await readJsonResponse(response, "提交 PIX 订单");
+    if (!response.ok || payload.ok !== true) {
+      throw new Error(payload.message || `提交 PIX 订单失败: HTTP ${response.status}`);
+    }
+    const ticketId = String(payload.ticket_id || "").trim();
+    if (!ticketId) {
+      throw new Error("提交 PIX 订单响应缺少 ticket_id");
+    }
+    return { ticketId, payload };
+  }
+
+  async function waitBrazilPixOrderPaid(ticketId) {
+    const deadline = Date.now() + BRAZIL_PIX_POLL_TIMEOUT_MS;
+    while (Date.now() <= deadline) {
+      const response = await fetch(`${BRAZIL_PIX_API_BASE}/buyer/api/order-status?ticket_id=${encodeURIComponent(ticketId)}`, {
+        method: "GET",
+        cache: "no-store"
+      });
+      const payload = await readJsonResponse(response, "查询 PIX 订单状态");
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.message || `查询 PIX 订单状态失败: HTTP ${response.status}`);
+      }
+      const status = String(payload.status || "").trim().toLowerCase();
+      logMessage(`巴西 PIX: 当前订单状态 ${status || "unknown"}`);
+      if (status === "paid") {
+        return payload;
+      }
+      if (BRAZIL_PIX_FAILED_STATUSES.has(status)) {
+        throw new Error(`PIX 订单失败: ${payload.last_error || payload.message || status}`);
+      }
+      await delay(BRAZIL_PIX_POLL_INTERVAL_MS);
+    }
+    throw new Error(`PIX 订单轮询超时: ${ticketId}`);
+  }
+
+  async function runBrazilPixPaymentFlow(tabId) {
+    const codes = readPixCdkCodes();
+    if (!codes.length) {
+      throw new Error("请输入 PIX CDK，一行一个");
+    }
+    setActiveStep(3);
+    logMessage("巴西 PIX: 开始接口支付流程");
+    const selectedCode = await findUsableBrazilPixCdk(codes);
+    const accessToken = await getChatGptAccessTokenFromTab(tabId);
+    const pixCode = await generateBrazilPixCode(accessToken);
+    setActiveStep(4);
+    logMessage("巴西 PIX: 正在提交订单");
+    const { ticketId } = await submitBrazilPixOrder(selectedCode, pixCode);
+    setActiveStep(5);
+    logMessage(`巴西 PIX: 订单已提交，ticket_id=${ticketId}`);
+    await waitBrazilPixOrderPaid(ticketId);
+    logMessage("巴西 PIX: 支付成功，流程结束");
+    return { ok: true, ticketId, code: selectedCode, accessToken };
   }
 
   async function refreshIpLocation(logPrefix = "") {
@@ -1546,7 +1910,8 @@
   }
 
   async function requestCheckoutLinkWithOfficialRegionRetry(requestLinkForRegion, primaryRegion) {
-    const officialRegions = PAY_URL_OFFICIAL_REGION_ORDER;
+    const primary = normalizeCheckoutRegion(primaryRegion);
+    const officialRegions = [primary].concat(PAY_URL_OFFICIAL_REGION_ORDER.filter((region) => region !== primary));
     let lastAccessToken = "";
     let lastPrimaryResult = null;
     const primaryErrors = [];
@@ -1619,13 +1984,14 @@
 
     state.lastLongPayUrl = longLink;
     state.lastShortPayUrl = shortLink;
+    state.lastCheckoutRegion = normalizeCheckoutRegion(result && result.checkoutRegion);
     state.payUrlMode = mode;
     document.getElementById("payUrlInput").value = selectedLink;
     await persistState();
     if (mode === "short") {
-      logMessage(`支付链接获取成功，已选择短链: ${selectedLink}`);
+      logMessage(`支付链接获取成功，实际地区 ${state.lastCheckoutRegion}，已选择短链: ${selectedLink}`);
     } else {
-      logMessage(`支付链接获取成功，已选择长链: ${selectedLink}`);
+      logMessage(`支付链接获取成功，实际地区 ${state.lastCheckoutRegion}，已选择长链: ${selectedLink}`);
     }
     return selectedLink;
   }
@@ -1845,7 +2211,6 @@
     }
 
     logMessage("开始完整自动化流程...");
-    const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
     let automationWindowId = null;
     let uploadedThirdPartyAccount = null;
     let automationSucceeded = false;
@@ -1856,6 +2221,8 @@
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
         return { ok: false };
       }
+      logMessage("第一步代理处理完成，开始获取注册邮箱");
+      const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
@@ -1882,6 +2249,39 @@
       }
 
       setActiveStep(2);
+      if (countrySel === "BR") {
+        logMessage("步骤2: 已选择巴西 PIX，跳过 PayURL/PayPal");
+        try {
+          logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+        } catch (error) {
+          logMessage("指定账号创建日志记录失败，继续 PIX 流程: " + formatError(error));
+        }
+        const pixResult = await runBrazilPixPaymentFlow(tab.id);
+        automationSucceeded = Boolean(pixResult && pixResult.ok);
+        if (automationSucceeded) {
+          try {
+            logMessage("巴西 PIX 支付成功，正在提交到第三方接口...");
+            const thirdPartyResult = await submitThirdPartyAccount({
+              account: registration.email,
+              accessToken: pixResult.accessToken,
+              payurl: ""
+            });
+            if (thirdPartyResult.ok) {
+              uploadedThirdPartyAccount = registration.email;
+              logMessage("第三方接口提交成功（巴西 PIX，支付链接为空）");
+            } else {
+              logMessage("第三方接口提交失败，账号仍按 PIX 支付成功处理: " + (thirdPartyResult.error || "未知错误"));
+            }
+          } catch (error) {
+            logMessage("第三方接口提交异常，账号仍按 PIX 支付成功处理: " + formatError(error));
+          }
+          await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
+        } else {
+          await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
+        }
+        return { ok: automationSucceeded };
+      }
+
       logMessage("步骤2: 获取支付链接");
       const payUrlMode = getPayUrlMode();
       const result = await requestCheckoutLinkWithOfficialRegionRetry(
@@ -1921,6 +2321,7 @@
       prepared.payUrl = selectedPaymentLink;
       prepared.longPayUrl = state.lastLongPayUrl;
       prepared.shortPayUrl = state.lastShortPayUrl;
+      prepared.checkoutRegion = state.lastCheckoutRegion;
       prepared.payUrlMode = state.payUrlMode;
       let payFlowResult = false;
       try {
@@ -1929,6 +2330,9 @@
         });
       } catch (error) {
         logMessage("支付流程异常，按支付失败处理: " + formatError(error));
+        if (prepared && prepared.smsCodeEntered) {
+          logPaymentFailurePhone(prepared.phoneKey, formatError(error));
+        }
         payFlowResult = false;
       }
       automationSucceeded = Boolean(payFlowResult);
@@ -1936,6 +2340,9 @@
         await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
         await removeUsedCardInput(prepared);
       } else {
+        if (prepared && prepared.smsCodeEntered) {
+          logPaymentFailurePhone(prepared.phoneKey, "支付流程失败");
+        }
         await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
       }
       return { ok: automationSucceeded };
@@ -1964,7 +2371,6 @@
     }
 
     logMessage("开始执行到第2步...");
-    const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
     let automationWindowId = null;
     let step2Succeeded = false;
     try {
@@ -1974,6 +2380,8 @@
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
         return { ok: false };
       }
+      logMessage("第一步代理处理完成，开始获取注册邮箱");
+      const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
@@ -2115,8 +2523,16 @@
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
         await removeUsedPayUrlInput(prepared);
+      } else if (prepared && prepared.smsCodeEntered) {
+        logPaymentFailurePhone(prepared.phoneKey, "支付流程失败");
       }
       return { ok: Boolean(payFlowResult) };
+    } catch (error) {
+      if (prepared && prepared.smsCodeEntered) {
+        logPaymentFailurePhone(prepared.phoneKey, formatError(error));
+      }
+      logMessage("支付流程异常，按支付失败处理: " + formatError(error));
+      return { ok: false };
     } finally {
       await cleanupAutomationProxy("PayURL 任务已关闭");
       await closeAutomationWindow(automationWindowId, { failed: !paymentSucceeded });
@@ -2157,7 +2573,14 @@
       });
       if (payFlowResult) {
         await removeUsedCardInput(prepared);
+      } else if (prepared && prepared.smsCodeEntered) {
+        logPaymentFailurePhone(prepared.phoneKey, "支付流程失败");
       }
+    } catch (error) {
+      if (prepared && prepared.smsCodeEntered) {
+        logPaymentFailurePhone(prepared.phoneKey, formatError(error));
+      }
+      logMessage("支付流程异常，按支付失败处理: " + formatError(error));
     } finally {
       await cleanupAutomationProxy("第3步任务已关闭");
       await closeAutomationWindow(retryAutomationWindowId);
@@ -2220,7 +2643,7 @@
     const preparedPhone = phoneKey && phoneKey.phone ? phoneKey.phone : getFillPhoneNumber(card);
     if (!preparedPhone) {
       throw new Error(flowCountry === "JP"
-        ? "未准备好日本手机号，请填写日本短信 CDK，或在手机区域填写 phone----smsUrl"
+        ? "未准备好日本手机号，请在手机区域填写 phone----smsUrl"
         : "未准备好手机号，请检查手机区域格式是否为 +1手机号|短信接口URL");
     }
     logMessage(`已准备手机号: ${preparedPhone}`);
@@ -2239,6 +2662,7 @@
       payUrlInputLine: payUrlEntry ? payUrlEntry.line : "",
       longPayUrl: payUrlMatchesStoredCheckout ? storedLongPayUrl : payUrl,
       shortPayUrl: payUrlMatchesStoredCheckout ? storedShortPayUrl : "",
+      checkoutRegion: payUrlMatchesStoredCheckout ? state.lastCheckoutRegion : "",
       payUrlMode,
       settings: sanitizeFillSettings(state.fillSettings),
       paypalEmail,
@@ -2526,7 +2950,7 @@
     phoneInput.value = remainingLines.join("\n");
     state.phoneKeyInput = phoneInput.value.trim();
     try {
-      state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
+      state.phoneKey = peekFirstPhoneKey(state.phoneKeyInput, { allowEmpty: true });
     } catch (_) {
       state.phoneKey = null;
     }
@@ -2573,8 +2997,10 @@
     if (!payUrlReady) {
       return false;
     }
+    await ensureProxyForStage("第四步");
     await runPayPalLoginPage(tabId, prepared);
     await runPayPalSignupPage(tabId, prepared);
+    await advancePhoneCursorAfterSuccess(prepared.phoneKey);
     logMessage("PayPal 步骤已完成，短信验证码已输入");
     return true;
   }
@@ -2656,6 +3082,33 @@
       isChatGptShortCheckoutUrl(prepared && prepared.payUrl);
   }
 
+  function getShortCheckoutBillingAddress(prepared) {
+    const checkoutRegion = normalizeOptionalCheckoutRegion(
+      prepared && (prepared.checkoutRegion || (prepared.card && prepared.card.country))
+    ) || "ID";
+    const card = prepared && prepared.card ? prepared.card : {};
+    const cardCountry = normalizeCheckoutRegion(card.country);
+    if (cardCountry === checkoutRegion && card.address && card.city && card.postcode) {
+      return {
+        country: checkoutRegion,
+        postalCode: card.postcode,
+        administrativeArea: card.state || defaultShortCheckoutAddress(checkoutRegion).administrativeArea,
+        locality: card.city,
+        addressLine1: card.address
+      };
+    }
+    return defaultShortCheckoutAddress(checkoutRegion);
+  }
+
+  function defaultShortCheckoutAddress(region) {
+    const addresses = {
+      JP: { country: "JP", postalCode: "150-0001", administrativeArea: "Tokyo", locality: "Shibuya", addressLine1: "Jingumae" },
+      BR: { country: "BR", postalCode: "01310-100", administrativeArea: "SP", locality: "Sao Paulo", addressLine1: "Avenida Paulista 1000" },
+      US: { country: "US", postalCode: "10001", administrativeArea: "NY", locality: "New York", addressLine1: "350 5th Ave" },
+    };
+    return addresses[normalizeCheckoutRegion(region)] || addresses.JP;
+  }
+
   async function runShortCheckoutBillingPage(tabId, prepared) {
     logMessage("检测到 ChatGPT 短链 checkout，等待页面加载完成");
     await waitForUrlPrefix(tabId, "https://chatgpt.com/checkout", 120000);
@@ -2716,6 +3169,11 @@
       prepared.card.name ||
       [prepared.card.firstName, prepared.card.lastName].filter(Boolean).join(" ")
     ) || "").trim() || generateRandomName();
+    const billingAddress = getShortCheckoutBillingAddress(prepared);
+    const shortCheckoutAddress = billingAddress.country === "JP"
+      ? defaultShortCheckoutAddress("JP")
+      : billingAddress;
+    logMessage(`短链 checkout 账单国家: ${shortCheckoutAddress.country}`);
     const fillShortCheckoutField = async (functionName, payload, label) => {
       const selector = String((payload && payload.selector) || "").trim();
       if (selector) {
@@ -2741,31 +3199,36 @@
     await fillShortCheckoutField("__gptAutoRegisterSetValue", {
       selector: "#billingAddress-nameInput",
       value: billingName,
-      payUrlStyle: true
+      payUrlStyle: true,
+      type: true
     }, "短链 checkout 账单姓名字段");
     await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
       selector: "#billingAddress-countryInput",
-      value: "JP"
+      value: shortCheckoutAddress.country
     }, "短链 checkout 国家字段");
+    await delay(2000);
     await fillShortCheckoutField("__gptAutoRegisterSetValue", {
       selector: "#billingAddress-postalCodeInput",
-      value: "150-0001",
-      payUrlStyle: true
+      value: shortCheckoutAddress.postalCode,
+      payUrlStyle: true,
+      type: true
     }, "短链 checkout 邮编字段");
     await delay(2000);
     await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
       selector: "#billingAddress-administrativeAreaInput",
-      value: "Tokyo"
+      value: shortCheckoutAddress.administrativeArea
     }, "短链 checkout 都道府县字段");
     await fillShortCheckoutField("__gptAutoRegisterSetValue", {
       selector: "#billingAddress-localityInput",
-      value: "Shibuya",
-      payUrlStyle: true
+      value: shortCheckoutAddress.locality,
+      payUrlStyle: true,
+      type: true
     }, "短链 checkout 市区町村字段");
     await fillShortCheckoutField("__gptAutoRegisterSetValue", {
       selector: "#billingAddress-addressLine1Input",
-      value: "Jingumae",
-      payUrlStyle: true
+      value: shortCheckoutAddress.addressLine1,
+      payUrlStyle: true,
+      type: true
     }, "短链 checkout 账单地址字段");
     await delay();
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
@@ -2942,6 +3405,8 @@
         value: smsCode,
         timeoutMs: 30000
       }, "短信验证码输入失败");
+      prepared.smsCodeEntered = true;
+      prepared.smsCodePhone = prepared.phone;
       logMessage(`短信验证码已输入: ${smsCode}`);
       if (prepared.randomCardEnabled) {
         await finishPayPalConsent(tabId, prepared);
@@ -3123,6 +3588,7 @@
       selector: "#email",
       value: prepared.paypalEmail,
       payUrlStyle: true,
+      type: true,
       timeoutMs: 30000
     }, "未找到 signup 邮箱字段");
     logMessage(`手机号：${prepared.phone}`)
@@ -3130,9 +3596,10 @@
       selector: "#phone",
       value: prepared.phone,
       payUrlStyle: true,
+      type: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared));
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared, { type: true }));
   }
 
   async function submitSignupForm(tabId) {
@@ -3153,15 +3620,17 @@
       selector: "#email",
       value: prepared.paypalEmail,
       payUrlStyle: true,
+      type: true,
       timeoutMs: 30000
     }, "未找到 signup 邮箱字段");
     await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
       selector: "#phone",
       value: prepared.phone,
       payUrlStyle: true,
+      type: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared));
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared, { type: true }));
     await delay();
     await submitSignupForm(tabId);
     logMessage("signup 表单已重新提交");
@@ -3434,9 +3903,9 @@
     return options;
   }
 
-  function createSignupFillOptions(prepared) {
+  function createSignupFillOptions(prepared, inputOptions = {}) {
     const options = {
-      ...createPayUrlFillOptions(prepared),
+      ...createPayUrlFillOptions(prepared, inputOptions),
       skipFields: ["country"]
     };
     if (prepared && normalizeFlowCountry(prepared.flowCountry) === "JP") {
@@ -3549,9 +4018,6 @@
   }
 
   async function fetchPhoneVerificationCode(phoneKey, options = {}) {
-    if (phoneKey && phoneKey.provider === "oapi") {
-      return fetchOapiPhoneVerificationCode(phoneKey, options);
-    }
     if (phoneKey && phoneKey.country === "JP") {
       return fetchJapanLegacyPhoneVerificationCode(phoneKey, options);
     }
@@ -3635,45 +4101,12 @@
     logMessage("已点击短信验证码重发按钮，继续轮询验证码");
   }
 
-  async function fetchOapiPhoneVerificationCode(phoneKey, options = {}) {
-    const code = String(phoneKey && phoneKey.code || "").trim();
-    if (!code) {
-      throw new Error("日本短信 CDK 为空");
-    }
-    const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
-    let lastError = "";
-    for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
-      const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
-      if (result.code) {
-        const isNewCode = !seenCodes.has(result.code);
-        logObservedSmsCode(phoneKey, result.code);
-        seenCodes.add(result.code);
-        if (isNewCode) {
-          state.lastPhoneCode = result.code;
-          await persistState();
-          return result.code;
-        }
-        lastError = `验证码 ${result.code} 与提交前验证码重复，继续等待新验证码`;
-      } else {
-        lastError = result.error || "日本短信响应里没有匹配到 6 位验证码";
-      }
-      if (attempt < POLL_ATTEMPTS) {
-        logMessage(`日本短信第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
-        await delay(POLL_DELAY_MS);
-      }
-    }
-    throw new Error(`获取日本短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
-  }
-
   async function fetchCurrentPhoneVerificationCode(phoneKey) {
     const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
     return result.code || null;
   }
 
   async function fetchCurrentPhoneVerificationCodeResult(phoneKey) {
-    if (phoneKey && phoneKey.provider === "oapi") {
-      return fetchCurrentOapiPhoneVerificationCodeResult(phoneKey);
-    }
     try {
       const response = await fetch(phoneKey.smsUrl, {
         method: "GET",
@@ -3688,27 +4121,6 @@
       return {
         code: "",
         error: response.ok ? "响应里没有匹配到 6 位验证码" : `HTTP ${response.status} ${body.slice(0, 120)}`
-      };
-    } catch (error) {
-      return { code: "", error: formatError(error) };
-    }
-  }
-
-  async function fetchCurrentOapiPhoneVerificationCodeResult(phoneKey) {
-    const code = String(phoneKey && phoneKey.code || "").trim();
-    if (!code) {
-      return { code: "", error: "日本短信 CDK 为空" };
-    }
-    try {
-      const payload = await postOapiSms("get_sms", { code });
-      const smsCode = String((payload && (payload.code || payload.sms)) || "").trim();
-      const matchedCode = extractSixDigitCode(smsCode);
-      if (payload && payload.ok && matchedCode) {
-        return { code: matchedCode, error: "" };
-      }
-      return {
-        code: "",
-        error: payload && payload.error ? payload.error : "日本短信响应里没有匹配到 6 位验证码"
       };
     } catch (error) {
       return { code: "", error: formatError(error) };
@@ -3996,7 +4408,51 @@
     return usZip3StateRangesPromise;
   }
 
-  function pickRandomPhoneKey(rawInput, options = {}) {
+  function parsePhoneKeyLines(rawInput, parser = parsePhoneKeyInput) {
+    return String(rawInput || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => parser(line));
+  }
+
+  async function pickNextPhoneKey(rawInput, options = {}) {
+    const allowEmpty = Boolean(options.allowEmpty);
+    while (true) {
+      const text = String(rawInput || "").trim();
+      if (!text) {
+        if (allowEmpty) {
+          return null;
+        }
+        return parsePhoneKeyInput(rawInput, options);
+      }
+      const phoneKeys = parsePhoneKeyLines(text);
+      if (!phoneKeys.length) {
+        return null;
+      }
+      const startIndex = Number.isInteger(state.phoneKeyCursor)
+        ? state.phoneKeyCursor % phoneKeys.length
+        : 0;
+      let earliestUntilMs = 0;
+      for (let offset = 0; offset < phoneKeys.length; offset += 1) {
+        const index = (startIndex + offset) % phoneKeys.length;
+        const picked = phoneKeys[index];
+        const cooldown = getPhoneCooldownEntry(picked);
+        if (cooldown && Number(cooldown.untilMs) > Date.now()) {
+          earliestUntilMs = earliestUntilMs
+            ? Math.min(earliestUntilMs, Number(cooldown.untilMs))
+            : Number(cooldown.untilMs);
+          continue;
+        }
+        picked.phoneCursorIndex = index;
+        picked.phoneCursorTotal = phoneKeys.length;
+        return picked;
+      }
+      await waitForPhoneCooldown(earliestUntilMs, "手机区域手机号");
+    }
+  }
+
+  function peekFirstPhoneKey(rawInput, options = {}) {
     const allowEmpty = Boolean(options.allowEmpty);
     const text = String(rawInput || "").trim();
     if (!text) {
@@ -4005,100 +4461,65 @@
       }
       return parsePhoneKeyInput(rawInput, options);
     }
-    const phoneKeys = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => parsePhoneKeyInput(line));
-    if (!phoneKeys.length) {
-      return null;
+    const phoneKeys = parsePhoneKeyLines(text);
+    return phoneKeys.length ? phoneKeys[0] : null;
+  }
+
+  function peekFirstAvailablePhoneKey(rawInput, options = {}) {
+    const allowEmpty = Boolean(options.allowEmpty);
+    const text = String(rawInput || "").trim();
+    if (!text) {
+      if (allowEmpty) {
+        return null;
+      }
+      return parsePhoneKeyInput(rawInput, options);
     }
-    return phoneKeys[Math.floor(Math.random() * phoneKeys.length)];
+    const phoneKeys = parsePhoneKeyLines(text);
+    return phoneKeys.find((phoneKey) => !isPhoneKeyCoolingDown(phoneKey)) || null;
   }
 
   async function preparePhoneKeyForFlow(flowCountry) {
     if (normalizeFlowCountry(flowCountry) === "JP") {
-      const cdk = pickRandomJpSmsCdk();
-      if (cdk) {
-        return fetchJapanPhoneKey(cdk);
+      return pickNextJapanPhoneKeyFromPhoneInput();
+    }
+    const phoneInput = document.getElementById("phoneKeyInput");
+    state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
+    return pickNextPhoneKey(state.phoneKeyInput);
+  }
+
+  async function pickNextJapanPhoneKeyFromPhoneInput() {
+    while (true) {
+      const phoneInput = document.getElementById("phoneKeyInput");
+      state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
+      const text = String(state.phoneKeyInput || "").trim();
+      if (!text) {
+        throw new Error("日本手机号为空，请在手机区域填写 phone----smsUrl");
       }
-      return pickRandomJapanPhoneKeyFromPhoneInput();
+      const phoneKeys = parsePhoneKeyLines(text, parseJapanPhoneKeyInput);
+      if (!phoneKeys.length) {
+        throw new Error("手机区域没有可用的日本手机号记录");
+      }
+      const startIndex = Number.isInteger(state.phoneKeyCursor)
+        ? state.phoneKeyCursor % phoneKeys.length
+        : 0;
+      let earliestUntilMs = 0;
+      for (let offset = 0; offset < phoneKeys.length; offset += 1) {
+        const index = (startIndex + offset) % phoneKeys.length;
+        const picked = phoneKeys[index];
+        const cooldown = getPhoneCooldownEntry(picked);
+        if (cooldown && Number(cooldown.untilMs) > Date.now()) {
+          earliestUntilMs = earliestUntilMs
+            ? Math.min(earliestUntilMs, Number(cooldown.untilMs))
+            : Number(cooldown.untilMs);
+          continue;
+        }
+        picked.phoneCursorIndex = index;
+        picked.phoneCursorTotal = phoneKeys.length;
+        logMessage(`日本短信使用手机区域记录: ${picked.phone}`);
+        return picked;
+      }
+      await waitForPhoneCooldown(earliestUntilMs, "手机区域日本手机号");
     }
-    const phoneInput = document.getElementById("phoneKeyInput");
-    state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
-    return pickRandomPhoneKey(state.phoneKeyInput);
-  }
-
-  function pickRandomJapanPhoneKeyFromPhoneInput() {
-    const phoneInput = document.getElementById("phoneKeyInput");
-    state.phoneKeyInput = phoneInput ? phoneInput.value.trim() : "";
-    const text = String(state.phoneKeyInput || "").trim();
-    if (!text) {
-      throw new Error("日本短信 CDK 为空，请在日本短信 CDK 输入框填写 CDK，或在手机区域填写 phone----smsUrl");
-    }
-    const phoneKeys = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => parseJapanPhoneKeyInput(line));
-    if (!phoneKeys.length) {
-      throw new Error("手机区域没有可用的日本手机号记录");
-    }
-    const picked = phoneKeys[Math.floor(Math.random() * phoneKeys.length)];
-    logMessage(`日本短信使用手机区域记录: ${picked.phone}`);
-    return picked;
-  }
-
-  async function fetchJapanPhoneKey(cdk) {
-    const code = String(cdk || "").trim();
-    if (!code) {
-      throw new Error("请输入日本短信 CDK");
-    }
-    const payload = await postOapiSms("check_cdk", { code });
-    if (!payload || !payload.ok) {
-      throw new Error(payload && payload.error ? payload.error : "日本短信 CDK 校验失败");
-    }
-    const session = payload.session || {};
-    const phone = String(session.phone_number || "").trim();
-    if (!phone) {
-      throw new Error("日本短信接口未返回手机号");
-    }
-    logMessage(`日本短信手机号获取成功: ${phone}，CDK: ${maskSmsCdk(code)}`);
-    return {
-      provider: "oapi",
-      raw: code,
-      code,
-      phone,
-      countryCode: String(payload.cdk && payload.cdk.country_code || "+81").trim(),
-      sessionId: session.id || null,
-      status: String(session.status || "").trim()
-    };
-  }
-
-  function maskSmsCdk(cdk) {
-    const value = String(cdk || "").trim();
-    if (value.length <= 8) {
-      return value ? "***" : "";
-    }
-    return `${value.slice(0, 4)}***${value.slice(-4)}`;
-  }
-
-  async function postOapiSms(action, body) {
-    const url = `${OAPI_SMS_API}?action=${action}`;
-    const response = await fetch(url, {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body || {})
-    });
-    const payload = await readJsonResponse(response, "日本短信接口");
-    if (!response.ok) {
-      throw new Error(payload && payload.error ? payload.error : `HTTP ${response.status}`);
-    }
-    return payload;
   }
 
   function parsePhoneKeyInput(rawInput, options = {}) {
@@ -4192,7 +4613,7 @@
     const rawPhoneInput = String(document.getElementById("phoneKeyInput").value || "").trim();
     if (rawPhoneInput) {
       try {
-        const phoneKey = pickRandomPhoneKey(rawPhoneInput, { allowEmpty: true });
+        const phoneKey = peekFirstAvailablePhoneKey(rawPhoneInput, { allowEmpty: true });
         if (phoneKey && phoneKey.phone) {
           state.phoneKey = phoneKey;
           state.phoneKeyInput = rawPhoneInput;
@@ -4385,6 +4806,9 @@
     ext.storage.local.get([STORAGE_KEY], (result) => {
       const saved = result[STORAGE_KEY] || {};
       if (saved.country) document.getElementById("country").value = saved.country;
+      state.pixCdkInput = typeof saved.pixCdkInput === "string" ? saved.pixCdkInput : "";
+      document.getElementById("pixCdkInput").value = state.pixCdkInput;
+      updatePixCdkVisibility();
       const runCountInput = document.getElementById("runCountInput");
       if (runCountInput) {
         const savedRunCount = Math.floor(Number(saved.runCount));
@@ -4396,6 +4820,7 @@
       document.getElementById("payUrlModeSelect").value = state.payUrlMode;
       state.lastLongPayUrl = typeof saved.lastLongPayUrl === "string" ? saved.lastLongPayUrl : "";
       state.lastShortPayUrl = typeof saved.lastShortPayUrl === "string" ? saved.lastShortPayUrl : "";
+      state.lastCheckoutRegion = normalizeOptionalCheckoutRegion(saved.lastCheckoutRegion);
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
       state.deleteThirdPartyAccountEnabled = saved.deleteThirdPartyAccountEnabled === undefined ? true : Boolean(saved.deleteThirdPartyAccountEnabled);
@@ -4403,10 +4828,14 @@
       state.debugModeEnabled = Boolean(saved.debugModeEnabled);
       document.getElementById("debugModeCheckbox").checked = state.debugModeEnabled;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
+      state.phoneFailureCooldownMinutes = normalizePhoneCooldownMinutes(saved.phoneFailureCooldownMinutes);
+      document.getElementById("phoneFailureCooldownMinutesInput").value = String(state.phoneFailureCooldownMinutes);
+      state.phoneFailureCooldowns = saved.phoneFailureCooldowns && typeof saved.phoneFailureCooldowns === "object"
+        ? saved.phoneFailureCooldowns
+        : {};
+      pruneExpiredPhoneCooldowns();
       state.flowCountry = normalizeFlowCountry(saved.flowCountry);
       document.getElementById("flowCountrySelect").value = state.flowCountry;
-      state.jpSmsCdk = typeof saved.jpSmsCdk === "string" && saved.jpSmsCdk.trim() ? saved.jpSmsCdk.trim() : DEFAULT_JP_SMS_CDK;
-      document.getElementById("jpSmsCdkInput").value = state.jpSmsCdk;
       state.proxyEnabled = saved.proxyEnabled === undefined ? true : Boolean(saved.proxyEnabled);
       document.getElementById("proxyEnabledCheckbox").checked = state.proxyEnabled;
       state.webshareApiKey = typeof saved.webshareApiKey === "string" ? saved.webshareApiKey : "";
@@ -4417,6 +4846,8 @@
       document.getElementById("step1ProxyCountrySelect").value = state.step1ProxyCountry;
       state.step3ProxyCountry = normalizeProxyCountry(saved.step3ProxyCountry);
       document.getElementById("step3ProxyCountrySelect").value = state.step3ProxyCountry;
+      state.step4ProxyCountry = normalizeProxyCountry(saved.step4ProxyCountry || "KEEP_STEP3");
+      document.getElementById("step4ProxyCountrySelect").value = state.step4ProxyCountry;
       state.currentProxy = isRuntimeProxy(saved.currentProxy) ? saved.currentProxy : null;
       state.currentIpLocation = normalizeSavedIpLocation(saved.currentIpLocation);
       renderProxyStatus();
@@ -4425,8 +4856,11 @@
       state.useCurrentIpLocation = Boolean(saved.useCurrentIpLocation);
       document.getElementById("useCurrentIpLocationCheckbox").checked = state.useCurrentIpLocation;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
+      state.phoneKeyCursor = Number.isInteger(saved.phoneKeyCursor) && saved.phoneKeyCursor >= 0
+        ? saved.phoneKeyCursor
+        : 0;
       try {
-        state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
+        state.phoneKey = peekFirstPhoneKey(state.phoneKeyInput, { allowEmpty: true });
       } catch (_) {
         state.phoneKey = null;
       }
@@ -4434,6 +4868,7 @@
       state.fillSettingsExpanded = Boolean(saved.fillSettingsExpanded);
       state.lastPaypalEmail = typeof saved.lastPaypalEmail === "string" ? saved.lastPaypalEmail : "";
       renderFillSettings();
+      renderNextPhoneStatus();
     });
   }
 
@@ -4441,7 +4876,6 @@
     const nextState = {
       country: document.getElementById("country").value,
       flowCountry: normalizeFlowCountry(document.getElementById("flowCountrySelect").value),
-      jpSmsCdk: getJpSmsCdkInput(),
       runCount: getRunCount(),
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
@@ -4449,22 +4883,28 @@
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
       debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
+      pixCdkInput: document.getElementById("pixCdkInput").value,
       payUrlInput: document.getElementById("payUrlInput").value,
       payUrlMode: normalizePayUrlMode(document.getElementById("payUrlModeSelect").value),
       lastLongPayUrl: state.lastLongPayUrl,
       lastShortPayUrl: state.lastShortPayUrl,
+      lastCheckoutRegion: normalizeOptionalCheckoutRegion(state.lastCheckoutRegion),
       phoneKeyInput: document.getElementById("phoneKeyInput").value,
       proxyEnabled: document.getElementById("proxyEnabledCheckbox").checked,
       webshareApiKey: document.getElementById("webshareApiKeyInput").value,
       proxyProtocol: normalizeProxyProtocol(document.getElementById("proxyProtocolSelect").value),
       step1ProxyCountry: normalizeProxyCountry(document.getElementById("step1ProxyCountrySelect").value),
       step3ProxyCountry: normalizeProxyCountry(document.getElementById("step3ProxyCountrySelect").value),
+      step4ProxyCountry: normalizeProxyCountry(document.getElementById("step4ProxyCountrySelect").value),
       currentProxy: state.currentProxy,
       currentIpLocation: state.currentIpLocation,
       fillSettings: sanitizeFillSettings(state.fillSettings),
       fillSettingsExpanded: state.fillSettingsExpanded,
       lastPhoneCode: state.lastPhoneCode,
-      lastPaypalEmail: state.lastPaypalEmail
+      lastPaypalEmail: state.lastPaypalEmail,
+      phoneKeyCursor: state.phoneKeyCursor,
+      phoneFailureCooldownMinutes: getPhoneFailureCooldownMinutes(),
+      phoneFailureCooldowns: state.phoneFailureCooldowns
     };
     return ext.storage.local.set({ [STORAGE_KEY]: nextState });
   }
@@ -4502,7 +4942,18 @@
       document.getElementById("step3ProxyCountrySelect").value = getStep3ProxyCountry();
       persistState();
     });
-    document.getElementById("country").addEventListener("change", persistState);
+    document.getElementById("step4ProxyCountrySelect").addEventListener("change", () => {
+      document.getElementById("step4ProxyCountrySelect").value = getStep4ProxyCountry();
+      persistState();
+    });
+    document.getElementById("country").addEventListener("change", () => {
+      updatePixCdkVisibility();
+      persistState();
+    });
+    document.getElementById("pixCdkInput").addEventListener("input", () => {
+      state.pixCdkInput = document.getElementById("pixCdkInput").value.trim();
+      persistState();
+    });
     document.getElementById("specifiedAccountInput").addEventListener("input", () => {
       state.specifiedAccountInput = document.getElementById("specifiedAccountInput").value.trim();
       persistState();
@@ -4519,6 +4970,7 @@
     });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
+      renderNextPhoneStatus();
       persistState();
     });
     document.getElementById("payUrlModeSelect").addEventListener("change", () => {
@@ -4532,8 +4984,9 @@
       }
       persistState();
     });
-    document.getElementById("jpSmsCdkInput").addEventListener("input", () => {
-      state.jpSmsCdk = getJpSmsCdkInput();
+    document.getElementById("phoneFailureCooldownMinutesInput").addEventListener("input", () => {
+      getPhoneFailureCooldownMinutes();
+      renderNextPhoneStatus();
       persistState();
     });
     document.getElementById("runCountInput").addEventListener("input", persistState);
@@ -4551,11 +5004,13 @@
     document.getElementById("payUrlInput").addEventListener("input", persistState);
     document.getElementById("phoneKeyInput").addEventListener("input", () => {
       state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();
+      pruneExpiredPhoneCooldowns();
       try {
-        state.phoneKey = pickRandomPhoneKey(state.phoneKeyInput, { allowEmpty: true });
+        state.phoneKey = peekFirstPhoneKey(state.phoneKeyInput, { allowEmpty: true });
       } catch (_) {
         state.phoneKey = null;
       }
+      renderNextPhoneStatus();
       persistState();
     });
     document.getElementById("toggleFillSettingsButton").addEventListener("click", () => {

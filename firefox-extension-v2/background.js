@@ -8,6 +8,7 @@
   const ICLOUD_CN_SETUP_URL = "https://setup.icloud.com.cn/setup/ws/1";
   const ICLOUD_HME_NOTE = "Generated through GPT Auto Register v2";
   const TAB_USER_AGENT_TTL_MS = 30 * 60 * 1000;
+  const MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
   let proxyAuth = {};
   const tabUserAgents = new Map();
 
@@ -128,7 +129,7 @@
       if (tabId <= 0) {
         return Promise.resolve({ ok: false, error: "Missing tabId" });
       }
-      const userAgent = generateRandomUserAgent();
+      const userAgent = getMobileUserAgent();
       tabUserAgents.set(tabId, {
         userAgent,
         preparedAt: Date.now(),
@@ -315,25 +316,8 @@
     }
   }
 
-  function generateRandomUserAgent() {
-    const firefoxMajor = randomInt(123, 145);
-    const platform = randomChoice([
-      "Windows NT 10.0; Win64; x64",
-      "Windows NT 10.0; WOW64",
-      "Macintosh; Intel Mac OS X 10.15",
-      "X11; Linux x86_64"
-    ]);
-    return `Mozilla/5.0 (${platform}; rv:${firefoxMajor}.0) Gecko/20100101 Firefox/${firefoxMajor}.0`;
-  }
-
-  function randomChoice(values) {
-    return values[randomInt(0, values.length - 1)];
-  }
-
-  function randomInt(min, max) {
-    const low = Math.ceil(Number(min) || 0);
-    const high = Math.floor(Number(max) || low);
-    return Math.floor(Math.random() * (high - low + 1)) + low;
+  function getMobileUserAgent() {
+    return MOBILE_USER_AGENT;
   }
 
   async function applyFirefoxProxy(proxy) {
