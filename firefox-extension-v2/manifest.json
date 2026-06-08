@@ -15,6 +15,7 @@
     "<all_urls>",
     "https://proxy.webshare.io/*",
     "https://ipapi.co/*",
+    "https://hero-sms.com/*",
     "https://sms.oapi.vip/*"
   ],
   "background": {

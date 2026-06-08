@@ -531,6 +531,54 @@
     return { ok: true, selector };
   };
 
+  window.__gptAutoRegisterClickByIndex = async function clickByIndexExport(payload) {
+    const selector = String((payload && payload.selector) || "").trim();
+    const index = Math.max(0, Math.floor(Number(payload && payload.index) || 0));
+    const timeoutMs = Number((payload && payload.timeoutMs) || 60000);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      let elements = [];
+      try {
+        elements = selector ? Array.from(document.querySelectorAll(selector)) : [];
+      } catch (_) {
+        elements = [];
+      }
+      const element = elements[index];
+      console.log(element, 'element')
+      if (isClickable(element)) {
+        element.click()
+        return {
+          ok: true,
+          selector,
+          index,
+          count: elements.length,
+          text: String(element.textContent || "").trim()
+        };
+      }
+      await delay(300);
+    }
+    return { ok: false, selector, index, error: `Element index not found: ${selector}[${index}]` };
+  };
+
+  window.__gptAutoRegisterWaitForUrlPrefix = async function waitForUrlPrefixExport(payload) {
+    const prefix = String((payload && payload.prefix) || "").trim();
+    const timeoutMs = Number((payload && payload.timeoutMs) || 60000);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const href = String(location.href || "");
+      if (prefix && href.startsWith(prefix)) {
+        return { ok: true, prefix, href };
+      }
+      await delay(500);
+    }
+    return {
+      ok: false,
+      prefix,
+      href: String(location.href || ""),
+      error: `URL prefix timeout: ${prefix}`
+    };
+  };
+
   window.__gptAutoRegisterClickFormButton = async function clickFormButtonExport(payload) {
     const selector = String((payload && payload.selector) || "").trim();
     const result = await waitForClickableButton(payload || {});

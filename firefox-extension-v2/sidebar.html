@@ -137,6 +137,24 @@
   </div>
 
   <div class="panel">
+    <label for="registrationMethodSelect">注册方式</label>
+    <select id="registrationMethodSelect">
+      <option value="email">邮箱</option>
+      <option value="phone">手机号</option>
+    </select>
+    <label for="heroApiKeyInput">Hero SMS API Key</label>
+    <input id="heroApiKeyInput" type="password" spellcheck="false" placeholder="输入 Hero SMS API Key">
+    <label for="heroServiceInput">Hero Service</label>
+    <input id="heroServiceInput" type="text" spellcheck="false" value="openai" placeholder="openai">
+    <label for="heroCountryInput">Hero Country</label>
+    <input id="heroCountryInput" type="text" spellcheck="false" placeholder="可选，例如 US 或国家编号">
+    <label for="heroOperatorInput">Hero Operator</label>
+    <input id="heroOperatorInput" type="text" spellcheck="false" placeholder="可选">
+    <label for="heroMaxPriceInput">Hero Max Price</label>
+    <input id="heroMaxPriceInput" type="number" min="0" step="0.01" spellcheck="false" placeholder="Optional max amount">
+  </div>
+
+  <div class="panel">
     <label for="payUrlInput">PayURL</label>
     <textarea
       id="payUrlInput"

@@ -11,6 +11,7 @@
     "nnai.uk"
   ];
   const CODE_API = "https://getemail.nnai.uk/api/code";
+  const HERO_SMS_API = "https://hero-sms.com/stubs/handler_api.php";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_API_KEY = "aa102911";
@@ -27,6 +28,10 @@
   const PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey";
   const PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]';
   const DEFAULT_RUN_COUNT = 1;
+  const DEFAULT_REGISTRATION_METHOD = "email";
+  const PHONE_REGISTRATION_PASSWORD = "Aa123456789..";
+  const HERO_DEFAULT_SERVICE = "openai";
+  const HERO_SMS_POLL_TIMEOUT_MS = 90000;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
   const DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES = 30;
@@ -60,6 +65,12 @@
     fillSettingsExpanded: false,
     randomCardEnabled: false,
     useCurrentIpLocation: false,
+    registrationMethod: DEFAULT_REGISTRATION_METHOD,
+    heroApiKey: "",
+    heroService: HERO_DEFAULT_SERVICE,
+    heroCountry: "",
+    heroOperator: "",
+    heroMaxPrice: "",
     specifiedAccountInput: "",
     deleteThirdPartyAccountEnabled: true,
     debugModeEnabled: false,
@@ -1793,7 +1804,173 @@
     } else {
       logMessage("验证码已提交，等待进入 chatgpt.com");
     }
-    return { ok: true, email };
+    return { ok: true, email, account: email, registrationMethod: "email" };
+  }
+
+  async function runPhoneRegistration(tabId) {
+    setActiveStep(1);
+    const heroNumber = await getHeroNumber();
+    let activationShouldCancel = true;
+    const phoneNumber = heroNumber.phoneNumber;
+    const activationId = heroNumber.activationId;
+    const randomName = generateRandomName();
+    const randomAge = generateRandomAge();
+    const randomBirthday = generateRandomBirthday();
+    try {
+      logMessage("等待 chatgpt.com 页面加载完成...");
+      const pageLoaded = await waitForPageComplete(tabId, 90000);
+      if (!pageLoaded) {
+        throw new Error("chatgpt.com 页面加载超时");
+      }
+
+      logMessage("等待注册按钮...");
+      await scrollTabToBottom(tabId);
+      await requirePageResult(tabId, "__gptAutoRegisterClickButtonByText", {
+        pattern: "注册|登录|Sign up|Create account"
+      }, "注册按钮点击失败", {
+        loadTimeoutMs: 15000
+      });
+      logMessage("已点击注册按钮，等待账号入口...");
+      await delay(3000);
+
+      await requirePageResult(tabId, "__gptAutoRegisterClickByIndex", {
+        selector: "form[novalidate] button",
+        index: 2,
+        timeoutMs: 30000
+      }, "未找到手机号注册入口按钮");
+      logMessage("已切换到手机号注册入口");
+      await delay();
+
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[type="tel"]',
+        value: '+' + phoneNumber,
+        timeoutMs: 30000
+      }, "未找到手机号输入框");
+      logMessage(`已输入注册手机号: ${phoneNumber}`);
+      await delay(1000);
+      await clickPageElement(tabId, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 30000
+      }, "手机号提交按钮点击失败");
+
+      await requirePageResult(tabId, "__gptAutoRegisterWaitForUrlPrefix", {
+        prefix: "https://auth.openai.com/create-account/password",
+        timeoutMs: 90000
+      }, "未进入密码设置页面");
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="new-password"]',
+        value: PHONE_REGISTRATION_PASSWORD,
+        timeoutMs: 30000
+      }, "未找到新密码输入框");
+      logMessage("已输入手机号注册固定密码");
+      logMessage("点击提交");
+      await clickPageElement(tabId, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 10000
+      }, "密码提交按钮点击失败");
+      logMessage("已经点击提交");
+      await delay();
+      // await requirePageResult(tabId, "__gptAutoRegisterWaitForUrlPrefix", {
+      //   prefix: "https://auth.openai.com/contact-verification",
+      //   timeoutMs: 90000
+      // }, "未进入联系方式验证页面");
+      logMessage("开始获取手机号验证码");
+      const smsCode = await pollHeroSmsCode(activationId);
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="code"]',
+        value: smsCode,
+        timeoutMs: 30000
+      }, "未找到短信验证码输入框");
+      logMessage("已输入手机号短信验证码");
+      await clickPageElement(tabId, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 30000
+      }, "未找到完成验证按钮");
+      await setHeroSmsStatus(activationId, 6);
+      activationShouldCancel = false;
+      logMessage("手机号联系方式验证已提交");
+      logMessage("等待 about-you 页面，准备填写姓名和年龄");
+      const nameAgeSubmitted = await submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday);
+      if (!nameAgeSubmitted) {
+        throw new Error("手机号注册 about-you 姓名和年龄提交失败");
+      }
+      return {
+        ok: true,
+        account: phoneNumber,
+        phone: phoneNumber,
+        activationId,
+        registrationMethod: "phone"
+      };
+    } catch (error) {
+      if (activationShouldCancel) {
+        await setHeroSmsStatus(activationId, 8);
+      }
+      throw error;
+    }
+  }
+
+  async function runSelectedRegistration(tabId, specifiedAccountEntry) {
+    if (isPhoneRegistrationMethod()) {
+      logMessage("第一步代理处理完成，开始手机号注册");
+      return runPhoneRegistration(tabId);
+    }
+    logMessage("第一步代理处理完成，开始获取注册邮箱");
+    const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
+    return runRegistration(tabId, registrationEmail);
+  }
+
+  async function completePhoneRegistrationPromoEmailVerification(tabId, registration) {
+    if (!registration || registration.registrationMethod !== "phone") {
+      return registration;
+    }
+    const email = await prepareRegistrationEmail(null);
+    logMessage(`手机号注册后绑定邮箱: ${email}`);
+    await updateTabUrl(tabId, "https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing");
+    await delay(3000);
+    await requirePageResult(tabId, "__gptAutoRegisterClick", {
+      selector: "button.btn-purple.btn-large.w-full",
+      timeoutMs: 60000
+    }, "未找到 Plus promo 按钮");
+    logMessage("已点击 Plus promo 按钮，等待邮箱输入框");
+    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+      selector: "#email",
+      value: email,
+      timeoutMs: 60000
+    }, "未找到邮箱输入框");
+    await clickPageElement(tabId, {
+      selector: 'button[type="submit"]',
+      timeoutMs: 30000
+    }, "邮箱提交按钮点击失败");
+
+    logMessage("已提交绑定邮箱，轮询邮箱验证码...");
+    let code = null;
+    for (let i = 0; i < EMAIL_CODE_POLL_ATTEMPTS; i += 1) {
+      code = await fetchVerificationCode(email);
+      if (code) break;
+      await delay(POLL_DELAY_MS);
+    }
+    if (!code) {
+      throw new Error("手机号注册后绑定邮箱未获取到验证码");
+    }
+
+    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+      selector: "#otp",
+      value: code,
+      timeoutMs: 60000
+    }, "未找到邮箱验证码输入框");
+    await clickPageElement(tabId, {
+      selector: 'button[type="submit"]',
+      timeoutMs: 30000
+    }, "邮箱验证码提交按钮点击失败");
+    logMessage("手机号注册后邮箱验证码已提交");
+    logMessage("邮箱验证后主动打开 chatgpt.com");
+    await updateTabUrl(tabId, "https://chatgpt.com");
+    await delay(20000)
+    return {
+      ...registration,
+      email,
+      account: registration.account || registration.phone || email
+    };
   }
 
   async function submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday) {
@@ -2132,8 +2309,21 @@
     state.automationBatchRunning = true;
     state.cancelAutomationBatchRequested = false;
     renderAutomationBatchControls();
+    try {
+      validateRegistrationSettings();
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      state.automationBatchRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+      return;
+    }
     let runCount = getRunCount();
-    const specifiedAccounts = getSpecifiedAccountEntries();
+    const phoneRegistration = isPhoneRegistrationMethod();
+    const specifiedAccounts = phoneRegistration ? [] : getSpecifiedAccountEntries();
+    if (phoneRegistration && getSpecifiedAccountEntries().length) {
+      logMessage("手机号注册模式已选择，将忽略指定注册账号列表");
+    }
     if (specifiedAccounts.length) {
       const invalidAccount = specifiedAccounts.find((account) => !isValidSpecifiedAccountEmail(account));
       if (invalidAccount) {
@@ -2195,9 +2385,10 @@
 
   async function startAutomation() {
     const countrySel = document.getElementById("country").value;
-    let specifiedAccountEntry;
+    const phoneRegistration = isPhoneRegistrationMethod();
+    let specifiedAccountEntry = null;
     try {
-      specifiedAccountEntry = getNextSpecifiedAccountEntry();
+      specifiedAccountEntry = phoneRegistration ? null : getNextSpecifiedAccountEntry();
     } catch (error) {
       logMessage("错误: " + formatError(error));
       return { ok: false };
@@ -2221,8 +2412,6 @@
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
         return { ok: false };
       }
-      logMessage("第一步代理处理完成，开始获取注册邮箱");
-      const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
@@ -2230,29 +2419,43 @@
 
       let registration;
       try {
-        registration = await runRegistration(tab.id, registrationEmail);
+        registration = await runSelectedRegistration(tab.id, specifiedAccountEntry);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
+      const registrationAccount = String(registration.account || registration.email || registration.phone || "").trim();
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
+      if (phoneRegistration) {
+        try {
+          registration = await completePhoneRegistrationPromoEmailVerification(tab.id, registration);
+        } catch (error) {
+          logMessage("手机号注册后邮箱验证失败，流程终止: " + formatError(error));
+          return { ok: false };
+        }
+      }
+      const thirdPartyAccount = String(
+        phoneRegistration
+          ? registration.email || registration.account || registration.phone || ""
+          : registrationAccount
+      ).trim();
 
       setActiveStep(2);
       if (countrySel === "BR") {
         logMessage("步骤2: 已选择巴西 PIX，跳过 PayURL/PayPal");
         try {
-          logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+          if (!phoneRegistration) logSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
         } catch (error) {
           logMessage("指定账号创建日志记录失败，继续 PIX 流程: " + formatError(error));
         }
@@ -2262,12 +2465,12 @@
           try {
             logMessage("巴西 PIX 支付成功，正在提交到第三方接口...");
             const thirdPartyResult = await submitThirdPartyAccount({
-              account: registration.email,
+              account: thirdPartyAccount,
               accessToken: pixResult.accessToken,
               payurl: ""
             });
             if (thirdPartyResult.ok) {
-              uploadedThirdPartyAccount = registration.email;
+              uploadedThirdPartyAccount = thirdPartyAccount;
               logMessage("第三方接口提交成功（巴西 PIX，支付链接为空）");
             } else {
               logMessage("第三方接口提交失败，账号仍按 PIX 支付成功处理: " + (thirdPartyResult.error || "未知错误"));
@@ -2275,9 +2478,9 @@
           } catch (error) {
             logMessage("第三方接口提交异常，账号仍按 PIX 支付成功处理: " + formatError(error));
           }
-          await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
+          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
         } else {
-          await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
+          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
         }
         return { ok: automationSucceeded };
       }
@@ -2290,26 +2493,26 @@
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
-        keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
       logMessage("支付链接已写入，准备提交第三方接口并进入支付流程");
       try {
-        logSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+        if (!phoneRegistration) logSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
       } catch (error) {
         logMessage("指定账号创建日志记录失败，继续支付流程: " + formatError(error));
       }
       try {
         logMessage("正在提交到第三方接口...");
         const thirdPartyResult = await submitThirdPartyAccount({
-          account: registration.email,
+          account: thirdPartyAccount,
           accessToken: result.accessToken,
           payurl: selectedPaymentLink
         });
         if (thirdPartyResult.ok) {
-          uploadedThirdPartyAccount = registration.email;
+          uploadedThirdPartyAccount = thirdPartyAccount;
           logMessage("第三方接口提交成功");
         } else {
           logMessage("第三方接口提交失败，继续支付流程: " + (thirdPartyResult.error || "未知错误"));
@@ -2337,13 +2540,13 @@
       }
       automationSucceeded = Boolean(payFlowResult);
       if (automationSucceeded) {
-        await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registration.email);
+        if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
         await removeUsedCardInput(prepared);
       } else {
         if (prepared && prepared.smsCodeEntered) {
           logPaymentFailurePhone(prepared.phoneKey, "支付流程失败");
         }
-        await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
+        if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
       }
       return { ok: automationSucceeded };
     } finally {
@@ -2362,9 +2565,16 @@
 
   async function startToStep2() {
     const countrySel = document.getElementById("country").value;
-    let specifiedAccountEntry;
+    const phoneRegistration = isPhoneRegistrationMethod();
     try {
-      specifiedAccountEntry = getNextSpecifiedAccountEntry();
+      validateRegistrationSettings();
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return { ok: false };
+    }
+    let specifiedAccountEntry = null;
+    try {
+      specifiedAccountEntry = phoneRegistration ? null : getNextSpecifiedAccountEntry();
     } catch (error) {
       logMessage("错误: " + formatError(error));
       return { ok: false };
@@ -2380,8 +2590,6 @@
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
         return { ok: false };
       }
-      logMessage("第一步代理处理完成，开始获取注册邮箱");
-      const registrationEmail = await prepareRegistrationEmail(specifiedAccountEntry);
       const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
@@ -2389,22 +2597,31 @@
 
       let registration;
       try {
-        registration = await runRegistration(tab.id, registrationEmail);
+        registration = await runSelectedRegistration(tab.id, specifiedAccountEntry);
       } catch (error) {
         logMessage("注册异常，流程终止: " + formatError(error));
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
       if (!registration.ok) {
         logMessage("注册失败，流程终止");
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
       }
+      const registrationAccount = String(registration.account || registration.email || registration.phone || "").trim();
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
-        keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterRegistrationFailure(specifiedAccountEntry);
         return { ok: false };
+      }
+      if (phoneRegistration) {
+        try {
+          registration = await completePhoneRegistrationPromoEmailVerification(tab.id, registration);
+        } catch (error) {
+          logMessage("手机号注册后邮箱验证失败，流程终止: " + formatError(error));
+          return { ok: false };
+        }
       }
 
       setActiveStep(2);
@@ -2416,15 +2633,15 @@
       );
       if (!result.ok || !hasCheckoutPaymentLink(result)) {
         logMessage("获取支付链接失败: " + (result.error || "未知错误"));
-        keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
+        if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
         return { ok: false };
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
-      await markSpecifiedAccountCreated(specifiedAccountEntry, registration.email);
+      if (!phoneRegistration) await markSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
       logMessage("已执行到第2步，流程停止");
       step2Succeeded = true;
-      return { ok: true, email: registration.email, paymentLink: selectedPaymentLink };
+      return { ok: true, account: registrationAccount, email: registration.email || "", phone: registration.phone || "", paymentLink: selectedPaymentLink };
     } finally {
       await cleanupAutomationProxy("执行到第2步任务已关闭");
       await closeAutomationWindow(automationWindowId, { failed: !step2Succeeded });
@@ -2679,6 +2896,212 @@
       }
     }
     return null;
+  }
+
+  function normalizeRegistrationMethod(value) {
+    return String(value || "").trim().toLowerCase() === "phone" ? "phone" : "email";
+  }
+
+  function getRegistrationMethod() {
+    const input = document.getElementById("registrationMethodSelect");
+    state.registrationMethod = normalizeRegistrationMethod(input ? input.value : state.registrationMethod);
+    if (input) {
+      input.value = state.registrationMethod;
+    }
+    return state.registrationMethod;
+  }
+
+  function isPhoneRegistrationMethod() {
+    return getRegistrationMethod() === "phone";
+  }
+
+  function validateRegistrationSettings() {
+    if (!isPhoneRegistrationMethod()) {
+      return;
+    }
+    const settings = getHeroSettings();
+    if (!settings.apiKey) {
+      throw new Error("手机号注册需要填写 Hero SMS API Key");
+    }
+    if (!settings.service) {
+      throw new Error("手机号注册需要填写 Hero Service");
+    }
+  }
+
+  function getHeroSettings() {
+    const apiKey = String((document.getElementById("heroApiKeyInput") || {}).value || state.heroApiKey || "").trim();
+    const service = String((document.getElementById("heroServiceInput") || {}).value || state.heroService || HERO_DEFAULT_SERVICE).trim() || HERO_DEFAULT_SERVICE;
+    const country = String((document.getElementById("heroCountryInput") || {}).value || state.heroCountry || "").trim();
+    const operator = String((document.getElementById("heroOperatorInput") || {}).value || state.heroOperator || "").trim();
+    const maxPrice = String((document.getElementById("heroMaxPriceInput") || {}).value || state.heroMaxPrice || "").trim();
+    state.heroApiKey = apiKey;
+    state.heroService = service;
+    state.heroCountry = country;
+    state.heroOperator = operator;
+    state.heroMaxPrice = maxPrice;
+    return { apiKey, service, country, operator, maxPrice };
+  }
+
+  function buildHeroSmsUrl(action, params = {}) {
+    const settings = getHeroSettings();
+    if (!settings.apiKey) {
+      throw new Error("Hero SMS API Key 为空");
+    }
+    const url = new URL(HERO_SMS_API);
+    url.searchParams.set("action", action);
+    url.searchParams.set("api_key", settings.apiKey);
+    Object.entries(params).forEach(([key, value]) => {
+      const text = String(value === undefined || value === null ? "" : value).trim();
+      if (text) {
+        url.searchParams.set(key, text);
+      }
+    });
+    return url.toString();
+  }
+
+  async function fetchHeroSms(action, params = {}) {
+    const response = await fetch(buildHeroSmsUrl(action, params), {
+      method: "GET",
+      cache: "no-store"
+    });
+    const text = await response.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch (_) {}
+    if (!response.ok) {
+      throw new Error(`Hero SMS ${action} HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
+    }
+    return { text: String(text || "").trim(), json };
+  }
+
+  function heroValue(payload, keys) {
+    if (!payload || typeof payload !== "object") {
+      return "";
+    }
+    for (const key of keys) {
+      const value = payload[key];
+      if (value !== undefined && value !== null && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+    return "";
+  }
+
+  function parseHeroNumberResult(result) {
+    const data = result && result.json && typeof result.json === "object" ? result.json : null;
+    if (data) {
+      const activationId = heroValue(data, ["activationId", "activation_id", "id", "tzid"]);
+      const phoneNumber = heroValue(data, ["phoneNumber", "phone_number", "phone", "number"]);
+      if (activationId && phoneNumber) {
+        return { activationId, phoneNumber: phoneNumber.replace(/[^\d+]/g, "") };
+      }
+      const error = heroValue(data, ["error", "message", "msg"]);
+      if (error) {
+        throw new Error(`Hero SMS 获取手机号失败: ${error}`);
+      }
+    }
+
+    const text = String(result && result.text || "").trim();
+    const accessMatch = text.match(/^ACCESS_NUMBER:([^:]+):(.+)$/i);
+    if (accessMatch) {
+      return {
+        activationId: accessMatch[1].trim(),
+        phoneNumber: accessMatch[2].trim().replace(/[^\d+]/g, "")
+      };
+    }
+    throw new Error(`Hero SMS 获取手机号失败: ${text || "空响应"}`);
+  }
+
+  async function getHeroNumber() {
+    const settings = getHeroSettings();
+    if (!settings.apiKey) {
+      throw new Error("手机号注册需要填写 Hero SMS API Key");
+    }
+    logMessage(`Hero SMS: 获取手机号，service=${settings.service}${settings.country ? `, country=${settings.country}` : ""}${settings.operator ? `, operator=${settings.operator}` : ""}${settings.maxPrice ? `, maxPrice=${settings.maxPrice}` : ""}`);
+    const params = { service: settings.service };
+    if (settings.country) params.country = settings.country;
+    if (settings.operator) params.operator = settings.operator;
+    if (settings.maxPrice) params.maxPrice = settings.maxPrice;
+    const number = parseHeroNumberResult(await fetchHeroSms("getNumberV2", params));
+    if (!number.phoneNumber || !number.activationId) {
+      throw new Error("Hero SMS 获取手机号响应缺少手机号或激活 ID");
+    }
+    logMessage(`Hero SMS: 已获取手机号 ${number.phoneNumber}，激活 ID ${number.activationId}`);
+    return number;
+  }
+
+  function extractHeroSmsCode(result) {
+    const data = result && result.json && typeof result.json === "object" ? result.json : null;
+    const codeFromText = (value) => {
+      const match = String(value || "").match(/\b\d{4,10}\b/);
+      return match ? match[0] : "";
+    };
+    const codeFromPayload = (payload) => {
+      if (!payload || typeof payload !== "object") {
+        return "";
+      }
+      const directCode = heroValue(payload, ["code", "smsCode", "sms_code"]);
+      if (/^\d{4,10}$/.test(directCode)) {
+        return directCode;
+      }
+      return codeFromText(heroValue(payload, ["text", "message", "sms"]));
+    };
+    if (data) {
+      const nestedCode = codeFromPayload(data.sms) || codeFromPayload(data.call);
+      if (nestedCode) {
+        return nestedCode;
+      }
+      const directCode = codeFromPayload(data);
+      if (directCode) {
+        return directCode;
+      }
+      const status = heroValue(data, ["status"]);
+      if (/^\d{4,10}$/.test(status)) {
+        return status;
+      }
+    }
+
+    const text = String(result && result.text || "").trim();
+    const statusOk = text.match(/^STATUS_OK:(\d{4,10})$/i);
+    if (statusOk) {
+      return statusOk[1];
+    }
+    return codeFromText(text);
+  }
+
+  async function setHeroSmsStatus(activationId, status) {
+    if (!activationId) {
+      return false;
+    }
+    try {
+      await fetchHeroSms("setStatus", { id: activationId, status });
+      logMessage(`Hero SMS: 已设置激活 ${activationId} 状态为 ${status}`);
+      return true;
+    } catch (error) {
+      logMessage(`Hero SMS: 设置激活状态失败 ${activationId}/${status}: ${formatError(error)}`);
+      return false;
+    }
+  }
+
+  async function pollHeroSmsCode(activationId) {
+    const deadline = Date.now() + HERO_SMS_POLL_TIMEOUT_MS;
+    let attempt = 0;
+    let lastStatus = "";
+    while (Date.now() <= deadline) {
+      attempt += 1;
+      const result = await fetchHeroSms("getStatusV2", { id: activationId });
+      const code = extractHeroSmsCode(result);
+      if (code) {
+        logMessage(`Hero SMS: 已获取短信验证码 ${code}`);
+        return code;
+      }
+      lastStatus = result.text || (result.json ? JSON.stringify(result.json).slice(0, 120) : "");
+      logMessage(`Hero SMS: 第 ${attempt} 次未取到验证码，继续等待${lastStatus ? ` (${lastStatus})` : ""}`);
+      await delay(POLL_DELAY_MS);
+    }
+    await setHeroSmsStatus(activationId, 8);
+    throw new Error(`Hero SMS 2 分钟未获取到验证码，已取消激活${lastStatus ? `，最后状态: ${lastStatus}` : ""}`);
   }
 
   function getPayUrlEntries(rawInput) {
@@ -3104,7 +3527,7 @@
     const addresses = {
       JP: { country: "JP", postalCode: "150-0001", administrativeArea: "Tokyo", locality: "Shibuya", addressLine1: "Jingumae" },
       BR: { country: "BR", postalCode: "01310-100", administrativeArea: "SP", locality: "Sao Paulo", addressLine1: "Avenida Paulista 1000" },
-      US: { country: "US", postalCode: "10001", administrativeArea: "NY", locality: "New York", addressLine1: "350 5th Ave" },
+      // US: { country: "US", postalCode: "10001", administrativeArea: "NY", locality: "New York", addressLine1: "350 5th Ave" },
     };
     return addresses[normalizeCheckoutRegion(region)] || addresses.JP;
   }
@@ -3200,7 +3623,6 @@
       selector: "#billingAddress-nameInput",
       value: billingName,
       payUrlStyle: true,
-      type: true
     }, "短链 checkout 账单姓名字段");
     await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
       selector: "#billingAddress-countryInput",
@@ -3211,9 +3633,7 @@
       selector: "#billingAddress-postalCodeInput",
       value: shortCheckoutAddress.postalCode,
       payUrlStyle: true,
-      type: true
     }, "短链 checkout 邮编字段");
-    await delay(2000);
     await fillShortCheckoutField("__gptAutoRegisterSetSelectIfNeeded", {
       selector: "#billingAddress-administrativeAreaInput",
       value: shortCheckoutAddress.administrativeArea
@@ -3222,13 +3642,11 @@
       selector: "#billingAddress-localityInput",
       value: shortCheckoutAddress.locality,
       payUrlStyle: true,
-      type: true
     }, "短链 checkout 市区町村字段");
     await fillShortCheckoutField("__gptAutoRegisterSetValue", {
       selector: "#billingAddress-addressLine1Input",
       value: shortCheckoutAddress.addressLine1,
       payUrlStyle: true,
-      type: true
     }, "短链 checkout 账单地址字段");
     await delay();
     logMessage("短链 checkout 表单已尝试填充，尝试点击提交");
@@ -3588,7 +4006,6 @@
       selector: "#email",
       value: prepared.paypalEmail,
       payUrlStyle: true,
-      type: true,
       timeoutMs: 30000
     }, "未找到 signup 邮箱字段");
     logMessage(`手机号：${prepared.phone}`)
@@ -3596,10 +4013,9 @@
       selector: "#phone",
       value: prepared.phone,
       payUrlStyle: true,
-      type: true,
       timeoutMs: 30000
     }, "未找到手机号字段");
-    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared, { type: true }));
+    await fillCurrentPage(tabId, prepared, createSignupFillOptions(prepared));
   }
 
   async function submitSignupForm(tabId) {
@@ -4823,6 +5239,18 @@
       state.lastCheckoutRegion = normalizeOptionalCheckoutRegion(saved.lastCheckoutRegion);
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
+      state.registrationMethod = normalizeRegistrationMethod(saved.registrationMethod);
+      document.getElementById("registrationMethodSelect").value = state.registrationMethod;
+      state.heroApiKey = typeof saved.heroApiKey === "string" ? saved.heroApiKey : "";
+      document.getElementById("heroApiKeyInput").value = state.heroApiKey;
+      state.heroService = typeof saved.heroService === "string" && saved.heroService.trim() ? saved.heroService.trim() : HERO_DEFAULT_SERVICE;
+      document.getElementById("heroServiceInput").value = state.heroService;
+      state.heroCountry = typeof saved.heroCountry === "string" ? saved.heroCountry : "";
+      document.getElementById("heroCountryInput").value = state.heroCountry;
+      state.heroOperator = typeof saved.heroOperator === "string" ? saved.heroOperator : "";
+      document.getElementById("heroOperatorInput").value = state.heroOperator;
+      state.heroMaxPrice = typeof saved.heroMaxPrice === "string" ? saved.heroMaxPrice : "";
+      document.getElementById("heroMaxPriceInput").value = state.heroMaxPrice;
       state.deleteThirdPartyAccountEnabled = saved.deleteThirdPartyAccountEnabled === undefined ? true : Boolean(saved.deleteThirdPartyAccountEnabled);
       document.getElementById("deleteThirdPartyAccountCheckbox").checked = state.deleteThirdPartyAccountEnabled;
       state.debugModeEnabled = Boolean(saved.debugModeEnabled);
@@ -4880,6 +5308,12 @@
       cardInput: document.getElementById("cardInput").value,
       randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
+      registrationMethod: normalizeRegistrationMethod(document.getElementById("registrationMethodSelect").value),
+      heroApiKey: document.getElementById("heroApiKeyInput").value.trim(),
+      heroService: document.getElementById("heroServiceInput").value.trim() || HERO_DEFAULT_SERVICE,
+      heroCountry: document.getElementById("heroCountryInput").value.trim(),
+      heroOperator: document.getElementById("heroOperatorInput").value.trim(),
+      heroMaxPrice: document.getElementById("heroMaxPriceInput").value.trim(),
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
       debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
@@ -4957,6 +5391,17 @@
     document.getElementById("specifiedAccountInput").addEventListener("input", () => {
       state.specifiedAccountInput = document.getElementById("specifiedAccountInput").value.trim();
       persistState();
+    });
+    document.getElementById("registrationMethodSelect").addEventListener("change", () => {
+      const method = getRegistrationMethod();
+      persistState();
+      logMessage(method === "phone" ? "注册方式已切换为手机号，将使用 Hero SMS 获取手机号" : "注册方式已切换为邮箱");
+    });
+    ["heroApiKeyInput", "heroServiceInput", "heroCountryInput", "heroOperatorInput", "heroMaxPriceInput"].forEach((elementId) => {
+      document.getElementById(elementId).addEventListener("input", () => {
+        getHeroSettings();
+        persistState();
+      });
     });
     document.getElementById("deleteThirdPartyAccountCheckbox").addEventListener("change", () => {
       state.deleteThirdPartyAccountEnabled = document.getElementById("deleteThirdPartyAccountCheckbox").checked;
