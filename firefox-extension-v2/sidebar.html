@@ -187,6 +187,13 @@
       <input id="continueAuthorizationCheckbox" type="checkbox">
       <span>继续授权</span>
     </label>
+    <label for="teamProviderSelect">Team Provider</label>
+    <select id="teamProviderSelect">
+      <option value="xperiabox.shop">xperiabox.shop</option>
+      <option value="edu.pilipala.store">edu.pilipala.store</option>
+      <option value="lty.pilipala.store">lty.pilipala.store</option>
+      <option value="gpt.edu.sixoner.com">gpt.edu.sixoner.com</option>
+    </select>
     <label for="codexSmsVoucherInput">Codex 接码券</label>
     <input id="codexSmsVoucherInput" type="text" spellcheck="false" placeholder="用于授权手机号验证">
     <button id="authorizeCurrentAccountButton" class="secondary" type="button">授权</button>
@@ -264,6 +271,7 @@
 
   <div class="batch-actions">
     <button id="startToStep2Btn" class="secondary" type="button">只执行到第2步</button>
+    <button id="startTeamRegistrationBtn" class="secondary" type="button">注册 Team</button>
     <button id="startBtn" type="button">开始完整流程</button>
     <button id="cancelBatchBtn" class="danger" type="button" disabled>取消</button>
   </div>

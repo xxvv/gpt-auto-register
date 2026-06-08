@@ -10,6 +10,35 @@
     "xymit.edu.kg",
     "nnai.uk"
   ];
+  const DEFAULT_TEAM_PROVIDER_DOMAIN = "xperiabox.shop";
+  const TEAM_REGISTRATION_INVITE_CODE = "6f904cb02f70390ab6bcad916d63b3d8e86f698f6d2ccb8d466b5e1cef6417a8";
+  const TEAM_SSO_URL_PREFIX = "https://auth.openai.com/sso";
+  const TEAM_SIGNIN_CONSENT_URL_PREFIX = "https://external.auth.openai.com/sso/signin-consent";
+  const TEAM_PROVIDER_DEFINITIONS = Object.freeze({
+    "xperiabox.shop": Object.freeze({
+      domain: "xperiabox.shop",
+      authorizeUrlPrefix: "https://2add0d82.r7.vip.cpolar.cn/authorize",
+      type: "invite"
+    }),
+    "edu.pilipala.store": Object.freeze({
+      domain: "edu.pilipala.store",
+      authorizeUrlPrefix: "https://sso.pilipala.store/authorize",
+      type: "pilipala",
+      password: "ciallo"
+    }),
+    "lty.pilipala.store": Object.freeze({
+      domain: "lty.pilipala.store",
+      authorizeUrlPrefix: "https://sso2.pilipala.store/authorize",
+      type: "pilipala",
+      password: "ciallo"
+    }),
+    "gpt.edu.sixoner.com": Object.freeze({
+      domain: "gpt.edu.sixoner.com",
+      authorizeUrlPrefix: "https://sso.sixoner.com/authorize",
+      type: "emailOnly",
+      submitSelector: "#submit"
+    })
+  });
   const CODE_API = "https://getemail.nnai.uk/api/code";
   const HERO_SMS_API = "https://hero-sms.com/stubs/handler_api.php";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
@@ -81,6 +110,7 @@
     heroCountrySearch: "",
     heroMaxPrice: "",
     specifiedAccountInput: "",
+    teamProviderDomain: DEFAULT_TEAM_PROVIDER_DOMAIN,
     deleteThirdPartyAccountEnabled: true,
     paymentFlowEnabled: true,
     continueAuthorizationEnabled: false,
@@ -114,6 +144,7 @@
     cancelAutomationBatchRequested: false,
     payUrlBatchRunning: false,
     brazilPixContinueRunning: false,
+    teamRegistrationRunning: false,
     brazilPixResume: null,
     runStats: {
       total: 0,
@@ -162,6 +193,44 @@
 
   function generateDomainEmail() {
     return `${generateLocalPart()}@${DOMAINS[Math.floor(Math.random() * DOMAINS.length)]}`;
+  }
+
+  function normalizeTeamProviderDomain(value) {
+    const domain = String(value || "").trim().toLowerCase();
+    return TEAM_PROVIDER_DEFINITIONS[domain] ? domain : DEFAULT_TEAM_PROVIDER_DOMAIN;
+  }
+
+  function getTeamProviderDefinition(domain) {
+    return TEAM_PROVIDER_DEFINITIONS[normalizeTeamProviderDomain(domain)];
+  }
+
+  function inferTeamProviderDomainFromEmail(email) {
+    const match = String(email || "").trim().toLowerCase().match(/@([^@\s]+)$/);
+    return match && TEAM_PROVIDER_DEFINITIONS[match[1]] ? match[1] : "";
+  }
+
+  function getTeamProviderDomain() {
+    const input = document.getElementById("teamProviderSelect");
+    state.teamProviderDomain = normalizeTeamProviderDomain(input ? input.value : state.teamProviderDomain);
+    return state.teamProviderDomain;
+  }
+
+  function getTeamProviderDomainForAccount(accountContext) {
+    const context = accountContext && typeof accountContext === "object" ? accountContext : {};
+    return normalizeTeamProviderDomain(
+      context.teamProviderDomain ||
+      context.providerDomain ||
+      inferTeamProviderDomainFromEmail(context.account || context.email) ||
+      getTeamProviderDomain()
+    );
+  }
+
+  function getEmailPrefix(email) {
+    return String(email || "").trim().split("@")[0] || "";
+  }
+
+  function generateTeamRegistrationEmail(providerDomain = getTeamProviderDomain()) {
+    return `${generateLocalPart()}@${normalizeTeamProviderDomain(providerDomain)}`;
   }
 
   function generateRandomName() {
@@ -936,9 +1005,11 @@
         credentials: "include"
       });
       const data = await response.json();
+      const account = data && data.account && typeof data.account === "object" ? data.account : {};
       return {
         accessToken: data && data.accessToken || "",
-        userEmail: data && data.user && data.user.email || ""
+        userEmail: data && data.user && data.user.email || "",
+        accountPlanType: account.planType || ""
       };
     });
     return result || {};
@@ -1701,6 +1772,15 @@
     return state.continueAuthorizationEnabled;
   }
 
+  function normalizeAccountPlanType(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function isTeamAuthorizationAccount(value) {
+    const context = value && typeof value === "object" ? value : {};
+    return normalizeAccountPlanType(context.planType || context.accountPlanType) === "team";
+  }
+
   function normalizeAuthorizationAccount(value) {
     if (!value || typeof value !== "object") {
       return null;
@@ -1714,6 +1794,12 @@
       account,
       email: String(value.email || account).trim(),
       registrationMethod,
+      planType: normalizeAccountPlanType(value.planType || value.accountPlanType),
+      teamProviderDomain: normalizeTeamProviderDomain(
+        value.teamProviderDomain ||
+        value.providerDomain ||
+        inferTeamProviderDomainFromEmail(account)
+      ),
       proxy: isRuntimeProxy(value.proxy) ? { ...value.proxy } : null,
       createdAt: Number(value.createdAt) || Date.now()
     };
@@ -1767,7 +1853,7 @@
       voucherInput.value = state.codexSmsVoucherCode || "";
     }
     if (button) {
-      const running = state.automationBatchRunning || state.authorizationRunning;
+      const running = state.automationBatchRunning || state.authorizationRunning || state.teamRegistrationRunning;
       button.disabled = running;
       button.textContent = state.authorizationRunning ? "授权中" : "授权";
     }
@@ -2118,6 +2204,9 @@
   async function driveCodexOAuthTab(tabId, context, oauthState, voucherCode) {
     const email = String(context.account || context.email || "").trim();
     const password = getAuthorizationPassword(context);
+    const teamAuthorization = isTeamAuthorizationAccount(context);
+    const teamProviderDomain = getTeamProviderDomainForAccount(context);
+    const teamProvider = getTeamProviderDefinition(teamProviderDomain);
     const triedEmailCodes = new Set();
     const deadline = Date.now() + CODEX_AUTH_TIMEOUT_MS;
     let lastAction = "";
@@ -2142,7 +2231,17 @@
         continue;
       }
 
+      if (teamAuthorization && href.startsWith(teamProvider.authorizeUrlPrefix)) {
+        lastAction = "team_invite";
+        await submitTeamProviderAuthorizeForm(tabId, email, teamProviderDomain, "Codex Team 授权");
+        await delay(3000);
+        continue;
+      }
+
       if (pageState.hasPhoneInput || href.toLowerCase().includes("add-phone") || href.toLowerCase().includes("phone-verification")) {
+        if (teamAuthorization) {
+          throw new Error("Codex Team 授权不应进入 add-phone/phone-verification 页面");
+        }
         lastAction = "phone";
         await handleCodexPhoneVerification(tabId, voucherCode);
         await delay(2000);
@@ -2219,7 +2318,8 @@
       throw new Error("没有可授权的最近成功账号");
     }
     const voucherCode = String(options.smsVoucherCode || getCodexSmsVoucherCode()).trim();
-    if (!voucherCode) {
+    const teamAuthorization = isTeamAuthorizationAccount(context);
+    if (!voucherCode && !teamAuthorization) {
       throw new Error("请输入 Codex 接码券");
     }
     if (state.authorizationRunning && !options.allowConcurrent) {
@@ -2230,7 +2330,6 @@
     setAuthorizationStatus(`授权中: ${context.account}`, { persist: true });
     renderAutomationBatchControls();
 
-    let oauthWindowId = null;
     let proxyAppliedForAuthorization = false;
     try {
       if (isRuntimeProxy(context.proxy)) {
@@ -2251,10 +2350,9 @@
       const pkce = await createPkcePair();
       const oauthState = createOauthState();
       const authorizeUrl = buildCodexAuthorizeUrl(oauthState, pkce.challenge);
-      const oauthWindow = await createPrivateAutomationWindow(authorizeUrl);
-      oauthWindowId = oauthWindow.windowId;
-      logMessage(`Codex 授权: 已打开浏览器页面 ${context.account}`);
-      const code = await driveCodexOAuthTab(oauthWindow.tab.id, context, oauthState, voucherCode);
+      const oauthTab = await updatePrivateAuthorizationTab(authorizeUrl, options);
+      logMessage(`Codex 授权: 已在当前隐私窗口打开授权页面 ${context.account}`);
+      const code = await driveCodexOAuthTab(oauthTab.id, context, oauthState, voucherCode);
       logMessage("Codex 授权: 已获取 authorization code，交换 token");
       const tokens = await exchangeCodexOAuthCode(code, pkce.verifier);
       const refreshToken = String(tokens.refresh_token || "").trim();
@@ -2270,7 +2368,6 @@
       setAuthorizationStatus(`失败: ${context.account}，${formatError(error)}`, { persist: true });
       throw error;
     } finally {
-      await closeAutomationWindow(oauthWindowId, { failed: false });
       if (proxyAppliedForAuthorization && options.cleanupProxyAfter) {
         await cleanupAutomationProxy("授权任务已关闭");
       }
@@ -2286,24 +2383,33 @@
       logMessage("完整流程运行中，暂不执行手动授权");
       return { ok: false };
     }
-    const voucherCode = getCodexSmsVoucherCode();
-    if (!voucherCode) {
-      logMessage("错误: 请输入 Codex 接码券");
-      return { ok: false };
-    }
     try {
       const sessionTab = await getCurrentBrowserChatGptSessionTab();
-      const sessionEmail = await getChatGptSessionUserEmailFromTab(sessionTab.id);
-      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}`);
+      const session = await getChatGptSessionFromTab(sessionTab.id);
+      const sessionEmail = String(session && session.userEmail || "").trim();
+      if (!sessionEmail) {
+        throw new Error("ChatGPT session user.email: null");
+      }
+      const planType = normalizeAccountPlanType(session && session.accountPlanType);
+      const voucherCode = getCodexSmsVoucherCode();
+      if (!voucherCode && planType !== "team") {
+        logMessage("错误: 请输入 Codex 接码券");
+        return { ok: false };
+      }
+      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
       const account = await rememberSuccessfulAuthorizationAccount({
         account: sessionEmail,
         email: sessionEmail,
         registrationMethod: "email",
+        planType,
+        teamProviderDomain: getTeamProviderDomainForAccount({ account: sessionEmail, email: sessionEmail }),
         proxy: cloneRuntimeProxy(state.currentProxy)
       });
       return await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
-        cleanupProxyAfter: true
+        cleanupProxyAfter: true,
+        tabId: sessionTab.id,
+        windowId: sessionTab.windowId
       });
     } catch (error) {
       logMessage("Codex 授权失败: " + formatError(error));
@@ -2318,25 +2424,48 @@
       if (!cachedSessionEmail && (!Number.isInteger(tabId) || tabId < 0)) {
         throw new Error("缺少 ChatGPT 标签页，无法读取 session user.email");
       }
-      const sessionEmail = cachedSessionEmail || await getChatGptSessionUserEmailFromTab(tabId);
-      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}`);
+      let session = null;
+      if (Number.isInteger(tabId) && tabId >= 0) {
+        try {
+          session = await getChatGptSessionFromTab(tabId);
+        } catch (error) {
+          logMessage(`读取 ChatGPT session planType 失败，继续使用已有授权上下文: ${formatError(error)}`);
+        }
+      }
+      const sessionEmail = cachedSessionEmail || String(session && session.userEmail || "").trim();
+      if (!sessionEmail) {
+        throw new Error("ChatGPT session user.email: null");
+      }
+      const planType = normalizeAccountPlanType(
+        (context && (context.planType || context.accountPlanType)) ||
+        (session && session.accountPlanType)
+      );
+      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
       const account = await rememberSuccessfulAuthorizationAccount({
         ...context,
         account: sessionEmail,
-        email: sessionEmail
+        email: sessionEmail,
+        planType,
+        teamProviderDomain: getTeamProviderDomainForAccount({
+          ...context,
+          account: sessionEmail,
+          email: sessionEmail
+        })
       });
       if (!account || !isContinueAuthorizationEnabled()) {
         return;
       }
       const voucherCode = getCodexSmsVoucherCode();
-      if (!voucherCode) {
+      if (!voucherCode && !isTeamAuthorizationAccount(account)) {
         logMessage("继续授权已开启，但未填写 Codex 接码券，跳过自动授权");
         setAuthorizationStatus(`跳过: ${account.account}，缺少接码券`, { persist: true });
         return;
       }
       await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
-        cleanupProxyAfter: false
+        cleanupProxyAfter: false,
+        tabId,
+        windowId: context && context.windowId
       });
     } catch (error) {
       logMessage(`Codex 授权收尾失败，注册/支付成功仍保留: ${formatError(error)}`);
@@ -3134,6 +3263,77 @@
     return ext.tabs.get(tab.id);
   }
 
+  async function getActiveTabInWindow(windowId) {
+    const activeTabs = await ext.tabs.query({ windowId, active: true });
+    if (activeTabs && activeTabs[0]) {
+      return activeTabs[0];
+    }
+    const tabs = await ext.tabs.query({ windowId });
+    return tabs && tabs[0] ? tabs[0] : null;
+  }
+
+  async function findOpenPrivateWindow() {
+    const windows = await ext.windows.getAll({ populate: true });
+    const privateWindows = (windows || []).filter((item) => item && item.incognito);
+    if (!privateWindows.length) {
+      return null;
+    }
+    return privateWindows.find((item) => item.focused) || privateWindows[privateWindows.length - 1];
+  }
+
+  async function updatePrivateAuthorizationTab(url, options = {}) {
+    let tab = null;
+    const optionTabId = Number(options && options.tabId);
+    const optionWindowId = Number(options && options.windowId);
+
+    if (Number.isInteger(optionTabId) && optionTabId >= 0) {
+      try {
+        const candidate = await ext.tabs.get(optionTabId);
+        if (candidate && candidate.id !== undefined && candidate.incognito) {
+          tab = candidate;
+        }
+      } catch (error) {
+        console.warn("Failed to get authorization tab", error);
+      }
+    }
+
+    if (!tab && Number.isInteger(optionWindowId) && optionWindowId >= 0) {
+      try {
+        const windowInfo = await ext.windows.get(optionWindowId);
+        if (windowInfo && windowInfo.incognito) {
+          tab = await getActiveTabInWindow(optionWindowId);
+        }
+      } catch (error) {
+        console.warn("Failed to get authorization window", error);
+      }
+    }
+
+    if (!tab) {
+      const privateWindow = await findOpenPrivateWindow();
+      if (!privateWindow || privateWindow.id === undefined) {
+        throw new Error("未找到已打开的隐私窗口，请先打开隐私窗口再执行授权");
+      }
+      tab = await getActiveTabInWindow(privateWindow.id);
+      if (!tab && privateWindow.id !== undefined) {
+        tab = await ext.tabs.create({ windowId: privateWindow.id, active: true });
+      }
+    }
+
+    if (!tab || tab.id === undefined || !tab.incognito) {
+      throw new Error("未找到可用于授权的隐私标签页");
+    }
+
+    if (tab.windowId !== undefined) {
+      try {
+        await ext.windows.update(tab.windowId, { focused: true });
+      } catch (_) {}
+    }
+    const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
+    await ext.tabs.update(tab.id, { url, active: true });
+    logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "隐私窗口当前标签页 URL");
+    return ext.tabs.get(tab.id);
+  }
+
   async function prepareRandomUserAgentForTab(tabId, url) {
     try {
       const response = await ext.runtime.sendMessage({
@@ -3188,12 +3388,21 @@
 
   function renderAutomationBatchControls() {
     const startButton = document.getElementById("startBtn");
+    const startToStep2Button = document.getElementById("startToStep2Btn");
+    const startTeamRegistrationButton = document.getElementById("startTeamRegistrationBtn");
     const cancelButton = document.getElementById("cancelBatchBtn");
     const startPayUrlButton = document.getElementById("startPayUrlBtn");
     const continueBrazilPixPaymentButton = document.getElementById("continueBrazilPixPaymentBtn");
-    const running = state.automationBatchRunning || state.payUrlBatchRunning || state.brazilPixContinueRunning;
+    const running = state.automationBatchRunning || state.payUrlBatchRunning || state.brazilPixContinueRunning || state.teamRegistrationRunning;
     if (startButton) {
       startButton.disabled = running;
+    }
+    if (startToStep2Button) {
+      startToStep2Button.disabled = running;
+    }
+    if (startTeamRegistrationButton) {
+      startTeamRegistrationButton.disabled = running;
+      startTeamRegistrationButton.textContent = state.teamRegistrationRunning ? "Team 注册中" : "注册 Team";
     }
     if (startPayUrlButton) {
       startPayUrlButton.disabled = running;
@@ -3203,14 +3412,15 @@
     }
     renderAuthorizationControls();
     if (cancelButton) {
-      cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
+      const cancellableBatchRunning = state.automationBatchRunning || state.teamRegistrationRunning;
+      cancelButton.disabled = !cancellableBatchRunning || state.cancelAutomationBatchRequested;
       cancelButton.textContent = state.cancelAutomationBatchRequested ? "取消中" : "取消";
     }
   }
 
   function requestCancelAutomationBatch() {
-    if (!state.automationBatchRunning) {
-      logMessage("当前没有正在执行的完整流程");
+    if (!state.automationBatchRunning && !state.teamRegistrationRunning) {
+      logMessage("当前没有正在执行的连续流程");
       return;
     }
     if (state.cancelAutomationBatchRequested) {
@@ -3220,6 +3430,285 @@
     state.cancelAutomationBatchRequested = true;
     renderAutomationBatchControls();
     logMessage("已请求取消，当前流程执行完后不再执行后续次数");
+  }
+
+  async function waitForChatGptSessionWithAccessToken(tabId, timeoutMs = 60000) {
+    const start = Date.now();
+    let lastError = "";
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const session = await getChatGptSessionFromTab(tabId);
+        const accessToken = String(session && session.accessToken || "").trim();
+        if (accessToken) {
+          return session;
+        }
+        lastError = "accessToken 为空";
+      } catch (error) {
+        lastError = formatError(error);
+      }
+      await delay(2000);
+    }
+    throw new Error(`等待 ChatGPT session accessToken 超时${lastError ? `: ${lastError}` : ""}`);
+  }
+
+  async function waitForAnyUrlPrefix(tabId, prefixes, timeoutMs) {
+    const prefixList = (Array.isArray(prefixes) ? prefixes : [prefixes])
+      .map((prefix) => String(prefix || "").trim())
+      .filter(Boolean);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const tab = await ext.tabs.get(tabId);
+      const url = String(tab && tab.url || "");
+      const matchedPrefix = prefixList.find((prefix) => prefix && url.startsWith(prefix));
+      if (matchedPrefix) {
+        return { url, prefix: matchedPrefix };
+      }
+      await delay(1000);
+    }
+    throw new Error(`等待 URL 超时: ${prefixList.join(" 或 ")}`);
+  }
+
+  async function submitTeamProviderAuthorizeForm(tabId, email, providerDomain, label = "Team") {
+    const provider = getTeamProviderDefinition(providerDomain);
+    const prefix = getEmailPrefix(email);
+    if (!prefix) {
+      throw new Error(`${label}: 邮箱前缀为空`);
+    }
+
+    logMessage(`${label}: 等待进入 ${provider.authorizeUrlPrefix}`);
+    await waitForUrlPrefix(tabId, provider.authorizeUrlPrefix, 120000);
+    logMessage(`${label}: 使用 provider ${provider.domain}`);
+
+    if (provider.type === "pilipala") {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: "#prefix",
+        value: prefix,
+        timeoutMs: 60000
+      }, `${label}: prefix 输入失败`);
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: "#password",
+        value: provider.password,
+        timeoutMs: 30000
+      }, `${label}: password 输入失败`);
+    } else if (provider.type === "emailOnly") {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="email"]',
+        value: email,
+        timeoutMs: 60000
+      }, `${label}: 邮箱输入失败`);
+    } else {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="email"]',
+        value: email,
+        timeoutMs: 60000
+      }, `${label}: invite 邮箱输入失败`);
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="invite_code"]',
+        value: TEAM_REGISTRATION_INVITE_CODE,
+        timeoutMs: 30000
+      }, `${label}: invite_code 输入失败`);
+    }
+
+    await clickPageElement(tabId, {
+      selector: provider.submitSelector || 'button[type="submit"]',
+      timeoutMs: 30000
+    }, `${label}: provider 表单提交失败`);
+  }
+
+  async function completeTeamRegistrationProviderFlow(tabId, email, providerDomain) {
+    await submitTeamProviderAuthorizeForm(tabId, email, providerDomain, "Team 注册");
+    logMessage("Team 注册: 等待 signin-consent 或返回 ChatGPT");
+    const nextUrl = await waitForAnyUrlPrefix(tabId, [TEAM_SIGNIN_CONSENT_URL_PREFIX, "https://chatgpt.com"], 120000);
+    if (nextUrl.prefix === TEAM_SIGNIN_CONSENT_URL_PREFIX) {
+      logMessage("Team 注册: 提交 signin consent，等待返回 ChatGPT");
+      await clickPageElement(tabId, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 60000
+      }, "Team 注册 signin consent 提交失败");
+      await waitForUrlPrefix(tabId, "https://chatgpt.com", 180000);
+    }
+  }
+
+  async function runTeamRegistrationBatch() {
+    if (
+      state.automationBatchRunning ||
+      state.payUrlBatchRunning ||
+      state.brazilPixContinueRunning ||
+      state.teamRegistrationRunning ||
+      state.authorizationRunning
+    ) {
+      logMessage("已有流程正在执行中，暂不启动 Team 注册");
+      return { ok: false };
+    }
+
+    state.teamRegistrationRunning = true;
+    state.cancelAutomationBatchRequested = false;
+    renderAutomationBatchControls();
+
+    const runCount = getRunCount();
+    resetRunStats(runCount);
+    let completedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
+    try {
+      logMessage(`准备连续执行 ${runCount} 次 Team 注册`);
+      for (let index = 1; index <= runCount; index += 1) {
+        logMessage(`===== Team 注册第 ${index}/${runCount} 次开始 =====`);
+        try {
+          const result = await runSingleTeamRegistrationFlow();
+          completedCount = index;
+          if (result && result.ok) {
+            successCount += 1;
+            updateRunStats("success");
+            logMessage(`===== Team 注册第 ${index}/${runCount} 次结束 =====`);
+          } else {
+            failCount += 1;
+            updateRunStats("fail");
+            logMessage(`Team 注册第 ${index}/${runCount} 次失败结束`);
+          }
+        } catch (error) {
+          completedCount = index;
+          failCount += 1;
+          updateRunStats("fail");
+          logMessage(`Team 注册第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
+        }
+        if (state.cancelAutomationBatchRequested) {
+          logMessage(`已取消后续 Team 注册，停止在第 ${completedCount}/${runCount} 次之后`);
+          break;
+        }
+      }
+      if (state.cancelAutomationBatchRequested && completedCount < runCount) {
+        logMessage(
+          `Team 注册连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
+        );
+      } else {
+        logMessage(`Team 注册连续执行完成，共 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次`);
+      }
+    } finally {
+      state.teamRegistrationRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+    }
+  }
+
+  async function runSingleTeamRegistrationFlow() {
+    setActiveStep(1);
+
+    const teamProviderDomain = getTeamProviderDomain();
+    const email = generateTeamRegistrationEmail(teamProviderDomain);
+    let automationWindowId = null;
+    let uploadedThirdPartyAccount = "";
+    let automationSucceeded = false;
+
+    try {
+      logMessage(`Team 注册: 使用 provider ${teamProviderDomain}，随机邮箱 ${email}`);
+      try {
+        await ensureProxyForStage("第一步");
+      } catch (error) {
+        throw new Error(`第一步代理设置失败: ${formatError(error)}`);
+      }
+
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com/");
+      automationWindowId = automationWindow.windowId;
+      const tab = automationWindow.tab;
+      logMessage("Team 注册: 已打开 chatgpt.com");
+
+      const pageLoaded = await waitForPageComplete(tab.id, 90000);
+      if (!pageLoaded) {
+        throw new Error("chatgpt.com 页面加载超时");
+      }
+      await delay();
+      logMessage("Team 注册: 点击登录");
+      await clickPageElement(tab.id, {
+        selector: 'button[data-testid="signup-button"]',
+        timeoutMs: 60000
+      }, "Team 注册登录按钮点击失败");
+      await delay(3000);
+
+      logMessage(`Team 注册: 输入邮箱 ${email}`);
+      await setFirstOAuthValue(tab.id, [
+        "#email",
+        'input[type="email"]',
+        'input[name="username"]',
+        'input[name="email"]',
+        'input[autocomplete="username"]'
+      ], email, "Team 登录邮箱");
+
+      logMessage("Team 注册: 提交邮箱，等待进入 SSO");
+      await clickPageElement(tab.id, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 30000
+      }, "Team 注册邮箱提交按钮点击失败");
+      await waitForUrlPrefix(tab.id, TEAM_SSO_URL_PREFIX, 120000);
+
+      logMessage("Team 注册: 点击 SSO connection");
+      await clickPageElement(tab.id, {
+        selector: 'button[name="ssoConnection"]',
+        timeoutMs: 60000
+      }, "Team 注册 SSO connection 按钮点击失败");
+
+      await completeTeamRegistrationProviderFlow(tab.id, email, teamProviderDomain);
+      await waitForPageComplete(tab.id, 60000);
+
+      const session = await waitForChatGptSessionWithAccessToken(tab.id, 60000);
+      const accessToken = String(session && session.accessToken || "").trim();
+      const sessionEmail = String(session && session.userEmail || "").trim();
+      if (sessionEmail && sessionEmail.toLowerCase() !== email.toLowerCase()) {
+        logMessage(`Team 注册: ChatGPT session user.email=${sessionEmail}，第三方账号仍使用生成邮箱 ${email}`);
+      } else if (sessionEmail) {
+        logMessage(`Team 注册: ChatGPT session user.email=${sessionEmail}`);
+      }
+
+      logMessage("Team 注册: 正在上传第三方账号");
+      const thirdPartyResult = await submitThirdPartyAccount({
+        account: email,
+        accessToken,
+        payurl: ""
+      });
+      if (!thirdPartyResult.ok) {
+        throw new Error(`Team 注册第三方接口提交失败: ${thirdPartyResult.error || `HTTP ${thirdPartyResult.status}`}`);
+      }
+      uploadedThirdPartyAccount = email;
+      logMessage("Team 注册: 第三方接口提交成功（支付链接为空）");
+
+      const authorizationAccount = await rememberSuccessfulAuthorizationAccount({
+        account: email,
+        email,
+        registrationMethod: "email",
+        planType: normalizeAccountPlanType(session && session.accountPlanType) || "team",
+        teamProviderDomain,
+        proxy: cloneRuntimeProxy(state.currentProxy)
+      });
+      if (isContinueAuthorizationEnabled()) {
+        logMessage("Team 注册: 已勾选继续授权，开始 Codex 授权");
+        await authorizeCodexAccount(authorizationAccount, {
+          smsVoucherCode: getCodexSmsVoucherCode(),
+          cleanupProxyAfter: false,
+          tabId: tab.id,
+          windowId: automationWindowId
+        });
+      } else {
+        logMessage("Team 注册: 未勾选继续授权，跳过 Codex 授权");
+      }
+
+      automationSucceeded = true;
+      logMessage(`Team 注册成功: ${email}`);
+      return { ok: true, email };
+    } catch (error) {
+      logMessage(`Team 注册失败: ${formatError(error)}`);
+      if (uploadedThirdPartyAccount) {
+        await deleteUploadedThirdPartyAccountAfterFailure(
+          uploadedThirdPartyAccount,
+          "Team 注册后续失败，正在删除第三方账号"
+        );
+      }
+      return { ok: false, email, error: formatError(error) };
+    } finally {
+      await cleanupAutomationProxy("Team 注册任务已关闭");
+      await closeAutomationWindow(automationWindowId, {
+        failed: !automationSucceeded
+      });
+    }
   }
 
   async function runAutomationBatch() {
@@ -6302,6 +6791,8 @@
       state.lastCheckoutRegion = normalizeOptionalCheckoutRegion(saved.lastCheckoutRegion);
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
+      state.teamProviderDomain = normalizeTeamProviderDomain(saved.teamProviderDomain);
+      document.getElementById("teamProviderSelect").value = state.teamProviderDomain;
       state.registrationMethod = normalizeRegistrationMethod(saved.registrationMethod);
       document.getElementById("registrationMethodSelect").value = state.registrationMethod;
       state.heroApiKey = typeof saved.heroApiKey === "string" ? saved.heroApiKey : "";
@@ -6387,6 +6878,7 @@
       heroCountry: document.getElementById("heroCountrySelect").value.trim(),
       heroMaxPrice: document.getElementById("heroMaxPriceInput").value.trim(),
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
+      teamProviderDomain: normalizeTeamProviderDomain(document.getElementById("teamProviderSelect").value),
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
       paymentFlowEnabled: document.getElementById("paymentFlowEnabledCheckbox").checked,
       continueAuthorizationEnabled: document.getElementById("continueAuthorizationCheckbox").checked,
@@ -6424,6 +6916,7 @@
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(runAutomationBatch));
     document.getElementById("startToStep2Btn").addEventListener("click", () => runWithErrorHandling(startToStep2));
+    document.getElementById("startTeamRegistrationBtn").addEventListener("click", () => runWithErrorHandling(runTeamRegistrationBatch));
     document.getElementById("cancelBatchBtn").addEventListener("click", requestCancelAutomationBatch);
     document.getElementById("getPayUrlBtn").addEventListener("click", () => runWithErrorHandling(getPayUrlFromCurrentTab));
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
@@ -6510,6 +7003,12 @@
       renderAuthorizationControls();
       persistState();
       logMessage(state.continueAuthorizationEnabled ? "继续授权已开启" : "继续授权已关闭");
+    });
+    document.getElementById("teamProviderSelect").addEventListener("change", () => {
+      const domain = getTeamProviderDomain();
+      document.getElementById("teamProviderSelect").value = domain;
+      persistState();
+      logMessage(`Team Provider 已切换为 ${domain}`);
     });
     document.getElementById("codexSmsVoucherInput").addEventListener("input", () => {
       state.codexSmsVoucherCode = document.getElementById("codexSmsVoucherInput").value.trim();
