@@ -58,3 +58,34 @@ billingAddress-addressLine1Input Jingumae
 #billingAddress-administrativeAreaInput 是select 选择 CE
 #billingAddress-postalCodeInput 输入 60532-290
 点击 type="submit"
+
+
+
+
+1. 打开  https://auth.80101.xyz/chatgpt 
+等待进入 https://auth.80101.xyz/开头的
+
+等待 id="username" 输入框 34891.xyz 域名注册的邮箱 
+id="password" 固定输入 Aa123456..
+等待后 点击  id="kc-login"
+等待点击跳转到 
+https://external.auth.openai.com
+点击 button[type="submit"]
+这里就注册成功了。可以把账号上传到第三方了。
+
+
+在加一个继续[授权的 checkbox]和【授权按钮】
+
+checkbox勾选后，任务流程正常完成后进行自动授权。
+授权按钮，点击后进行授权操作
+
+授权流程根据 D:\code\gpt-codex-oauth\scripts下的python自动授权逻辑来。打开的页面直接在浏览器打开，不是使用python的功能，最后拿到rt_token 使用第三方接口去修改当前账号的rt_token
+
+Update only `rt_token` for an unbound third-party account:
+
+```bash
+curl -X POST "https://你的域名/api/third-party/accounts/update" \
+  -H "content-type: application/json" \
+  -H "x-api-key: 你的 THIRD_PARTY_API_KEY" \
+  -d '{"account":"user@example.com","rt_token":"refresh_token_2"}'
+```

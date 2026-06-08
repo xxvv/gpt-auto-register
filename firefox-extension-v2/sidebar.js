@@ -14,7 +14,16 @@
   const HERO_SMS_API = "https://hero-sms.com/stubs/handler_api.php";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
+  const THIRD_PARTY_ACCOUNTS_UPDATE_API = `${THIRD_PARTY_ACCOUNTS_API}/update`;
   const THIRD_PARTY_API_KEY = "aa102911";
+  const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
+  const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+  const CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback";
+  const CODEX_OAUTH_SCOPE = "openid email profile offline_access";
+  const CODEX_PHONE_API_BASE = "https://getcodex.nnai.uk";
+  const CODEX_PHONE_VERIFY_ATTEMPTS = 3;
+  const CODEX_SMS_WAIT_MS = 120000;
+  const CODEX_AUTH_TIMEOUT_MS = 480000;
   const WEBSHARE_LIST_API = "https://proxy.webshare.io/api/v2/proxy/list/";
   const WEBSHARE_REPLACE_API = "https://proxy.webshare.io/api/v3/proxy/replace/";
   const IPAPI_LOCATION_API = "https://ipapi.co/json/?token=T6UkBSJpmZgNZELN7QsJk5uCZTF8c6aVHUYZiLwEsHnUQqqeJg";
@@ -30,7 +39,7 @@
   const DEFAULT_RUN_COUNT = 1;
   const DEFAULT_REGISTRATION_METHOD = "email";
   const PHONE_REGISTRATION_PASSWORD = "Aa123456789..";
-  const HERO_DEFAULT_SERVICE = "openai";
+  const HERO_DEFAULT_SERVICE = "dr";
   const HERO_SMS_POLL_TIMEOUT_MS = 90000;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
@@ -69,10 +78,16 @@
     heroApiKey: "",
     heroService: HERO_DEFAULT_SERVICE,
     heroCountry: "",
-    heroOperator: "",
+    heroCountrySearch: "",
     heroMaxPrice: "",
     specifiedAccountInput: "",
     deleteThirdPartyAccountEnabled: true,
+    paymentFlowEnabled: true,
+    continueAuthorizationEnabled: false,
+    codexSmsVoucherCode: "",
+    lastSuccessfulAuthorizationAccount: null,
+    authorizationRunning: false,
+    lastAuthorizationStatus: "",
     debugModeEnabled: false,
     phoneKeyInput: "",
     pixCdkInput: "",
@@ -108,6 +123,8 @@
     }
   };
   let usZip3StateRangesPromise = null;
+  let heroCountryOptions = [];
+  let heroCountriesPromise = null;
 
   function randomDelayMs(minMs = 3000, maxMs = 5000) {
     const min = Math.ceil(Number(minMs) || 3000);
@@ -822,8 +839,11 @@
       windowId: Number.isInteger(rawWindowId) && rawWindowId >= 0 ? rawWindowId : null,
       thirdPartyAccount: String(context.thirdPartyAccount || "").trim(),
       registrationAccount: String(context.registrationAccount || "").trim(),
+      sessionEmail: String(context.sessionEmail || "").trim(),
+      registrationMethod: normalizeRegistrationMethod(context.registrationMethod || (context.phoneRegistration ? "phone" : "email")),
       specifiedAccountEntry: specifiedAccountEntry && specifiedAccountEntry.line ? specifiedAccountEntry : null,
       phoneRegistration: Boolean(context.phoneRegistration),
+      proxy: isRuntimeProxy(context.proxy) ? { ...context.proxy } : null,
       createdAt: Number(context.createdAt) || Date.now()
     };
   }
@@ -844,6 +864,12 @@
     const input = document.getElementById("deleteThirdPartyAccountCheckbox");
     state.deleteThirdPartyAccountEnabled = input ? Boolean(input.checked) : true;
     return state.deleteThirdPartyAccountEnabled;
+  }
+
+  function isPaymentFlowEnabled() {
+    const input = document.getElementById("paymentFlowEnabledCheckbox");
+    state.paymentFlowEnabled = input ? Boolean(input.checked) : true;
+    return state.paymentFlowEnabled;
   }
 
   function isDebugModeEnabled() {
@@ -903,15 +929,33 @@
     }
   }
 
-  async function getChatGptAccessTokenFromTab(tabId) {
+  async function getChatGptSessionFromTab(tabId) {
     const result = await executeScriptInTab(tabId, async () => {
       const response = await fetch("https://chatgpt.com/api/auth/session", {
         cache: "no-store",
         credentials: "include"
       });
       const data = await response.json();
-      return data && data.accessToken || "";
+      return {
+        accessToken: data && data.accessToken || "",
+        userEmail: data && data.user && data.user.email || ""
+      };
     });
+    return result || {};
+  }
+
+  async function getChatGptSessionUserEmailFromTab(tabId) {
+    const session = await getChatGptSessionFromTab(tabId);
+    const email = String(session && session.userEmail || "").trim();
+    if (!email) {
+      throw new Error("ChatGPT session user.email: null");
+    }
+    return email;
+  }
+
+  async function getChatGptAccessTokenFromTab(tabId) {
+    const session = await getChatGptSessionFromTab(tabId);
+    const result = session && session.accessToken || "";
     const accessToken = String(result || "").trim();
     if (!accessToken) {
       throw new Error("accessToken: null");
@@ -1070,6 +1114,39 @@
     return tabs && tabs.length ? tabs[tabs.length - 1] : null;
   }
 
+  async function getCurrentBrowserChatGptSessionTab() {
+    const activeTab = await getCurrentWindowActiveTab();
+    if (isChatGptTab(activeTab)) {
+      return activeTab;
+    }
+
+    try {
+      const currentWindowTabs = await ext.tabs.query({
+        currentWindow: true,
+        url: "https://chatgpt.com/*"
+      });
+      if (currentWindowTabs && currentWindowTabs.length) {
+        return currentWindowTabs[currentWindowTabs.length - 1];
+      }
+    } catch (_) {}
+
+    const tabs = await ext.tabs.query({ url: "https://chatgpt.com/*" });
+    if (tabs && tabs.length) {
+      return tabs[tabs.length - 1];
+    }
+
+    logMessage("未找到 ChatGPT 标签页，正在打开 chatgpt.com 读取当前浏览器登录账号");
+    const createdTab = await ext.tabs.create({
+      url: "https://chatgpt.com",
+      active: true
+    });
+    if (!createdTab || !createdTab.id) {
+      throw new Error("打开 ChatGPT 标签页失败");
+    }
+    await waitForPageComplete(createdTab.id, 90000);
+    return ext.tabs.get(createdTab.id);
+  }
+
   async function finalizeBrazilPixPaymentSuccess(pixResult, context) {
     const resumeContext = normalizeBrazilPixResumeContext(context);
     const thirdPartyAccount = resumeContext ? resumeContext.thirdPartyAccount : "";
@@ -1128,6 +1205,14 @@
       const pixResult = await runBrazilPixPaymentFlow(tab.id);
       await finalizeBrazilPixPaymentSuccess(pixResult, nextContext);
       await clearBrazilPixResumeContext();
+      if (nextContext && nextContext.thirdPartyAccount) {
+        await handleSuccessfulAccountAuthorization({
+          tabId: tab.id,
+          sessionEmail: nextContext.sessionEmail,
+          registrationMethod: nextContext.registrationMethod || (nextContext.phoneRegistration ? "phone" : "email"),
+          proxy: nextContext.proxy
+        });
+      }
       logMessage("继续支付完成");
       return { ok: true };
     } catch (error) {
@@ -1573,6 +1658,688 @@
       };
     } catch (e) {
       return { ok: false, status: 0, data: null, error: e.message || "third-party delete failed" };
+    }
+  }
+
+  async function updateThirdPartyRtToken(account, rtToken) {
+    try {
+      const resp = await fetch(THIRD_PARTY_ACCOUNTS_UPDATE_API, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": THIRD_PARTY_API_KEY
+        },
+        body: JSON.stringify({
+          account,
+          rt_token: rtToken
+        })
+      });
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (_) {}
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        data,
+        error: extractThirdPartyError(resp, data)
+      };
+    } catch (e) {
+      return { ok: false, status: 0, data: null, error: e.message || "third-party rt_token update failed" };
+    }
+  }
+
+  function getCodexSmsVoucherCode() {
+    const input = document.getElementById("codexSmsVoucherInput");
+    state.codexSmsVoucherCode = String(input && input.value || state.codexSmsVoucherCode || "").trim();
+    return state.codexSmsVoucherCode;
+  }
+
+  function isContinueAuthorizationEnabled() {
+    const input = document.getElementById("continueAuthorizationCheckbox");
+    state.continueAuthorizationEnabled = input ? Boolean(input.checked) : false;
+    return state.continueAuthorizationEnabled;
+  }
+
+  function normalizeAuthorizationAccount(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const account = String(value.account || value.email || "").trim();
+    if (!account) {
+      return null;
+    }
+    const registrationMethod = normalizeRegistrationMethod(value.registrationMethod);
+    return {
+      account,
+      email: String(value.email || account).trim(),
+      registrationMethod,
+      proxy: isRuntimeProxy(value.proxy) ? { ...value.proxy } : null,
+      createdAt: Number(value.createdAt) || Date.now()
+    };
+  }
+
+  function cloneRuntimeProxy(proxy) {
+    return isRuntimeProxy(proxy) ? { ...proxy } : null;
+  }
+
+  async function rememberSuccessfulAuthorizationAccount(context) {
+    const account = normalizeAuthorizationAccount({
+      ...context,
+      createdAt: Date.now()
+    });
+    if (!account) {
+      return null;
+    }
+    state.lastSuccessfulAuthorizationAccount = account;
+    await persistState();
+    renderAuthorizationControls();
+    logMessage(`已记录最近成功账号，可执行 Codex 授权: ${account.account}`);
+    return account;
+  }
+
+  function getAuthorizationPassword(accountContext) {
+    const context = normalizeAuthorizationAccount(accountContext) || {};
+    if (context.registrationMethod === "phone") {
+      return PHONE_REGISTRATION_PASSWORD;
+    }
+    const settings = sanitizeFillSettings(state.fillSettings);
+    return String(settings.passwordValue || DEFAULT_FILL_SETTINGS.passwordValue).trim() || DEFAULT_FILL_SETTINGS.passwordValue;
+  }
+
+  function setAuthorizationStatus(message, options = {}) {
+    state.lastAuthorizationStatus = String(message || "");
+    renderAuthorizationControls();
+    if (options.persist) {
+      persistState();
+    }
+  }
+
+  function renderAuthorizationControls() {
+    const checkbox = document.getElementById("continueAuthorizationCheckbox");
+    const voucherInput = document.getElementById("codexSmsVoucherInput");
+    const button = document.getElementById("authorizeCurrentAccountButton");
+    const status = document.getElementById("authorizationStatus");
+    if (checkbox) {
+      checkbox.checked = Boolean(state.continueAuthorizationEnabled);
+    }
+    if (voucherInput && document.activeElement !== voucherInput) {
+      voucherInput.value = state.codexSmsVoucherCode || "";
+    }
+    if (button) {
+      const running = state.automationBatchRunning || state.authorizationRunning;
+      button.disabled = running;
+      button.textContent = state.authorizationRunning ? "授权中" : "授权";
+    }
+    if (status) {
+      const account = normalizeAuthorizationAccount(state.lastSuccessfulAuthorizationAccount);
+      const statusText = state.lastAuthorizationStatus || "未执行";
+      status.classList.toggle("empty", !state.lastAuthorizationStatus);
+      status.textContent = [
+        `授权状态: ${statusText}`,
+        `最近账号: ${account ? account.account : "无"}`
+      ].join("\n");
+    }
+  }
+
+  function base64UrlFromBytes(bytes) {
+    let binary = "";
+    Array.from(bytes).forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  async function createPkcePair() {
+    const random = new Uint8Array(64);
+    globalThis.crypto.getRandomValues(random);
+    const verifier = base64UrlFromBytes(random);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    return {
+      verifier,
+      challenge: base64UrlFromBytes(new Uint8Array(digest))
+    };
+  }
+
+  function createOauthState() {
+    const random = new Uint8Array(24);
+    globalThis.crypto.getRandomValues(random);
+    return base64UrlFromBytes(random);
+  }
+
+  function buildCodexAuthorizeUrl(oauthState, challenge) {
+    const params = new URLSearchParams({
+      client_id: CODEX_OAUTH_CLIENT_ID,
+      response_type: "code",
+      redirect_uri: CODEX_OAUTH_REDIRECT_URI,
+      scope: CODEX_OAUTH_SCOPE,
+      state: oauthState,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      prompt: "login",
+      id_token_add_organizations: "true",
+      codex_cli_simplified_flow: "true"
+    });
+    return `${CODEX_OAUTH_ISSUER}/oauth/authorize?${params.toString()}`;
+  }
+
+  function parseOauthCallbackUrl(url, expectedState) {
+    const text = String(url || "");
+    if (!text.includes("/auth/callback") && !text.includes("code=") && !text.includes("error=")) {
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = new URL(text);
+    } catch (_) {
+      return null;
+    }
+    const code = String(parsed.searchParams.get("code") || "").trim();
+    const resultState = String(parsed.searchParams.get("state") || "").trim();
+    const error = String(parsed.searchParams.get("error") || "").trim();
+    const errorDescription = String(parsed.searchParams.get("error_description") || "").trim();
+    if (resultState && resultState !== expectedState) {
+      return { error: "invalid_state", errorDescription: `expected ${expectedState}, got ${resultState}`, state: resultState };
+    }
+    if (error) {
+      return { error, errorDescription, state: resultState };
+    }
+    if (code) {
+      return { code, state: resultState };
+    }
+    return null;
+  }
+
+  async function exchangeCodexOAuthCode(code, verifier) {
+    const response = await fetch(`${CODEX_OAUTH_ISSUER}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: CODEX_OAUTH_CLIENT_ID,
+        code,
+        redirect_uri: CODEX_OAUTH_REDIRECT_URI,
+        code_verifier: verifier
+      })
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_) {}
+    if (!response.ok) {
+      throw new Error(`Codex token 交换失败: HTTP ${response.status}`);
+    }
+    const refreshToken = String(data && data.refresh_token || "").trim();
+    if (!refreshToken) {
+      throw new Error("Codex token 响应缺少 refresh_token");
+    }
+    return data;
+  }
+
+  async function getOAuthPageState(tabId) {
+    try {
+      const result = await executePageFunction(tabId, "__gptAutoRegisterOAuthPageState", {}, {
+        loadTimeoutMs: 12000,
+        scriptableTimeoutMs: 12000
+      });
+      return result || {};
+    } catch (error) {
+      return { ok: false, error: formatError(error) };
+    }
+  }
+
+  async function setFirstOAuthValue(tabId, selectors, value, label) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterSetFirstValue", {
+      selectors,
+      value,
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    if (!result || !result.ok) {
+      throw new Error(`${label || "授权输入"}失败: ${(result && result.error) || "未找到输入框"}`);
+    }
+    return result;
+  }
+
+  async function clickOAuthContinue(tabId, label) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterClickOauthContinue", {
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    if (!result || !result.ok) {
+      throw new Error(`${label || "授权继续按钮"}点击失败: ${(result && result.error) || "未找到按钮"}`);
+    }
+    return result;
+  }
+
+  async function clickChooseAccountSession(tabId) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterClickChooseAccountSession", {
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    if (!result || !result.ok) {
+      throw new Error(`选择已登录账号失败: ${(result && result.error) || "未找到 session_id"}`);
+    }
+    return result;
+  }
+
+  async function fillOAuthCode(tabId, code, label) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterFillGenericOtp", {
+      value: code,
+      timeoutMs: 30000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    if (!result || !result.ok) {
+      throw new Error(`${label || "验证码"}输入失败: ${(result && result.error) || "未找到验证码输入框"}`);
+    }
+    return result;
+  }
+
+  async function redeemCodexPhone(voucherCode) {
+    const response = await fetch(`${CODEX_PHONE_API_BASE}/api/redeem`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: voucherCode })
+    });
+    const payload = await readJsonResponse(response, "Codex 接码券兑换");
+    if (!response.ok || payload.ok === false) {
+      const message = payload.error || payload.message || `HTTP ${response.status}`;
+      throw new Error(`Codex 接码券兑换失败: ${message}`);
+    }
+    const activationId = String(payload.activationId || payload.activation_id || "").trim();
+    const phoneNumber = String(payload.phoneNumber || payload.phone_number || "").trim();
+    if (!activationId || !phoneNumber) {
+      throw new Error("Codex 接码券兑换响应缺少 activationId 或 phoneNumber");
+    }
+    return {
+      activationId,
+      phoneNumber,
+      cancelAvailableAt: payload.cancelAvailableAt || payload.cancel_available_at || null
+    };
+  }
+
+  function extractCodexSmsCode(payload) {
+    const candidates = [];
+    const pushCandidate = (value) => {
+      if (value !== undefined && value !== null) {
+        candidates.push(String(value));
+      }
+    };
+    pushCandidate(payload && payload.code);
+    pushCandidate(payload && payload.smsCode);
+    pushCandidate(payload && payload.sms_code);
+    pushCandidate(payload && payload.text);
+    const activation = payload && payload.activation;
+    if (activation && typeof activation === "object") {
+      pushCandidate(activation.code);
+      pushCandidate(activation.smsCode);
+      pushCandidate(activation.sms_code);
+      pushCandidate(activation.text);
+      const activationSms = activation.sms;
+      if (activationSms && typeof activationSms === "object") {
+        pushCandidate(activationSms.code);
+        pushCandidate(activationSms.text);
+      }
+    }
+    for (const candidate of candidates) {
+      const exact = candidate.trim();
+      if (/^\d{4,8}$/.test(exact)) {
+        return exact;
+      }
+      const match = candidate.match(/\b(\d{4,8})\b/);
+      if (match) {
+        return match[1];
+      }
+    }
+    return "";
+  }
+
+  async function waitCodexSmsCode(activationId, timeoutMs) {
+    const deadline = Date.now() + (Number(timeoutMs) || CODEX_SMS_WAIT_MS);
+    while (Date.now() <= deadline) {
+      const response = await fetch(`${CODEX_PHONE_API_BASE}/api/activations/${encodeURIComponent(activationId)}/status`, {
+        method: "GET",
+        cache: "no-store"
+      });
+      const payload = await readJsonResponse(response, "Codex 短信状态");
+      if (!response.ok) {
+        throw new Error(`Codex 短信状态查询失败: HTTP ${response.status}`);
+      }
+      const code = extractCodexSmsCode(payload);
+      if (code) {
+        return code;
+      }
+      await delay(5000);
+    }
+    throw new Error("Codex 短信验证码等待超时");
+  }
+
+  async function cancelCodexPhoneActivation(activation) {
+    if (!activation || !activation.activationId) {
+      return;
+    }
+    try {
+      const response = await fetch(`${CODEX_PHONE_API_BASE}/api/activations/${encodeURIComponent(activation.activationId)}/cancel`, {
+        method: "POST"
+      });
+      if (response.status === 400) {
+        let payload = {};
+        try {
+          payload = await response.json();
+        } catch (_) {}
+        const remainingMs = Number(payload && payload.remainingMs);
+        if (Number.isFinite(remainingMs) && remainingMs > 0 && remainingMs <= 15000) {
+          await delay(remainingMs + 1000);
+          await fetch(`${CODEX_PHONE_API_BASE}/api/activations/${encodeURIComponent(activation.activationId)}/cancel`, {
+            method: "POST"
+          });
+        }
+      }
+    } catch (error) {
+      logMessage(`Codex 手机号取消失败，继续流程: ${formatError(error)}`);
+    }
+  }
+
+  async function handleCodexPhoneVerification(tabId, voucherCode) {
+    if (!String(voucherCode || "").trim()) {
+      throw new Error("缺少 Codex 接码券，无法完成手机号验证");
+    }
+    for (let attempt = 1; attempt <= CODEX_PHONE_VERIFY_ATTEMPTS; attempt += 1) {
+      let activation = null;
+      try {
+        logMessage(`Codex 授权手机号验证: 兑换手机号 ${attempt}/${CODEX_PHONE_VERIFY_ATTEMPTS}`);
+        activation = await redeemCodexPhone(voucherCode);
+        await setFirstOAuthValue(tabId, ["#tel", 'input[type="tel"]'], activation.phoneNumber, "手机号");
+        await executePageFunction(tabId, "__gptAutoRegisterClickSmsRadioIfPresent", {}, {
+          loadTimeoutMs: 5000
+        }).catch(() => null);
+        await clickOAuthContinue(tabId, "手机号提交");
+        await delay(3000);
+        let pageState = await getOAuthPageState(tabId);
+        if (pageState && (pageState.phoneSubmitError || pageState.telInvalid)) {
+          throw new Error("手机号被页面拒绝");
+        }
+        logMessage("Codex 授权手机号已提交，等待短信验证码");
+        const smsCode = await waitCodexSmsCode(activation.activationId, CODEX_SMS_WAIT_MS);
+        await fillOAuthCode(tabId, smsCode, "短信验证码");
+        await clickOAuthContinue(tabId, "短信验证码提交");
+        await delay(3000);
+        pageState = await getOAuthPageState(tabId);
+        if (pageState && pageState.telInvalid) {
+          throw new Error("短信验证码被页面拒绝");
+        }
+        logMessage("Codex 授权手机号验证已提交");
+        return true;
+      } catch (error) {
+        logMessage(`Codex 授权手机号验证失败 ${attempt}/${CODEX_PHONE_VERIFY_ATTEMPTS}: ${formatError(error)}`);
+        await cancelCodexPhoneActivation(activation);
+        if (attempt >= CODEX_PHONE_VERIFY_ATTEMPTS) {
+          throw error;
+        }
+        try {
+          await ext.tabs.goBack(tabId);
+          await delay(3000);
+        } catch (_) {}
+        try {
+          await executePageFunction(tabId, "__gptAutoRegisterClick", {
+            selector: 'button[value="resend"]',
+            timeoutMs: 5000
+          }, {
+            loadTimeoutMs: 5000
+          });
+          await delay(3000);
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
+
+  async function pollCodexEmailCode(email, triedCodes, timeoutMs) {
+    const deadline = Date.now() + (Number(timeoutMs) || 120000);
+    while (Date.now() <= deadline) {
+      const code = await fetchVerificationCode(email);
+      const normalized = String(code || "").trim();
+      if (/^\d{6}$/.test(normalized) && !triedCodes.has(normalized)) {
+        triedCodes.add(normalized);
+        return normalized;
+      }
+      await delay(3000);
+    }
+    return "";
+  }
+
+  async function driveCodexOAuthTab(tabId, context, oauthState, voucherCode) {
+    const email = String(context.account || context.email || "").trim();
+    const password = getAuthorizationPassword(context);
+    const triedEmailCodes = new Set();
+    const deadline = Date.now() + CODEX_AUTH_TIMEOUT_MS;
+    let lastAction = "";
+
+    while (Date.now() <= deadline) {
+      const tab = await ext.tabs.get(tabId);
+      const currentUrl = String(tab && tab.url || "");
+      const callback = parseOauthCallbackUrl(currentUrl, oauthState);
+      if (callback) {
+        if (callback.error) {
+          throw new Error(`OAuth callback error: ${callback.errorDescription || callback.error}`);
+        }
+        if (!callback.code) {
+          throw new Error("OAuth callback 缺少 authorization code");
+        }
+        return callback.code;
+      }
+
+      const pageState = await getOAuthPageState(tabId);
+      const href = String(pageState.href || currentUrl || "");
+      if (parseOauthCallbackUrl(href, oauthState)) {
+        continue;
+      }
+
+      if (pageState.hasPhoneInput || href.toLowerCase().includes("add-phone") || href.toLowerCase().includes("phone-verification")) {
+        lastAction = "phone";
+        await handleCodexPhoneVerification(tabId, voucherCode);
+        await delay(2000);
+        continue;
+      }
+
+      if (pageState.hasChooseAccountSession || href.toLowerCase().includes("/choose-an-account")) {
+        lastAction = "choose_account";
+        logMessage("Codex 授权: 检测到 choose-an-account，点击已登录账号");
+        await clickChooseAccountSession(tabId);
+        await delay(3000);
+        continue;
+      }
+
+      if (pageState.hasEmailInput) {
+        lastAction = "email";
+        logMessage(`Codex 授权: 输入邮箱 ${email}`);
+        await setFirstOAuthValue(tabId, [
+          "#email",
+          'input[type="email"]',
+          'input[name="username"]',
+          'input[name="email"]',
+          'input[autocomplete="username"]'
+        ], email, "邮箱");
+        await clickOAuthContinue(tabId, "邮箱提交");
+        await delay(3000);
+        continue;
+      }
+
+      if (pageState.hasPasswordInput) {
+        lastAction = "password";
+        logMessage("Codex 授权: 输入密码");
+        await setFirstOAuthValue(tabId, [
+          'input[type="password"]',
+          'input[name="password"]',
+          'input[name="current-password"]',
+          "#password"
+        ], password, "密码");
+        await clickOAuthContinue(tabId, "密码提交");
+        await delay(3000);
+        continue;
+      }
+
+      if (pageState.hasCodeInput) {
+        lastAction = "email_otp";
+        logMessage("Codex 授权: 等待邮箱验证码");
+        const code = await pollCodexEmailCode(email, triedEmailCodes, 120000);
+        if (!code) {
+          throw new Error("Codex 授权未获取到邮箱验证码");
+        }
+        await fillOAuthCode(tabId, code, "邮箱验证码");
+        await clickOAuthContinue(tabId, "邮箱验证码提交");
+        await delay(3000);
+        continue;
+      }
+
+      if (pageState.isConsent || pageState.hasContinueButton) {
+        lastAction = "continue";
+        logMessage("Codex 授权: 点击继续/确认");
+        await clickOAuthContinue(tabId, "继续/确认");
+        await delay(3000);
+        continue;
+      }
+
+      await delay(1500);
+    }
+
+    throw new Error(`等待 Codex OAuth callback 超时${lastAction ? `，最后动作: ${lastAction}` : ""}`);
+  }
+
+  async function authorizeCodexAccount(accountContext, options = {}) {
+    const context = normalizeAuthorizationAccount(accountContext);
+    if (!context) {
+      throw new Error("没有可授权的最近成功账号");
+    }
+    const voucherCode = String(options.smsVoucherCode || getCodexSmsVoucherCode()).trim();
+    if (!voucherCode) {
+      throw new Error("请输入 Codex 接码券");
+    }
+    if (state.authorizationRunning && !options.allowConcurrent) {
+      throw new Error("授权正在执行中");
+    }
+
+    state.authorizationRunning = true;
+    setAuthorizationStatus(`授权中: ${context.account}`, { persist: true });
+    renderAutomationBatchControls();
+
+    let oauthWindowId = null;
+    let proxyAppliedForAuthorization = false;
+    try {
+      if (isRuntimeProxy(context.proxy)) {
+        await applyFirefoxProxy(context.proxy);
+        state.currentProxy = cloneRuntimeProxy(context.proxy);
+        proxyAppliedForAuthorization = true;
+        renderProxyStatus();
+        await persistState();
+        logMessage(`Codex 授权: 已切换到注册时代理 ${formatProxy(context.proxy)}`);
+      } else {
+        await clearFirefoxProxyState();
+        state.currentProxy = null;
+        state.currentIpLocation = null;
+        renderProxyStatus();
+        await persistState();
+        logMessage("Codex 授权: 注册时未使用代理，已清除当前 Firefox 代理");
+      }
+      const pkce = await createPkcePair();
+      const oauthState = createOauthState();
+      const authorizeUrl = buildCodexAuthorizeUrl(oauthState, pkce.challenge);
+      const oauthWindow = await createPrivateAutomationWindow(authorizeUrl);
+      oauthWindowId = oauthWindow.windowId;
+      logMessage(`Codex 授权: 已打开浏览器页面 ${context.account}`);
+      const code = await driveCodexOAuthTab(oauthWindow.tab.id, context, oauthState, voucherCode);
+      logMessage("Codex 授权: 已获取 authorization code，交换 token");
+      const tokens = await exchangeCodexOAuthCode(code, pkce.verifier);
+      const refreshToken = String(tokens.refresh_token || "").trim();
+      logMessage("Codex 授权: token 获取成功，正在更新第三方 rt_token");
+      const updateResult = await updateThirdPartyRtToken(context.account, refreshToken);
+      if (!updateResult.ok) {
+        throw new Error(`第三方 rt_token 更新失败: ${updateResult.error || `HTTP ${updateResult.status}`}`);
+      }
+      setAuthorizationStatus(`成功: ${context.account}`, { persist: true });
+      logMessage(`Codex 授权成功，已更新第三方 rt_token: ${context.account}`);
+      return { ok: true, account: context.account };
+    } catch (error) {
+      setAuthorizationStatus(`失败: ${context.account}，${formatError(error)}`, { persist: true });
+      throw error;
+    } finally {
+      await closeAutomationWindow(oauthWindowId, { failed: false });
+      if (proxyAppliedForAuthorization && options.cleanupProxyAfter) {
+        await cleanupAutomationProxy("授权任务已关闭");
+      }
+      state.authorizationRunning = false;
+      renderAuthorizationControls();
+      renderAutomationBatchControls();
+      await persistState();
+    }
+  }
+
+  async function authorizeCurrentBrowserSessionAccount() {
+    if (state.automationBatchRunning) {
+      logMessage("完整流程运行中，暂不执行手动授权");
+      return { ok: false };
+    }
+    const voucherCode = getCodexSmsVoucherCode();
+    if (!voucherCode) {
+      logMessage("错误: 请输入 Codex 接码券");
+      return { ok: false };
+    }
+    try {
+      const sessionTab = await getCurrentBrowserChatGptSessionTab();
+      const sessionEmail = await getChatGptSessionUserEmailFromTab(sessionTab.id);
+      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}`);
+      const account = await rememberSuccessfulAuthorizationAccount({
+        account: sessionEmail,
+        email: sessionEmail,
+        registrationMethod: "email",
+        proxy: cloneRuntimeProxy(state.currentProxy)
+      });
+      return await authorizeCodexAccount(account, {
+        smsVoucherCode: voucherCode,
+        cleanupProxyAfter: true
+      });
+    } catch (error) {
+      logMessage("Codex 授权失败: " + formatError(error));
+      return { ok: false, error: formatError(error) };
+    }
+  }
+
+  async function handleSuccessfulAccountAuthorization(context) {
+    try {
+      const tabId = Number(context && context.tabId);
+      const cachedSessionEmail = String(context && context.sessionEmail || "").trim();
+      if (!cachedSessionEmail && (!Number.isInteger(tabId) || tabId < 0)) {
+        throw new Error("缺少 ChatGPT 标签页，无法读取 session user.email");
+      }
+      const sessionEmail = cachedSessionEmail || await getChatGptSessionUserEmailFromTab(tabId);
+      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}`);
+      const account = await rememberSuccessfulAuthorizationAccount({
+        ...context,
+        account: sessionEmail,
+        email: sessionEmail
+      });
+      if (!account || !isContinueAuthorizationEnabled()) {
+        return;
+      }
+      const voucherCode = getCodexSmsVoucherCode();
+      if (!voucherCode) {
+        logMessage("继续授权已开启，但未填写 Codex 接码券，跳过自动授权");
+        setAuthorizationStatus(`跳过: ${account.account}，缺少接码券`, { persist: true });
+        return;
+      }
+      await authorizeCodexAccount(account, {
+        smsVoucherCode: voucherCode,
+        cleanupProxyAfter: false
+      });
+    } catch (error) {
+      logMessage(`Codex 授权收尾失败，注册/支付成功仍保留: ${formatError(error)}`);
     }
   }
 
@@ -2434,6 +3201,7 @@
     if (continueBrazilPixPaymentButton) {
       continueBrazilPixPaymentButton.disabled = running;
     }
+    renderAuthorizationControls();
     if (cancelButton) {
       cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
       cancelButton.textContent = state.cancelAutomationBatchRequested ? "取消中" : "取消";
@@ -2464,6 +3232,9 @@
     renderAutomationBatchControls();
     try {
       validateRegistrationSettings();
+      if (isContinueAuthorizationEnabled() && !getCodexSmsVoucherCode()) {
+        throw new Error("继续授权已开启，请填写 Codex 接码券");
+      }
     } catch (error) {
       logMessage("错误: " + formatError(error));
       state.automationBatchRunning = false;
@@ -2543,6 +3314,7 @@
   async function startAutomation() {
     const countrySel = document.getElementById("country").value;
     const phoneRegistration = isPhoneRegistrationMethod();
+    const paymentFlowEnabled = isPaymentFlowEnabled();
     let specifiedAccountEntry = null;
     try {
       specifiedAccountEntry = phoneRegistration ? null : getNextSpecifiedAccountEntry();
@@ -2550,12 +3322,16 @@
       logMessage("错误: " + formatError(error));
       return { ok: false };
     }
-    let prepared;
-    try {
-      prepared = await preparePaymentInputs(false);
-    } catch (error) {
-      logMessage("错误: " + formatError(error));
-      return { ok: false };
+    let prepared = null;
+    if (paymentFlowEnabled) {
+      try {
+        prepared = await preparePaymentInputs(false);
+      } catch (error) {
+        logMessage("错误: " + formatError(error));
+        return { ok: false };
+      }
+    } else {
+      logMessage("已关闭支付流程，本次完整流程将在账号注册成功后结束");
     }
 
     logMessage("开始完整自动化流程...");
@@ -2589,6 +3365,7 @@
         return { ok: false };
       }
       const registrationAccount = String(registration.account || registration.email || registration.phone || "").trim();
+      const registrationProxy = cloneRuntimeProxy(state.currentProxy);
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
@@ -2608,6 +3385,30 @@
           ? registration.email || registration.account || registration.phone || ""
           : registrationAccount
       ).trim();
+      let chatGptSessionEmail = "";
+      try {
+        chatGptSessionEmail = await getChatGptSessionUserEmailFromTab(tab.id);
+        logMessage(`ChatGPT session user.email: ${chatGptSessionEmail}`);
+      } catch (error) {
+        logMessage(`读取 ChatGPT session user.email 失败，授权收尾时会重试: ${formatError(error)}`);
+      }
+
+      if (!paymentFlowEnabled) {
+        automationSucceeded = true;
+        try {
+          if (!phoneRegistration) await markSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
+        } catch (error) {
+          logMessage("指定账号创建日志记录失败，继续注册成功收尾: " + formatError(error));
+        }
+        logMessage("支付流程已关闭，账号注册成功，本次完整流程按成功结束");
+        await handleSuccessfulAccountAuthorization({
+          tabId: tab.id,
+          sessionEmail: chatGptSessionEmail,
+          registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+          proxy: registrationProxy
+        });
+        return { ok: true, paymentSkipped: true };
+      }
 
       setActiveStep(2);
       if (countrySel === "BR") {
@@ -2622,8 +3423,11 @@
           windowId: automationWindowId,
           thirdPartyAccount,
           registrationAccount,
+          sessionEmail: chatGptSessionEmail,
+          registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
           specifiedAccountEntry,
           phoneRegistration,
+          proxy: registrationProxy,
           createdAt: Date.now()
         };
         await saveBrazilPixResumeContext(pixResumeContext);
@@ -2633,6 +3437,12 @@
           if (automationSucceeded) {
             await finalizeBrazilPixPaymentSuccess(pixResult, pixResumeContext);
             await clearBrazilPixResumeContext();
+            await handleSuccessfulAccountAuthorization({
+              tabId: tab.id,
+              sessionEmail: chatGptSessionEmail,
+              registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+              proxy: registrationProxy
+            });
           }
         } catch (error) {
           await saveBrazilPixResumeContext(pixResumeContext);
@@ -2700,6 +3510,12 @@
       if (automationSucceeded) {
         if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
         await removeUsedCardInput(prepared);
+        await handleSuccessfulAccountAuthorization({
+          tabId: tab.id,
+          sessionEmail: chatGptSessionEmail,
+          registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+          proxy: registrationProxy
+        });
       } else {
         if (prepared && prepared.smsCodeEntered) {
           logPaymentFailurePhone(prepared.phoneKey, "支付流程失败");
@@ -3084,23 +3900,110 @@
     if (!settings.apiKey) {
       throw new Error("手机号注册需要填写 Hero SMS API Key");
     }
-    if (!settings.service) {
-      throw new Error("手机号注册需要填写 Hero Service");
+  }
+
+  function parseHeroCountries(payload) {
+    const source = Array.isArray(payload)
+      ? payload.map((item, index) => [String(index), item])
+      : Object.entries(payload && typeof payload === "object" ? payload : {});
+    return source
+      .map(([key, item]) => {
+        const country = item && typeof item === "object" ? item : {};
+        const id = String(country.id || key || "").trim();
+        if (!id || String(country.visible) === "0") {
+          return null;
+        }
+        const chn = String(country.chn || "").trim();
+        const eng = String(country.eng || "").trim();
+        const rus = String(country.rus || "").trim();
+        const primaryName = chn || eng || rus || `国家 ${id}`;
+        const label = eng && eng !== primaryName ? `${primaryName} (${eng}) - ${id}` : `${primaryName} - ${id}`;
+        return {
+          id,
+          label,
+          searchText: [id, chn, eng, rus].join(" ").toLowerCase()
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }
+
+  function renderHeroCountryOptions() {
+    const select = document.getElementById("heroCountrySelect");
+    if (!select) {
+      return;
+    }
+    const selectedCountry = String(state.heroCountry || select.value || "").trim();
+    const query = String((document.getElementById("heroCountrySearchInput") || {}).value || state.heroCountrySearch || "")
+      .trim()
+      .toLowerCase();
+    const matchedCountries = query
+      ? heroCountryOptions.filter((country) => country.searchText.includes(query))
+      : heroCountryOptions;
+    select.textContent = "";
+    select.appendChild(new Option("不指定国家", ""));
+    if (selectedCountry && !heroCountryOptions.some((country) => country.id === selectedCountry)) {
+      select.appendChild(new Option(`当前保存: ${selectedCountry}`, selectedCountry));
+    }
+    matchedCountries.forEach((country) => {
+      select.appendChild(new Option(country.label, country.id));
+    });
+    if (selectedCountry) {
+      select.value = selectedCountry;
+      if (select.value !== selectedCountry) {
+        select.appendChild(new Option(`当前筛选外: ${selectedCountry}`, selectedCountry));
+        select.value = selectedCountry;
+      }
     }
   }
 
+  async function loadHeroCountries() {
+    if (heroCountriesPromise) {
+      return heroCountriesPromise;
+    }
+    heroCountriesPromise = (async () => {
+      const url = new URL(HERO_SMS_API);
+      url.searchParams.set("action", "getCountries");
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        cache: "no-store"
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`Hero SMS 国家列表 HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
+      }
+      let payload = null;
+      try {
+        payload = text ? JSON.parse(text) : null;
+      } catch (_) {
+        throw new Error("Hero SMS 国家列表响应不是有效 JSON");
+      }
+      heroCountryOptions = parseHeroCountries(payload);
+      renderHeroCountryOptions();
+      logMessage(`Hero SMS: 已加载 ${heroCountryOptions.length} 个国家`);
+      return heroCountryOptions;
+    })().catch((error) => {
+      heroCountriesPromise = null;
+      renderHeroCountryOptions();
+      logMessage("Hero SMS 国家列表加载失败: " + formatError(error));
+      return [];
+    });
+    return heroCountriesPromise;
+  }
+
   function getHeroSettings() {
-    const apiKey = String((document.getElementById("heroApiKeyInput") || {}).value || state.heroApiKey || "").trim();
-    const service = String((document.getElementById("heroServiceInput") || {}).value || state.heroService || HERO_DEFAULT_SERVICE).trim() || HERO_DEFAULT_SERVICE;
-    const country = String((document.getElementById("heroCountryInput") || {}).value || state.heroCountry || "").trim();
-    const operator = String((document.getElementById("heroOperatorInput") || {}).value || state.heroOperator || "").trim();
-    const maxPrice = String((document.getElementById("heroMaxPriceInput") || {}).value || state.heroMaxPrice || "").trim();
+    const apiKeyInput = document.getElementById("heroApiKeyInput");
+    const countrySelect = document.getElementById("heroCountrySelect");
+    const maxPriceInput = document.getElementById("heroMaxPriceInput");
+    const apiKey = String(apiKeyInput ? apiKeyInput.value : state.heroApiKey || "").trim();
+    const service = HERO_DEFAULT_SERVICE;
+    const country = String(countrySelect ? countrySelect.value : state.heroCountry || "").trim();
+    const maxPrice = String(maxPriceInput ? maxPriceInput.value : state.heroMaxPrice || "").trim();
     state.heroApiKey = apiKey;
     state.heroService = service;
     state.heroCountry = country;
-    state.heroOperator = operator;
     state.heroMaxPrice = maxPrice;
-    return { apiKey, service, country, operator, maxPrice };
+    return { apiKey, service, country, maxPrice };
   }
 
   function buildHeroSmsUrl(action, params = {}) {
@@ -3179,10 +4082,9 @@
     if (!settings.apiKey) {
       throw new Error("手机号注册需要填写 Hero SMS API Key");
     }
-    logMessage(`Hero SMS: 获取手机号，service=${settings.service}${settings.country ? `, country=${settings.country}` : ""}${settings.operator ? `, operator=${settings.operator}` : ""}${settings.maxPrice ? `, maxPrice=${settings.maxPrice}` : ""}`);
+    logMessage(`Hero SMS: 获取手机号，service=${settings.service}${settings.country ? `, country=${settings.country}` : ""}${settings.maxPrice ? `, maxPrice=${settings.maxPrice}` : ""}`);
     const params = { service: settings.service };
     if (settings.country) params.country = settings.country;
-    if (settings.operator) params.operator = settings.operator;
     if (settings.maxPrice) params.maxPrice = settings.maxPrice;
     const number = parseHeroNumberResult(await fetchHeroSms("getNumberV2", params));
     if (!number.phoneNumber || !number.activationId) {
@@ -5404,16 +6306,23 @@
       document.getElementById("registrationMethodSelect").value = state.registrationMethod;
       state.heroApiKey = typeof saved.heroApiKey === "string" ? saved.heroApiKey : "";
       document.getElementById("heroApiKeyInput").value = state.heroApiKey;
-      state.heroService = typeof saved.heroService === "string" && saved.heroService.trim() ? saved.heroService.trim() : HERO_DEFAULT_SERVICE;
-      document.getElementById("heroServiceInput").value = state.heroService;
+      state.heroService = HERO_DEFAULT_SERVICE;
       state.heroCountry = typeof saved.heroCountry === "string" ? saved.heroCountry : "";
-      document.getElementById("heroCountryInput").value = state.heroCountry;
-      state.heroOperator = typeof saved.heroOperator === "string" ? saved.heroOperator : "";
-      document.getElementById("heroOperatorInput").value = state.heroOperator;
+      document.getElementById("heroCountrySelect").value = state.heroCountry;
+      renderHeroCountryOptions();
+      loadHeroCountries();
       state.heroMaxPrice = typeof saved.heroMaxPrice === "string" ? saved.heroMaxPrice : "";
       document.getElementById("heroMaxPriceInput").value = state.heroMaxPrice;
       state.deleteThirdPartyAccountEnabled = saved.deleteThirdPartyAccountEnabled === undefined ? true : Boolean(saved.deleteThirdPartyAccountEnabled);
       document.getElementById("deleteThirdPartyAccountCheckbox").checked = state.deleteThirdPartyAccountEnabled;
+      state.paymentFlowEnabled = saved.paymentFlowEnabled === undefined ? true : Boolean(saved.paymentFlowEnabled);
+      document.getElementById("paymentFlowEnabledCheckbox").checked = state.paymentFlowEnabled;
+      state.continueAuthorizationEnabled = Boolean(saved.continueAuthorizationEnabled);
+      document.getElementById("continueAuthorizationCheckbox").checked = state.continueAuthorizationEnabled;
+      state.codexSmsVoucherCode = typeof saved.codexSmsVoucherCode === "string" ? saved.codexSmsVoucherCode : "";
+      document.getElementById("codexSmsVoucherInput").value = state.codexSmsVoucherCode;
+      state.lastSuccessfulAuthorizationAccount = normalizeAuthorizationAccount(saved.lastSuccessfulAuthorizationAccount);
+      state.lastAuthorizationStatus = typeof saved.lastAuthorizationStatus === "string" ? saved.lastAuthorizationStatus : "";
       state.debugModeEnabled = Boolean(saved.debugModeEnabled);
       document.getElementById("debugModeCheckbox").checked = state.debugModeEnabled;
       if (saved.phoneKeyInput) document.getElementById("phoneKeyInput").value = saved.phoneKeyInput;
@@ -5458,6 +6367,7 @@
       state.lastPaypalEmail = typeof saved.lastPaypalEmail === "string" ? saved.lastPaypalEmail : "";
       state.brazilPixResume = normalizeBrazilPixResumeContext(saved.brazilPixResume);
       renderFillSettings();
+      renderAuthorizationControls();
       renderAutomationBatchControls();
       renderNextPhoneStatus();
     });
@@ -5473,12 +6383,16 @@
       useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
       registrationMethod: normalizeRegistrationMethod(document.getElementById("registrationMethodSelect").value),
       heroApiKey: document.getElementById("heroApiKeyInput").value.trim(),
-      heroService: document.getElementById("heroServiceInput").value.trim() || HERO_DEFAULT_SERVICE,
-      heroCountry: document.getElementById("heroCountryInput").value.trim(),
-      heroOperator: document.getElementById("heroOperatorInput").value.trim(),
+      heroService: HERO_DEFAULT_SERVICE,
+      heroCountry: document.getElementById("heroCountrySelect").value.trim(),
       heroMaxPrice: document.getElementById("heroMaxPriceInput").value.trim(),
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
+      paymentFlowEnabled: document.getElementById("paymentFlowEnabledCheckbox").checked,
+      continueAuthorizationEnabled: document.getElementById("continueAuthorizationCheckbox").checked,
+      codexSmsVoucherCode: document.getElementById("codexSmsVoucherInput").value.trim(),
+      lastSuccessfulAuthorizationAccount: normalizeAuthorizationAccount(state.lastSuccessfulAuthorizationAccount),
+      lastAuthorizationStatus: state.lastAuthorizationStatus,
       debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
       pixCdkInput: document.getElementById("pixCdkInput").value,
       payUrlInput: document.getElementById("payUrlInput").value,
@@ -5562,7 +6476,15 @@
       persistState();
       logMessage(method === "phone" ? "注册方式已切换为手机号，将使用 Hero SMS 获取手机号" : "注册方式已切换为邮箱");
     });
-    ["heroApiKeyInput", "heroServiceInput", "heroCountryInput", "heroOperatorInput", "heroMaxPriceInput"].forEach((elementId) => {
+    document.getElementById("heroCountrySearchInput").addEventListener("input", () => {
+      state.heroCountrySearch = document.getElementById("heroCountrySearchInput").value.trim();
+      renderHeroCountryOptions();
+    });
+    document.getElementById("heroCountrySelect").addEventListener("change", () => {
+      getHeroSettings();
+      persistState();
+    });
+    ["heroApiKeyInput", "heroMaxPriceInput"].forEach((elementId) => {
       document.getElementById(elementId).addEventListener("input", () => {
         getHeroSettings();
         persistState();
@@ -5573,11 +6495,27 @@
       persistState();
       logMessage(state.deleteThirdPartyAccountEnabled ? "失败时将删除第三方账号" : "失败时将保留第三方账号");
     });
+    document.getElementById("paymentFlowEnabledCheckbox").addEventListener("change", () => {
+      state.paymentFlowEnabled = document.getElementById("paymentFlowEnabledCheckbox").checked;
+      persistState();
+      logMessage(state.paymentFlowEnabled ? "已开启支付流程" : "已关闭支付流程，注册成功后即按流程成功收尾");
+    });
     document.getElementById("debugModeCheckbox").addEventListener("change", () => {
       state.debugModeEnabled = document.getElementById("debugModeCheckbox").checked;
       persistState();
       logMessage(state.debugModeEnabled ? "调试模式已开启，将保留窗口" : "调试模式已关闭");
     });
+    document.getElementById("continueAuthorizationCheckbox").addEventListener("change", () => {
+      state.continueAuthorizationEnabled = document.getElementById("continueAuthorizationCheckbox").checked;
+      renderAuthorizationControls();
+      persistState();
+      logMessage(state.continueAuthorizationEnabled ? "继续授权已开启" : "继续授权已关闭");
+    });
+    document.getElementById("codexSmsVoucherInput").addEventListener("input", () => {
+      state.codexSmsVoucherCode = document.getElementById("codexSmsVoucherInput").value.trim();
+      persistState();
+    });
+    document.getElementById("authorizeCurrentAccountButton").addEventListener("click", () => runWithErrorHandling(authorizeCurrentBrowserSessionAccount));
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
       renderNextPhoneStatus();

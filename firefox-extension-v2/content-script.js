@@ -970,6 +970,262 @@
     return { ok: true, text: String(button.textContent || "").trim() };
   };
 
+  function isVisibleEnabledElement(element) {
+    if (!element || typeof element.getBoundingClientRect !== "function") {
+      return false;
+    }
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      style.visibility !== "hidden" &&
+      style.display !== "none" &&
+      !element.disabled &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  }
+
+  function isVisibleTextInput(element) {
+    if (!isVisibleEnabledElement(element)) {
+      return false;
+    }
+    const tagName = String(element.tagName || "").toLowerCase();
+    const type = String(element.getAttribute("type") || "text").toLowerCase();
+    return tagName === "input" && !["hidden", "submit", "button", "checkbox", "radio"].includes(type);
+  }
+
+  function firstVisibleElement(selectors) {
+    const selectorList = uniqueSelectors(selectors);
+    for (const selector of selectorList) {
+      const elements = Array.from(document.querySelectorAll(selector));
+      const element = elements.find(isVisibleEnabledElement);
+      if (element) {
+        return { element, selector };
+      }
+    }
+    return { element: null, selector: selectorList[0] || "" };
+  }
+
+  function oauthCodeInputs(code) {
+    const codeText = String(code || "").replace(/\D/g, "");
+    const singleSelectors = [
+      'input[name="code"]',
+      'input[name*="code" i]',
+      'input[name*="otp" i]',
+      'input[name*="verification" i]',
+      'input[id*="code" i]',
+      'input[id*="otp" i]',
+      'input[id*="verification" i]',
+      'input[autocomplete="one-time-code"]',
+      'input[inputmode="numeric"]',
+      'input[placeholder*="code" i]',
+      'input[placeholder*="verification" i]',
+      'input[aria-label*="code" i]',
+      'input[aria-label*="verification" i]'
+    ];
+    for (const selector of singleSelectors) {
+      const elements = Array.from(document.querySelectorAll(selector))
+        .filter((element) => isVisibleTextInput(element) && String(element.id || "") !== "tel");
+      if (elements.length) {
+        return { mode: "single", inputs: [elements[0]], selector };
+      }
+    }
+    const candidates = Array.from(document.querySelectorAll(
+      'input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]'
+    ))
+      .filter((element) => isVisibleTextInput(element) && String(element.id || "") !== "tel")
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return (ar.top - br.top) || (ar.left - br.left);
+      });
+    if (candidates.length >= Math.min(codeText.length || 6, 4)) {
+      return { mode: "multi", inputs: candidates.slice(0, codeText.length || candidates.length), selector: "multi numeric inputs" };
+    }
+    return { mode: "", inputs: [], selector: "" };
+  }
+
+  window.__gptAutoRegisterOAuthPageState = function oauthPageStateExport() {
+    const href = String(location.href || "");
+    const bodyText = String(document.body && (document.body.innerText || document.body.textContent) || "");
+    const lowerHref = href.toLowerCase();
+    const lowerText = bodyText.toLowerCase();
+    const buttons = Array.from(document.querySelectorAll("button, input[type='submit']"))
+      .filter(isVisibleEnabledElement)
+      .map((button) => String(button.textContent || button.value || "").trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    const hasContinueButton = buttons.some((text) => (
+      /continue|next|confirm|verify|allow|authorize|log in|sign in/i.test(text) ||
+      /继续|下一步|确定|确认|验证|允许|授权|登录/.test(text)
+    ));
+    return {
+      ok: true,
+      href,
+      title: document.title || "",
+      hasEmailInput: Boolean(firstVisibleElement([
+        "#email",
+        'input[type="email"]',
+        'input[name="username"]',
+        'input[name="email"]',
+        'input[autocomplete="username"]'
+      ]).element),
+      hasPasswordInput: Boolean(firstVisibleElement([
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[name="current-password"]',
+        "#password"
+      ]).element),
+      hasPhoneInput: Boolean(firstVisibleElement(["#tel", 'input[type="tel"]']).element),
+      hasCodeInput: Boolean(oauthCodeInputs("123456").inputs.length),
+      hasChooseAccountSession: lowerHref.includes("/choose-an-account") || Boolean(document.querySelector('input[name="session_id"]')),
+      isConsent: lowerHref.includes("/sign-in-with-chatgpt/codex/consent") || lowerText.includes("codex"),
+      hasContinueButton,
+      phoneSubmitError: Boolean(document.querySelector("#_r_t_")),
+      telInvalid: Boolean(document.querySelector('#tel[data-invalid="true"]')),
+      buttons,
+      textSample: bodyText.slice(0, 500)
+    };
+  };
+
+  window.__gptAutoRegisterClickChooseAccountSession = async function clickChooseAccountSessionExport(payload) {
+    const timeoutMs = Number((payload && payload.timeoutMs) || 15000);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const inputs = Array.from(document.querySelectorAll('input[name="session_id"]'))
+        .filter((input) => !input.disabled);
+      const input = inputs.find(isVisibleEnabledElement) || inputs[0];
+      if (input) {
+        const label = input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null;
+        const clickable = isVisibleEnabledElement(input)
+          ? input
+          : (label && isVisibleEnabledElement(label))
+            ? label
+            : input.closest("label, button, [role='button'], li, div");
+        if (clickable && isVisibleEnabledElement(clickable)) {
+          simulateClick(clickable);
+        } else {
+          simulateClick(input);
+        }
+        if (input.type === "radio" || input.type === "checkbox") {
+          input.checked = true;
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        const form = input.closest("form");
+        const submit = form && Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'))
+          .find(isVisibleEnabledElement);
+        if (submit) {
+          await delay(300);
+          simulateClick(submit);
+        }
+        return { ok: true, value: String(input.value || ""), submitted: Boolean(submit) };
+      }
+      await delay(300);
+    }
+    return { ok: false, error: 'input[name="session_id"] not found' };
+  };
+
+  window.__gptAutoRegisterSetFirstValue = async function setFirstValueExport(payload) {
+    const selectors = (payload && payload.selectors) || (payload && payload.selector) || "";
+    const timeoutMs = Number((payload && payload.timeoutMs) || 15000);
+    const start = Date.now();
+    let found = { element: null, selector: "" };
+    while (Date.now() - start < timeoutMs) {
+      found = firstVisibleElement(selectors);
+      if (found.element) {
+        break;
+      }
+      await delay(300);
+    }
+    if (!found.element) {
+      return { ok: false, selector: found.selector, error: `Element not found: ${found.selector}` };
+    }
+    found.element.focus();
+    setNativeValue(found.element, payload && payload.value);
+    found.element.dispatchEvent(new Event("change", { bubbles: true }));
+    found.element.blur();
+    return { ok: true, selector: found.selector, value: String(found.element.value || "") };
+  };
+
+  window.__gptAutoRegisterFillGenericOtp = async function fillGenericOtpExport(payload) {
+    const code = String((payload && payload.value) || "").replace(/\D/g, "");
+    const timeoutMs = Number((payload && payload.timeoutMs) || 30000);
+    const start = Date.now();
+    let matched = { mode: "", inputs: [], selector: "" };
+    while (Date.now() - start < timeoutMs) {
+      matched = oauthCodeInputs(code);
+      if (matched.inputs.length) {
+        break;
+      }
+      await delay(300);
+    }
+    if (!matched.inputs.length) {
+      return { ok: false, error: "OTP inputs not found" };
+    }
+    if (matched.mode === "single") {
+      const input = matched.inputs[0];
+      input.focus();
+      setNativeValue(input, code);
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.blur();
+      return { ok: true, mode: matched.mode, selector: matched.selector, value: String(input.value || "") };
+    }
+    matched.inputs.forEach((input, index) => {
+      input.focus();
+      setNativeValue(input, code[index] || "");
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.blur();
+    });
+    return {
+      ok: true,
+      mode: matched.mode,
+      selector: matched.selector,
+      value: matched.inputs.map((input) => String(input.value || "")).join("")
+    };
+  };
+
+  window.__gptAutoRegisterClickSmsRadioIfPresent = function clickSmsRadioIfPresentExport() {
+    const radio = document.querySelector('input[type="radio"][value="sms"]');
+    if (!radio || !isVisibleEnabledElement(radio)) {
+      return { ok: false, found: false };
+    }
+    if (!radio.checked) {
+      simulateClick(radio);
+      radio.checked = true;
+      radio.dispatchEvent(new Event("input", { bubbles: true }));
+      radio.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return { ok: true, found: true, checked: Boolean(radio.checked) };
+  };
+
+  window.__gptAutoRegisterClickOauthContinue = async function clickOauthContinueExport(payload) {
+    const timeoutMs = Number((payload && payload.timeoutMs) || 15000);
+    const buttonPattern = /continue|next|confirm|verify|allow|authorize|log in|sign in|submit/i;
+    const chinesePattern = /继续|下一步|确定|确认|验证|允许|授权|登录|提交/;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const submit = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'))
+        .find(isVisibleEnabledElement);
+      if (submit) {
+        simulateClick(submit);
+        return { ok: true, text: String(submit.textContent || submit.value || "").trim(), selector: "submit" };
+      }
+      const buttons = Array.from(document.querySelectorAll("button, input[type='button']"))
+        .filter(isVisibleEnabledElement);
+      const matched = buttons.find((button) => {
+        const text = String(button.textContent || button.value || "").trim();
+        return buttonPattern.test(text) || chinesePattern.test(text);
+      }) || buttons[0];
+      if (matched) {
+        simulateClick(matched);
+        return { ok: true, text: String(matched.textContent || matched.value || "").trim(), selector: "button" };
+      }
+      await delay(300);
+    }
+    return { ok: false, error: "OAuth continue button not found" };
+  };
+
   function fillRegistrationAgeOrBirthday(ageValue, birthdayValue) {
     const ageInput = document.querySelector('input[name="age"]');
     const birthdayInput = document.querySelector('input[name="birthday"]');
