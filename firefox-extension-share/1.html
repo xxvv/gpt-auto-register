@@ -1,0 +1,82 @@
+如果有dialog 元素就删除dialog元素。
+等待
+点击 <button class="btn relative group-focus-within/dialog:focus-visible:[outline-width:1.5px] group-focus-within/dialog:focus-visible:[outline-offset:2.5px] group-focus-within/dialog:focus-visible:[outline-style:solid] group-focus-within/dialog:focus-visible:[outline-color:var(--text-primary)] btn-ghost btn-large w-full"><div class="flex items-center justify-center">Skip</div></button>
+等待
+点击 <button class="btn relative group-focus-within/dialog:focus-visible:[outline-width:1.5px] group-focus-within/dialog:focus-visible:[outline-offset:2.5px] group-focus-within/dialog:focus-visible:[outline-style:solid] group-focus-within/dialog:focus-visible:[outline-color:var(--text-primary)] btn-primary btn-large w-full"><div class="flex items-center justify-center">Continue</div></button>
+等待
+点击，点击前先找这个button，没有就是没有试用
+<button type="button" class="button-glimmer-cta relative flex items-center gap-1 rounded-full bg-transparent ps-2.5 whitespace-nowrap text-current focus:outline-none pe-3 h-[34px] gap-[3px]! rounded-lg! border border-transparent border-solid px-3! hover:border-[rgba(88,86,214,0.01)] hover:bg-[rgba(245,245,255,0.5)] hover:backdrop-blur-[38.571px] keyboard-focused:border-[rgba(88,86,214,0.01)] keyboard-focused:bg-[rgba(245,245,255,0.5)] keyboard-focused:backdrop-blur-[38.571px] dark:hover:bg-token-surface-hover dark:keyboard-focused:bg-token-surface-hover"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="icon"><use href="/cdn/assets/sprites-core-477149cb.svg#2e54eb" fill="currentColor"></use></svg>Free offer</button>
+
+打开 https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing 页面
+检查 data-testid="select-plan-button-plus-upgrade" 这个按钮的文字是否包含 free，包含就点击它 
+点击前先检查，button[role="combobox"]的内容是不是美国或者United States
+如果不是就执行
+document.querySelector('button[role="combobox"]').click()
+
+const xpath = "//span[text()='United States']";
+const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+
+const span = result.singleNodeValue;
+
+if (span) {
+    console.log('通过 XPath 找到:', span.click());
+} else {
+    console.log('未找到');
+}
+
+然后在点击  button  data-testid="select-plan-button-plus-upgrade"
+
+等待跳转到 https://chatgpt.com/checkout 开头的，就到了第三步，等待页面加载完成就开始第三步的操作
+
+如果访问第三步访问的是短链 https://chatgpt.com/checkout/openai_llc开头的，
+等待页面加载完成
+点击 #paypal-tab
+等待，
+表单填充的内容是
+#billingAddress-nameInput 输入名称
+#billingAddress-countryInput 选择JP
+#billingAddress-postalCodeInput 输入 150-0001  等2秒
+#billingAddress-administrativeAreaInput select 选择 Tokyo
+#billingAddress-localityInput Shibuya
+billingAddress-addressLine1Input Jingumae
+
+点击 type="submit"
+
+
+点击 #pix-tab
+
+#payment-taxIdInput 输入  236.991.165-49
+#payment-nameInput 输入 Luiza C Azevedo
+等待，
+表单填充的内容是
+#billingAddress-nameInput  Luiza C Azevedo
+#billingAddress-countryInput 是select 选择 BR
+
+#billingAddress-addressLine1Input 输入Rua 838 
+#billingAddress-addressLine2Input 输入 Conjunto Ceará I
+#billingAddress-localityInput 输入 Fortaleza
+#billingAddress-administrativeAreaInput 是select 选择 CE
+#billingAddress-postalCodeInput 输入 60532-290
+点击 type="submit"
+
+
+
+
+1. 打开  https://auth.80101.xyz/chatgpt 
+等待进入 https://auth.80101.xyz/开头的
+
+等待 id="username" 输入框 34891.xyz 域名注册的邮箱 
+id="password" 固定输入 Aa123456..
+等待后 点击  id="kc-login"
+等待点击跳转到 
+https://external.auth.openai.com
+点击 button[type="submit"]
+这里就注册成功了。share 版不上传账号到第三方。
+
+
+在加一个继续[授权的 checkbox]和【授权按钮】
+
+checkbox勾选后，任务流程正常完成后进行自动授权。
+授权按钮，点击后进行授权操作
+
+授权流程根据 D:\code\gpt-codex-oauth\scripts下的python自动授权逻辑来。打开的页面直接在浏览器打开，不是使用python的功能，最后拿到 rt_token 后 share 版不提交第三方接口。

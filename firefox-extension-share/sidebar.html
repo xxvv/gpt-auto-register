@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>GPT Auto Register v2</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 10px; width: 360px; color: #222; }
+    .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 12px; }
+    .step { min-height: 32px; padding: 6px 4px; text-align: center; background: #f0f0f0; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+    .step.active { background: #4caf50; color: white; }
+    .panel { margin-bottom: 10px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    select, textarea, input { width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 8px; }
+    textarea { resize: vertical; }
+    button { width: 100%; padding: 10px; font-size: 14px; background: #2196f3; color: white; border: none; cursor: pointer; margin-bottom: 8px; }
+    button:hover { background: #1976d2; }
+    button.secondary { background: #607d8b; }
+    button.secondary:hover { background: #455a64; }
+    button.danger { background: #d32f2f; }
+    button.danger:hover { background: #b71c1c; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .actions button { margin-bottom: 0; }
+    .actions .wide { grid-column: 1 / -1; }
+    .batch-actions { display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+    .batch-actions button { margin-bottom: 8px; }
+    .proxy-status { border: 1px solid #ddd; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; margin-bottom: 8px; }
+    .proxy-status.empty { color: #666; }
+    .settings { border: 1px solid #ddd; padding: 8px; background: #fafafa; margin-top: 8px; }
+    .settings-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .settings-field span { display: block; font-size: 12px; margin-bottom: 3px; font-weight: bold; }
+    .settings-field input { margin-bottom: 4px; }
+    .checkbox-option { display: flex; align-items: center; gap: 8px; margin: -2px 0 8px; font-weight: normal; }
+    .checkbox-option input { width: auto; margin: 0; }
+    .checkbox-option span { line-height: 1.3; }
+    .hint { color: #666; font-size: 12px; line-height: 1.35; margin: 0 0 8px; }
+    .run-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+    .run-stat { border: 1px solid #ddd; background: #fafafa; padding: 6px; font-size: 12px; text-align: center; }
+    .run-stat strong { display: block; font-size: 16px; line-height: 1.2; }
+    .run-stat.success strong { color: #2e7d32; }
+    .run-stat.fail strong { color: #c62828; }
+    #logOutput { height: 210px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; background: #fafafa; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+    #paymentFailureLogOutput { min-height: 90px; max-height: 150px; overflow-y: auto; border: 1px solid #ffcdd2; padding: 8px; background: #fff7f7; font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #b71c1c; }
+    .log-line { margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="steps">
+    <div id="step1" class="step active">1. 注册</div>
+    <div id="step2" class="step">2. PayURL</div>
+    <div id="step3" class="step">3. PP支付</div>
+    <div id="step4" class="step">4. PayPal</div>
+    <div id="step5" class="step">5. 短信</div>
+  </div>
+
+  <div class="panel">
+    <label class="checkbox-option" for="proxyEnabledCheckbox">
+      <input id="proxyEnabledCheckbox" type="checkbox" checked>
+      <span>开启代理</span>
+    </label>
+    <label for="webshareApiKeyInput">Webshare API Key</label>
+    <input id="webshareApiKeyInput" type="password" spellcheck="false" placeholder="输入 Webshare API Key">
+    <label for="proxyProtocolSelect">代理协议</label>
+    <select id="proxyProtocolSelect">
+      <option value="http">http</option>
+      <option value="socks5">socks5</option>
+    </select>
+    <label for="step1ProxyCountrySelect">第一步代理国家</label>
+    <select id="step1ProxyCountrySelect">
+      <option value="NONE">无</option>
+      <option value="US">美国 (US)</option>
+      <option value="CA">加拿大 (CA)</option>
+      <option value="DE">德国 (DE)</option>
+      <option value="JP">日本 (JP)</option>
+      <option value="SG">新加坡 (SG)</option>
+    </select>
+    <label for="step3ProxyCountrySelect">第三步代理国家</label>
+    <select id="step3ProxyCountrySelect">
+      <option value="KEEP_STEP1">不修改代理（沿用第一步）</option>
+      <option value="NONE">无</option>
+      <option value="US">美国 (US)</option>
+      <option value="CA">加拿大 (CA)</option>
+      <option value="DE">德国 (DE)</option>
+      <option value="JP">日本 (JP)</option>
+      <option value="SG">新加坡 (SG)</option>
+    </select>
+    <div id="proxyStatus" class="proxy-status empty" aria-live="polite">代理状态: 未设置</div>
+    <label for="step4ProxyCountrySelect">第四步代理国家</label>
+    <select id="step4ProxyCountrySelect">
+      <option value="KEEP_STEP3">不修改代理（沿用第三步）</option>
+      <option value="NONE">无</option>
+      <option value="US">美国 (US)</option>
+      <option value="CA">加拿大 (CA)</option>
+      <option value="DE">德国 (DE)</option>
+      <option value="JP">日本 (JP)</option>
+      <option value="SG">新加坡 (SG)</option>
+    </select>
+    <div class="actions">
+      <button id="getWebshareProxyButton" class="secondary" type="button">获取当前</button>
+      <button id="setProxyButton" class="secondary" type="button">设置代理</button>
+      <button id="replaceProxyButton" class="secondary" type="button">替换代理</button>
+      <button id="clearProxyButton" class="secondary" type="button">清除代理</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="country">获取支付链接的国家</label>
+    <select id="country">
+      <option value="JP">日本 (JP)</option>
+      <option value="US">美国 (US)</option>
+      <option value="IE">爱尔兰 (IE)</option>
+      <option value="CA">加拿大 (CA)</option>
+      <option value="ID">印度尼西亚 (ID)</option>
+      <option value="BR">巴西 (BR)</option>
+      <option value="DE">德国 (DE)</option>
+    </select>
+    <div id="pixCdkPanel" hidden>
+      <label for="pixCdkInput">PIX CDK</label>
+      <textarea
+        id="pixCdkInput"
+        rows="4"
+        spellcheck="false"
+        placeholder="一行一个 PIX CDK"
+      ></textarea>
+      <p class="hint">选择巴西后，注册成功会跳过 PayURL 和 PayPal，直接调用 PIX 接口完成支付。</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="specifiedAccountInput">指定注册账号</label>
+    <textarea
+      id="specifiedAccountInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="一行一个完整邮箱，例如：&#10;user@example.com"
+    ></textarea>
+  </div>
+
+  <div class="panel">
+    <label for="registrationMethodSelect">注册方式</label>
+    <select id="registrationMethodSelect">
+      <option value="email">邮箱</option>
+      <option value="phone">手机号</option>
+    </select>
+    <label for="heroApiKeyInput">Hero SMS API Key</label>
+    <input id="heroApiKeyInput" type="password" spellcheck="false" placeholder="输入 Hero SMS API Key">
+    <label for="heroCountrySearchInput">Hero Country</label>
+    <input id="heroCountrySearchInput" type="search" spellcheck="false" placeholder="搜索国家名称或编号">
+    <select id="heroCountrySelect">
+      <option value="">不指定国家</option>
+    </select>
+    <label for="heroMaxPriceInput">Hero Max Price</label>
+    <input id="heroMaxPriceInput" type="number" min="0" step="0.01" spellcheck="false" placeholder="Optional max amount">
+  </div>
+
+  <div class="panel">
+    <label for="payUrlInput">PayURL</label>
+    <textarea
+      id="payUrlInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="一行一条 PayURL，成功后自动删除当前行&#10;https://..."
+    ></textarea>
+    <label for="payUrlModeSelect">支付链接类型</label>
+    <select id="payUrlModeSelect">
+      <option value="long">长链</option>
+      <option value="short">短链</option>
+    </select>
+    <label for="flowCountrySelect">第3/5步流程国家</label>
+    <select id="flowCountrySelect">
+      <option value="US">美国 (US)</option>
+      <option value="JP">日本 (JP)</option>
+    </select>
+    <label class="checkbox-option" for="paymentFlowEnabledCheckbox">
+      <input id="paymentFlowEnabledCheckbox" type="checkbox" checked>
+      <span>执行支付流程</span>
+    </label>
+    <label class="checkbox-option" for="debugModeCheckbox">
+      <input id="debugModeCheckbox" type="checkbox">
+      <span>调试模式：保留窗口</span>
+    </label>
+    <label class="checkbox-option" for="continueAuthorizationCheckbox">
+      <input id="continueAuthorizationCheckbox" type="checkbox">
+      <span>继续授权</span>
+    </label>
+    <label for="codexSmsVoucherInput">Codex 接码券</label>
+    <input id="codexSmsVoucherInput" type="text" spellcheck="false" placeholder="用于授权手机号验证">
+    <button id="authorizeCurrentAccountButton" class="secondary" type="button">授权</button>
+    <div id="authorizationStatus" class="proxy-status empty">授权状态: 未执行</div>
+    <div class="actions">
+      <button id="getPayUrlBtn" class="secondary" type="button">获取 PayURL</button>
+      <button id="startPayUrlBtn" class="secondary" type="button">从 PayURL 开始支付</button>
+      <button id="startStep3Btn" class="secondary" type="button">从第3步开始</button>
+      <button id="fillStep5FormBtn" class="secondary wide" type="button">填充第5步表单</button>
+      <button id="continueBrazilPixPaymentBtn" class="secondary wide" type="button">继续支付</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="phoneKeyInput">手机区域</label>
+    <textarea
+      id="phoneKeyInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="+14484490908|http://a.62-us.com/api/get_sms?key=...&#10;+14484490909|http://a.62-us.com/api/get_sms?key=..."
+    ></textarea>
+    <div id="nextPhoneStatus" class="proxy-status empty">下一次手机号: 未设置</div>
+    <label for="phoneFailureCooldownMinutesInput">失败手机号冷却分钟</label>
+    <input
+      id="phoneFailureCooldownMinutesInput"
+      type="number"
+      min="0"
+      step="1"
+      value="30"
+      placeholder="30"
+    >
+  </div>
+
+  <div class="panel">
+    <label for="cardInput">卡片信息</label>
+    <textarea id="cardInput" rows="6" spellcheck="false" placeholder="card----year/month----cvv----url----name----address,city state postcode,US"></textarea>
+    <label class="checkbox-option" for="randomCardCheckbox">
+      <input id="randomCardCheckbox" type="checkbox">
+      <span>随机生成卡片</span>
+    </label>
+    <label class="checkbox-option" for="useCurrentIpLocationCheckbox">
+      <input id="useCurrentIpLocationCheckbox" type="checkbox">
+      <span>使用当前 IP 定位填充地址</span>
+    </label>
+    <div class="actions">
+      <button id="generateRandomCardButton" class="secondary" type="button">生成随机卡号</button>
+      <button id="toggleFillSettingsButton" class="secondary" type="button" aria-expanded="false">设置</button>
+      <button id="resetFillSettingsButton" class="secondary" type="button">恢复默认</button>
+    </div>
+    <section id="fillSettingsPanel" class="settings" hidden>
+      <p class="hint">默认按页面字段 ID 填充，手机号优先取上面的手机区域，并自动去掉 +1。</p>
+      <div class="settings-grid">
+        <label class="settings-field"><span>手机号</span><input id="phoneSelectorInput" type="text" spellcheck="false"><input id="phoneSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>卡号</span><input id="cardNumberSelectorInput" type="text" spellcheck="false"><input id="cardNumberSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>过期时间</span><input id="cardExpirySelectorInput" type="text" spellcheck="false"><input id="cardExpirySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>CVV</span><input id="cardCvvSelectorInput" type="text" spellcheck="false"><input id="cardCvvSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Billing Name</span><input id="billingNameSelectorInput" type="text" spellcheck="false"><input id="billingNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>First Name</span><input id="firstNameSelectorInput" type="text" spellcheck="false"><input id="firstNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Last Name</span><input id="lastNameSelectorInput" type="text" spellcheck="false"><input id="lastNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Address</span><input id="billingLine1SelectorInput" type="text" spellcheck="false"><input id="billingLine1SelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>City</span><input id="billingCitySelectorInput" type="text" spellcheck="false"><input id="billingCitySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>State</span><input id="billingStateSelectorInput" type="text" spellcheck="false"><input id="billingStateSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Postcode</span><input id="billingPostalCodeSelectorInput" type="text" spellcheck="false"><input id="billingPostalCodeSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>Country</span><input id="countrySelectorInput" type="text" spellcheck="false"><input id="countrySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>密码字段</span><input id="passwordSelectorInput" type="text" spellcheck="false"><input id="passwordSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
+        <label class="settings-field"><span>默认密码</span><input id="passwordValueInput" type="text" spellcheck="false"></label>
+      </div>
+    </section>
+  </div>
+
+  <div class="panel">
+    <label for="runCountInput">执行次数</label>
+    <input id="runCountInput" type="number" min="1" step="1" value="1">
+  </div>
+
+  <div class="batch-actions">
+    <button id="startToStep2Btn" class="secondary" type="button">只执行到第2步</button>
+    <button id="startBtn" type="button">开始完整流程</button>
+    <button id="cancelBatchBtn" class="danger" type="button" disabled>取消</button>
+  </div>
+
+  <div style="margin-top: 15px;">
+    <label>日志输出</label>
+    <div id="runStats" class="run-stats">
+      <div class="run-stat"><span>已完成</span><strong id="runStatsCompleted">0/0</strong></div>
+      <div class="run-stat success"><span>成功</span><strong id="runStatsSuccess">0</strong></div>
+      <div class="run-stat fail"><span>失败</span><strong id="runStatsFail">0</strong></div>
+    </div>
+    <div id="logOutput"></div>
+    <label style="margin-top: 10px;">支付失败手机号日志</label>
+    <div id="paymentFailureLogOutput">
+      <div class="log-line">等待支付失败手机号...</div>
+    </div>
+  </div>
+
+  <script src="sidebar.js"></script>
+</body>
+</html>
