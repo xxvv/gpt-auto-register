@@ -37,7 +37,7 @@
   const DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES = 30;
   const CHECKOUT_REGION_CODES = Object.freeze(["CA", "ID", "IE", "JP", "BR", "US", "DE"]);
   const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
-  const BRAZIL_PIX_API_BASE = "https://scan.amazo.indevs.in";
+  const BRAZIL_PIX_API_BASE = "https://scan.youyushen.icu";
   const BRAZIL_PIX_GENERATE_API = "https://payment.nuo.cm/api/pix-generate";
   const BRAZIL_PIX_POLL_INTERVAL_MS = 4000;
   const BRAZIL_PIX_POLL_TIMEOUT_MS = 300000;
@@ -98,6 +98,8 @@
     automationBatchRunning: false,
     cancelAutomationBatchRequested: false,
     payUrlBatchRunning: false,
+    brazilPixContinueRunning: false,
+    brazilPixResume: null,
     runStats: {
       total: 0,
       completed: 0,
@@ -800,6 +802,32 @@
     return CHECKOUT_REGION_CODES.includes(region) ? region : "";
   }
 
+  function normalizeBrazilPixResumeContext(context) {
+    if (!context || typeof context !== "object") {
+      return null;
+    }
+    const tabId = Number(context.tabId);
+    if (!Number.isInteger(tabId) || tabId < 0) {
+      return null;
+    }
+    const rawWindowId = Number(context.windowId);
+    const specifiedAccountEntry = context.specifiedAccountEntry && context.specifiedAccountEntry.line
+      ? {
+          line: String(context.specifiedAccountEntry.line || "").trim(),
+          email: String(context.specifiedAccountEntry.email || context.registrationAccount || "").trim()
+        }
+      : null;
+    return {
+      tabId,
+      windowId: Number.isInteger(rawWindowId) && rawWindowId >= 0 ? rawWindowId : null,
+      thirdPartyAccount: String(context.thirdPartyAccount || "").trim(),
+      registrationAccount: String(context.registrationAccount || "").trim(),
+      specifiedAccountEntry: specifiedAccountEntry && specifiedAccountEntry.line ? specifiedAccountEntry : null,
+      phoneRegistration: Boolean(context.phoneRegistration),
+      createdAt: Number(context.createdAt) || Date.now()
+    };
+  }
+
   function getFlowCountry() {
     const input = document.getElementById("flowCountrySelect");
     state.flowCountry = normalizeFlowCountry(input ? input.value : state.flowCountry);
@@ -893,11 +921,18 @@
 
   async function generateBrazilPixCode(accessToken) {
     logMessage("巴西 PIX: 正在生成 PIX 付款码");
-    const response = await fetch(BRAZIL_PIX_GENERATE_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accessToken })
-    });
+    let response;
+    try {
+      response = await fetch(BRAZIL_PIX_GENERATE_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken })
+      });
+    } catch (error) {
+      throw new Error(
+        `生成 PIX 付款码网络错误: ${formatError(error)}。请检查 ${BRAZIL_PIX_GENERATE_API} 的 HTTPS 证书、CORS、代理或网络连通性`
+      );
+    }
     const payload = await readJsonResponse(response, "生成 PIX 付款码");
     if (!response.ok) {
       throw new Error(payload.message || `生成 PIX 付款码失败: HTTP ${response.status}`);
@@ -996,6 +1031,115 @@
     await waitBrazilPixOrderPaid(ticketId);
     logMessage("巴西 PIX: 支付成功，流程结束");
     return { ok: true, ticketId, code: selectedCode, accessToken };
+  }
+
+  async function saveBrazilPixResumeContext(context) {
+    state.brazilPixResume = normalizeBrazilPixResumeContext(context);
+    await persistState();
+    renderAutomationBatchControls();
+  }
+
+  async function clearBrazilPixResumeContext() {
+    state.brazilPixResume = null;
+    await persistState();
+    renderAutomationBatchControls();
+  }
+
+  function isChatGptTab(tab) {
+    const url = String(tab && tab.url || "");
+    return url.startsWith("https://chatgpt.com");
+  }
+
+  async function getUsableBrazilPixTab(context) {
+    const resumeContext = normalizeBrazilPixResumeContext(context);
+    if (resumeContext) {
+      try {
+        const savedTab = await ext.tabs.get(resumeContext.tabId);
+        if (isChatGptTab(savedTab)) {
+          return savedTab;
+        }
+      } catch (_) {}
+    }
+
+    const activeTab = await getCurrentWindowActiveTab();
+    if (isChatGptTab(activeTab)) {
+      return activeTab;
+    }
+
+    const tabs = await ext.tabs.query({ url: "https://chatgpt.com/*" });
+    return tabs && tabs.length ? tabs[tabs.length - 1] : null;
+  }
+
+  async function finalizeBrazilPixPaymentSuccess(pixResult, context) {
+    const resumeContext = normalizeBrazilPixResumeContext(context);
+    const thirdPartyAccount = resumeContext ? resumeContext.thirdPartyAccount : "";
+    if (thirdPartyAccount) {
+      try {
+        logMessage("巴西 PIX 支付成功，正在提交到第三方接口...");
+        const thirdPartyResult = await submitThirdPartyAccount({
+          account: thirdPartyAccount,
+          accessToken: pixResult.accessToken,
+          payurl: ""
+        });
+        if (thirdPartyResult.ok) {
+          logMessage("第三方接口提交成功（巴西 PIX，支付链接为空）");
+        } else {
+          logMessage("第三方接口提交失败，账号仍按 PIX 支付成功处理: " + (thirdPartyResult.error || "未知错误"));
+        }
+      } catch (error) {
+        logMessage("第三方接口提交异常，账号仍按 PIX 支付成功处理: " + formatError(error));
+      }
+    } else {
+      logMessage("巴西 PIX: 未记录第三方账号，跳过第三方接口提交");
+    }
+
+    if (resumeContext && !resumeContext.phoneRegistration && resumeContext.specifiedAccountEntry) {
+      await removeSpecifiedAccountAfterPaymentSuccess(resumeContext.specifiedAccountEntry, resumeContext.registrationAccount);
+    }
+  }
+
+  async function continueBrazilPixPayment() {
+    if (state.brazilPixContinueRunning) {
+      logMessage("继续支付正在执行中");
+      return { ok: false };
+    }
+    state.brazilPixContinueRunning = true;
+    renderAutomationBatchControls();
+    let nextContext = null;
+    try {
+      const resumeContext = normalizeBrazilPixResumeContext(state.brazilPixResume);
+      const tab = await getUsableBrazilPixTab(resumeContext);
+      if (!tab || !tab.id) {
+        logMessage("错误: 未找到可继续支付的 ChatGPT 标签页，请切换到保留的 chatgpt.com 窗口后重试");
+        return { ok: false };
+      }
+
+      nextContext = normalizeBrazilPixResumeContext({
+        ...(resumeContext || {}),
+        tabId: tab.id,
+        windowId: tab.windowId,
+        createdAt: Date.now()
+      });
+      if (nextContext) {
+        await saveBrazilPixResumeContext(nextContext);
+      }
+
+      logMessage("继续巴西 PIX 支付流程...");
+      const pixResult = await runBrazilPixPaymentFlow(tab.id);
+      await finalizeBrazilPixPaymentSuccess(pixResult, nextContext);
+      await clearBrazilPixResumeContext();
+      logMessage("继续支付完成");
+      return { ok: true };
+    } catch (error) {
+      if (nextContext) {
+        await saveBrazilPixResumeContext(nextContext);
+      }
+      logMessage("继续支付失败，可修复接口/网络后再次点击继续支付: " + formatError(error));
+      return { ok: false };
+    } finally {
+      state.brazilPixContinueRunning = false;
+      renderAutomationBatchControls();
+    }
   }
 
   async function refreshIpLocation(logPrefix = "") {
@@ -2052,8 +2196,12 @@
     if (windowId === undefined || windowId === null) {
       return false;
     }
-    if (options.failed && isDebugModeEnabled()) {
-      logMessage("调试模式已开启，失败后保留自动化窗口");
+    if (options.keepOpen) {
+      logMessage("已保留自动化窗口");
+      return false;
+    }
+    if (isDebugModeEnabled()) {
+      logMessage("调试模式已开启，保留自动化窗口");
       return false;
     }
     try {
@@ -2275,11 +2423,16 @@
     const startButton = document.getElementById("startBtn");
     const cancelButton = document.getElementById("cancelBatchBtn");
     const startPayUrlButton = document.getElementById("startPayUrlBtn");
+    const continueBrazilPixPaymentButton = document.getElementById("continueBrazilPixPaymentBtn");
+    const running = state.automationBatchRunning || state.payUrlBatchRunning || state.brazilPixContinueRunning;
     if (startButton) {
-      startButton.disabled = state.automationBatchRunning || state.payUrlBatchRunning;
+      startButton.disabled = running;
     }
     if (startPayUrlButton) {
-      startPayUrlButton.disabled = state.automationBatchRunning || state.payUrlBatchRunning;
+      startPayUrlButton.disabled = running;
+    }
+    if (continueBrazilPixPaymentButton) {
+      continueBrazilPixPaymentButton.disabled = running;
     }
     if (cancelButton) {
       cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
@@ -2357,6 +2510,10 @@
             failCount += 1;
             updateRunStats("fail");
             logMessage(`第 ${index}/${runCount} 次失败结束`);
+            if (result && result.canResumeBrazilPix) {
+              logMessage("巴西 PIX 支付可继续，已停止后续任务；修复接口/网络后点击继续支付");
+              break;
+            }
           }
         } catch (error) {
           completedCount = index;
@@ -2405,6 +2562,7 @@
     let automationWindowId = null;
     let uploadedThirdPartyAccount = null;
     let automationSucceeded = false;
+    let keepAutomationWindowForBrazilPixResume = false;
     try {
       try {
         await ensureProxyForStage("第一步");
@@ -2459,28 +2617,28 @@
         } catch (error) {
           logMessage("指定账号创建日志记录失败，继续 PIX 流程: " + formatError(error));
         }
-        const pixResult = await runBrazilPixPaymentFlow(tab.id);
-        automationSucceeded = Boolean(pixResult && pixResult.ok);
-        if (automationSucceeded) {
-          try {
-            logMessage("巴西 PIX 支付成功，正在提交到第三方接口...");
-            const thirdPartyResult = await submitThirdPartyAccount({
-              account: thirdPartyAccount,
-              accessToken: pixResult.accessToken,
-              payurl: ""
-            });
-            if (thirdPartyResult.ok) {
-              uploadedThirdPartyAccount = thirdPartyAccount;
-              logMessage("第三方接口提交成功（巴西 PIX，支付链接为空）");
-            } else {
-              logMessage("第三方接口提交失败，账号仍按 PIX 支付成功处理: " + (thirdPartyResult.error || "未知错误"));
-            }
-          } catch (error) {
-            logMessage("第三方接口提交异常，账号仍按 PIX 支付成功处理: " + formatError(error));
+        const pixResumeContext = {
+          tabId: tab.id,
+          windowId: automationWindowId,
+          thirdPartyAccount,
+          registrationAccount,
+          specifiedAccountEntry,
+          phoneRegistration,
+          createdAt: Date.now()
+        };
+        await saveBrazilPixResumeContext(pixResumeContext);
+        try {
+          const pixResult = await runBrazilPixPaymentFlow(tab.id);
+          automationSucceeded = Boolean(pixResult && pixResult.ok);
+          if (automationSucceeded) {
+            await finalizeBrazilPixPaymentSuccess(pixResult, pixResumeContext);
+            await clearBrazilPixResumeContext();
           }
-          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
-        } else {
-          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
+        } catch (error) {
+          await saveBrazilPixResumeContext(pixResumeContext);
+          keepAutomationWindowForBrazilPixResume = true;
+          logMessage("巴西 PIX 支付失败，已保留当前账号和窗口，可点击继续支付重试: " + formatError(error));
+          return { ok: false, canResumeBrazilPix: true };
         }
         return { ok: automationSucceeded };
       }
@@ -2559,7 +2717,10 @@
             : "获取到 PayURL 后流程失败，正在删除第三方账号";
         await deleteUploadedThirdPartyAccountAfterFailure(uploadedThirdPartyAccount, cleanupReason);
       }
-      await closeAutomationWindow(automationWindowId, { failed: !automationSucceeded });
+      await closeAutomationWindow(automationWindowId, {
+        failed: !automationSucceeded,
+        keepOpen: keepAutomationWindowForBrazilPixResume
+      });
     }
   }
 
@@ -5295,7 +5456,9 @@
       state.fillSettings = sanitizeFillSettings(saved.fillSettings);
       state.fillSettingsExpanded = Boolean(saved.fillSettingsExpanded);
       state.lastPaypalEmail = typeof saved.lastPaypalEmail === "string" ? saved.lastPaypalEmail : "";
+      state.brazilPixResume = normalizeBrazilPixResumeContext(saved.brazilPixResume);
       renderFillSettings();
+      renderAutomationBatchControls();
       renderNextPhoneStatus();
     });
   }
@@ -5336,6 +5499,7 @@
       fillSettingsExpanded: state.fillSettingsExpanded,
       lastPhoneCode: state.lastPhoneCode,
       lastPaypalEmail: state.lastPaypalEmail,
+      brazilPixResume: normalizeBrazilPixResumeContext(state.brazilPixResume),
       phoneKeyCursor: state.phoneKeyCursor,
       phoneFailureCooldownMinutes: getPhoneFailureCooldownMinutes(),
       phoneFailureCooldowns: state.phoneFailureCooldowns
@@ -5351,6 +5515,7 @@
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
     document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
+    document.getElementById("continueBrazilPixPaymentBtn").addEventListener("click", () => runWithErrorHandling(continueBrazilPixPayment));
     document.getElementById("getWebshareProxyButton").addEventListener("click", () => runWithErrorHandling(getCurrentWebshareProxy));
     document.getElementById("setProxyButton").addEventListener("click", () => runWithErrorHandling(setCurrentProxy));
     document.getElementById("replaceProxyButton").addEventListener("click", () => runWithErrorHandling(replaceWebshareProxy));
@@ -5411,7 +5576,7 @@
     document.getElementById("debugModeCheckbox").addEventListener("change", () => {
       state.debugModeEnabled = document.getElementById("debugModeCheckbox").checked;
       persistState();
-      logMessage(state.debugModeEnabled ? "调试模式已开启，失败时将保留窗口" : "调试模式已关闭");
+      logMessage(state.debugModeEnabled ? "调试模式已开启，将保留窗口" : "调试模式已关闭");
     });
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
