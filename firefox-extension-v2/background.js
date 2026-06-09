@@ -7,10 +7,8 @@
   const ICLOUD_DEFAULT_SETUP_URL = "https://setup.icloud.com/setup/ws/1";
   const ICLOUD_CN_SETUP_URL = "https://setup.icloud.com.cn/setup/ws/1";
   const ICLOUD_HME_NOTE = "Generated through GPT Auto Register v2";
-  const TAB_USER_AGENT_TTL_MS = 30 * 60 * 1000;
-  const MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
   let proxyAuth = {};
-  const tabUserAgents = new Map();
+  const automationUserAgentsByWindowId = new Map();
 
   ext.storage.local.get(PROXY_AUTH_KEY).then((saved) => {
     proxyAuth = saved && saved[PROXY_AUTH_KEY] ? saved[PROXY_AUTH_KEY] : {};
@@ -23,24 +21,24 @@
     proxyAuth = changes[PROXY_AUTH_KEY].newValue || {};
   });
 
-  ext.runtime.onMessage.addListener((message, sender) => {
+  ext.runtime.onMessage.addListener((message) => {
     if (
       !message ||
       (
         message.type !== "gptAutoRegisterProxy" &&
-        message.type !== "gptAutoRegisterUserAgent" &&
-        message.type !== "gptAutoRegisterICloudHme"
+        message.type !== "gptAutoRegisterICloudHme" &&
+        message.type !== "gptAutoRegisterAutomationHeaders"
       )
     ) {
       return undefined;
     }
 
-    if (message.type === "gptAutoRegisterICloudHme") {
-      return handleICloudHmeMessage(message);
+    if (message.type === "gptAutoRegisterAutomationHeaders") {
+      return handleAutomationHeadersMessage(message);
     }
 
-    if (message.type === "gptAutoRegisterUserAgent") {
-      return handleUserAgentMessage(message, sender);
+    if (message.type === "gptAutoRegisterICloudHme") {
+      return handleICloudHmeMessage(message);
     }
 
     if (message.action === "apply") {
@@ -74,13 +72,11 @@
       const requestHeaders = Array.isArray(details.requestHeaders) ? details.requestHeaders : [];
       let modified = false;
 
-      const record = getTabUserAgentRecord(details && details.tabId);
-      if (record && record.userAgent) {
-        setRequestHeader(requestHeaders, "User-Agent", record.userAgent);
+      if (applyICloudSimulationHeaders(details, requestHeaders)) {
         modified = true;
       }
 
-      if (applyICloudSimulationHeaders(details, requestHeaders)) {
+      if (applyAutomationUserAgentHeader(details, requestHeaders)) {
         modified = true;
       }
 
@@ -90,9 +86,9 @@
     ["blocking", "requestHeaders"]
   );
 
-  if (ext.tabs && ext.tabs.onRemoved) {
-    ext.tabs.onRemoved.addListener((tabId) => {
-      tabUserAgents.delete(Number(tabId));
+  if (ext.windows && ext.windows.onRemoved) {
+    ext.windows.onRemoved.addListener((windowId) => {
+      automationUserAgentsByWindowId.delete(Number(windowId));
     });
   }
 
@@ -123,34 +119,6 @@
     return true;
   }
 
-  function handleUserAgentMessage(message, sender) {
-    if (message.action === "prepare") {
-      const tabId = Number(message.tabId || 0);
-      if (tabId <= 0) {
-        return Promise.resolve({ ok: false, error: "Missing tabId" });
-      }
-      const userAgent = getMobileUserAgent();
-      tabUserAgents.set(tabId, {
-        userAgent,
-        preparedAt: Date.now(),
-        url: String(message.url || "")
-      });
-      return Promise.resolve({ ok: true, tabId, userAgent });
-    }
-
-    if (message.action === "get") {
-      const tabId = Number(message.tabId || (sender && sender.tab && sender.tab.id) || 0);
-      const record = getTabUserAgentRecord(tabId);
-      return Promise.resolve({
-        ok: Boolean(record && record.userAgent),
-        tabId,
-        userAgent: record && record.userAgent ? record.userAgent : ""
-      });
-    }
-
-    return Promise.resolve({ ok: false, error: `Unknown userAgent action: ${message.action || ""}` });
-  }
-
   async function handleICloudHmeMessage(message) {
     if (message.action !== "generateAndReserve") {
       return { ok: false, error: `Unknown iCloud action: ${message.action || ""}` };
@@ -165,6 +133,27 @@
     } catch (error) {
       return { ok: false, error: formatBackgroundError(error) };
     }
+  }
+
+  function handleAutomationHeadersMessage(message) {
+    const action = String(message && message.action || "");
+    const windowId = Number(message && message.windowId);
+    if (!Number.isInteger(windowId) || windowId < 0) {
+      return Promise.resolve({ ok: false, error: "缺少有效 windowId" });
+    }
+    if (action === "apply") {
+      const userAgent = String(message.userAgent || "").trim();
+      if (!userAgent) {
+        return Promise.resolve({ ok: false, error: "缺少 User-Agent" });
+      }
+      automationUserAgentsByWindowId.set(windowId, userAgent);
+      return Promise.resolve({ ok: true });
+    }
+    if (action === "clear") {
+      automationUserAgentsByWindowId.delete(windowId);
+      return Promise.resolve({ ok: true });
+    }
+    return Promise.resolve({ ok: false, error: `Unknown automation headers action: ${action}` });
   }
 
   async function getAuthenticatedICloudClientState() {
@@ -264,22 +253,6 @@
     return error.message || String(error);
   }
 
-  function getTabUserAgentRecord(tabId) {
-    const normalizedTabId = Number(tabId || 0);
-    if (normalizedTabId <= 0) {
-      return null;
-    }
-    const record = tabUserAgents.get(normalizedTabId);
-    if (!record) {
-      return null;
-    }
-    if (Date.now() - Number(record.preparedAt || 0) > TAB_USER_AGENT_TTL_MS) {
-      tabUserAgents.delete(normalizedTabId);
-      return null;
-    }
-    return record;
-  }
-
   function applyICloudSimulationHeaders(details, requestHeaders) {
     if (!details || !details.url) {
       return false;
@@ -307,6 +280,18 @@
     return false;
   }
 
+  function applyAutomationUserAgentHeader(details, requestHeaders) {
+    if (!details || details.windowId === undefined || details.windowId === null) {
+      return false;
+    }
+    const userAgent = automationUserAgentsByWindowId.get(Number(details.windowId));
+    if (!userAgent) {
+      return false;
+    }
+    setRequestHeader(requestHeaders, "User-Agent", userAgent);
+    return true;
+  }
+
   function setRequestHeader(requestHeaders, name, value) {
     const header = requestHeaders.find((item) => String(item.name || "").toLowerCase() === String(name).toLowerCase());
     if (header) {
@@ -314,10 +299,6 @@
     } else {
       requestHeaders.push({ name, value });
     }
-  }
-
-  function getMobileUserAgent() {
-    return MOBILE_USER_AGENT;
   }
 
   async function applyFirefoxProxy(proxy) {

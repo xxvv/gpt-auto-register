@@ -1,7 +1,8 @@
 ﻿(function () {
   "use strict";
 
-  const ext = typeof browser !== "undefined" ? browser : chrome;
+  const ext = createExtensionApi();
+  const BROWSER_LABEL = typeof browser !== "undefined" ? "Firefox" : "Chrome";
 
   const DOMAINS = [
     "xvmit.edu.kg",
@@ -84,9 +85,6 @@
   const PROTOCOL_PAYMENT_PPLINK_RETRY = 3;
   const PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS = 180;
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
-  const AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH = 430;
-  const AUTOMATION_RESPONSIVE_WINDOW_HEIGHT = 932;
-  const AUTOMATION_USER_AGENT = "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/146.0.0.0 Mobile Safari/537.36";
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
     cardNumberSelector: ["#cardNumber", ""],
@@ -509,13 +507,13 @@
     }
     if (country === "NONE") {
       if (isRuntimeProxy(state.currentProxy)) {
-        logMessage(`${stage}: 代理国家设置为'无'，正在清除当前 Firefox 代理`);
+        logMessage(`${stage}: 代理国家设置为'无'，正在清除当前 ${BROWSER_LABEL} 代理`);
         await clearFirefoxProxyState();
         state.currentProxy = null;
         state.currentIpLocation = null;
         renderProxyStatus();
         await persistState();
-        logMessage(`${stage}: 当前 Firefox 代理已清除`);
+        logMessage(`${stage}: 当前 ${BROWSER_LABEL} 代理已清除`);
       } else {
         logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
       }
@@ -525,12 +523,12 @@
     const protocol = getProxyProtocol();
     const apiKey = requireWebshareApiKey();
     logMessage(`${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
-    logMessage(`${stage}: 正在先清除当前 Firefox 代理`);
+    logMessage(`${stage}: 正在先清除当前 ${BROWSER_LABEL} 代理`);
     await clearFirefoxProxyState();
     state.currentProxy = null;
     renderProxyStatus();
     await persistState();
-    logMessage(`${stage}: 当前 Firefox 代理已清除，开始替换对应国家代理`);
+    logMessage(`${stage}: 当前 ${BROWSER_LABEL} 代理已清除，开始替换对应国家代理`);
     const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
     await applyFirefoxProxy(proxy);
     state.currentProxy = proxy;
@@ -541,7 +539,7 @@
     }
     renderProxyStatus();
     await persistState();
-    logMessage(`${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
+    logMessage(`${stage}: 代理设置成功，${BROWSER_LABEL} 已写入 ${formatProxy(proxy)}`);
     return true;
   }
 
@@ -567,7 +565,7 @@
       await applyFirefoxProxy(state.currentProxy);
       renderProxyStatus();
       await persistState();
-      logMessage(`代理设置成功，Firefox 已写入 ${formatProxy(state.currentProxy)}`);
+      logMessage(`代理设置成功，${BROWSER_LABEL} 已写入 ${formatProxy(state.currentProxy)}`);
     } catch (error) {
       logMessage(`设置代理失败: ${formatError(error)}`);
     }
@@ -599,7 +597,7 @@
       state.currentIpLocation = null;
       renderProxyStatus();
       await persistState();
-      logMessage("已清除 Firefox 代理");
+      logMessage(`${BROWSER_LABEL} 代理已清除`);
     } catch (error) {
       logMessage(`清除代理失败: ${formatError(error)}`);
     }
@@ -612,7 +610,7 @@
       state.currentIpLocation = null;
       renderProxyStatus();
       await persistState();
-      logMessage(`${reason || "任务结束"}，已清理 Firefox 代理`);
+      logMessage(`${reason || "任务结束"}，已清理 ${BROWSER_LABEL} 代理`);
     } catch (error) {
       logMessage(`${reason || "任务结束"}，清理代理失败: ${formatError(error)}`);
     }
@@ -622,7 +620,7 @@
     const runtimeProxy = requireRuntimeProxy(proxy);
     const proxyType = String(runtimeProxy.type || "http").toLowerCase();
     if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
-      throw new Error(`Firefox 不支持的代理类型: ${runtimeProxy.type}`);
+      throw new Error(`${BROWSER_LABEL} 不支持的代理类型: ${runtimeProxy.type}`);
     }
 
     await sendProxyMessage({ action: "apply", proxy: runtimeProxy });
@@ -1037,7 +1035,8 @@
       throw new Error("页面脚本必须是函数");
     }
     const results = await executeScriptAfterPageReady(tabId, {
-      code: `(${fn.toString()}).apply(null, ${JSON.stringify(args)})`,
+      func: fn,
+      args,
       runAt: "document_idle"
     }, "页面脚本");
     return Array.isArray(results) ? results[0] : results;
@@ -1285,7 +1284,7 @@
     state.currentIpLocation = null;
     renderProxyStatus();
     await persistState();
-    logMessage(`协议支付: 美国代理已写入 Firefox ${formatProxy(usProxy)}`);
+    logMessage(`协议支付: 美国代理已写入 ${BROWSER_LABEL} ${formatProxy(usProxy)}`);
 
     return {
       proxyJp: formatProxyUrlForProtocol(japanProxy, "socks5"),
@@ -2654,7 +2653,7 @@
         state.currentIpLocation = null;
         renderProxyStatus();
         await persistState();
-        logMessage("Codex 授权: 注册时未使用代理，已清除当前 Firefox 代理");
+        logMessage(`Codex 授权: 注册时未使用代理，已清除当前 ${BROWSER_LABEL} 代理`);
       }
       const pkce = await createPkcePair();
       const oauthState = createOauthState();
@@ -3359,40 +3358,6 @@
     return tabs && tabs[0] ? tabs[0] : null;
   }
 
-  async function preparePrivateAutomationDebugView(windowId) {
-    if (windowId === undefined || windowId === null) {
-      return;
-    }
-    try {
-      const response = await ext.runtime.sendMessage({
-        type: "gptAutoRegisterAutomationHeaders",
-        action: "apply",
-        windowId,
-        userAgent: AUTOMATION_USER_AGENT
-      });
-      if (!response || response.ok !== true) {
-        throw new Error(response && response.error ? response.error : "background 未确认 User-Agent 设置");
-      }
-      logMessage("隐私窗口 User-Agent 已设置为 SamsungBrowser Android");
-    } catch (error) {
-      logMessage("隐私窗口 User-Agent 设置失败: " + formatError(error));
-    }
-
-    try {
-      const responsiveWindowWidth = AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH + 470;
-      await ext.windows.update(windowId, {
-        focused: true,
-        width: responsiveWindowWidth,
-        height: AUTOMATION_RESPONSIVE_WINDOW_HEIGHT
-      });
-      logMessage(`隐私窗口已调整为响应式尺寸 ${responsiveWindowWidth}x${AUTOMATION_RESPONSIVE_WINDOW_HEIGHT}，其中页面目标宽度 ${AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH}`);
-    } catch (error) {
-      logMessage("隐私窗口响应式尺寸调整失败: " + formatError(error));
-    }
-
-    logMessage("Firefox 扩展无法直接打开原生 DevTools/响应式设计模式；如需工具箱，请在隐私窗口按 Ctrl+Shift+I，再按 Ctrl+Shift+M");
-  }
-
   async function createPrivateAutomationWindow(url) {
     const createdWindow = await ext.windows.create({
       url: "about:blank",
@@ -3404,7 +3369,6 @@
       throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
     }
     await ext.tabs.update(tab.id, { url, active: true });
-    await preparePrivateAutomationDebugView(createdWindow.id);
     return {
       windowId: createdWindow.id,
       tab: await ext.tabs.get(tab.id)
@@ -3428,26 +3392,10 @@
         await delay(AUTOMATION_WINDOW_CLOSE_DELAY_MS);
       }
       await ext.windows.remove(windowId);
-      await clearPrivateAutomationHeaders(windowId);
       return true;
     } catch (error) {
       console.warn("Failed to close automation private window", error);
       return false;
-    }
-  }
-
-  async function clearPrivateAutomationHeaders(windowId) {
-    if (windowId === undefined || windowId === null) {
-      return;
-    }
-    try {
-      await ext.runtime.sendMessage({
-        type: "gptAutoRegisterAutomationHeaders",
-        action: "clear",
-        windowId
-      });
-    } catch (error) {
-      console.warn("Failed to clear automation headers", error);
     }
   }
 
@@ -7524,6 +7472,125 @@
 
   function formatError(error) {
     return error && error.message ? error.message : String(error);
+  }
+
+  function createExtensionApi() {
+    if (typeof browser !== "undefined") {
+      return browser;
+    }
+    const raw = chrome;
+
+    function withCallback(fn, thisArg, args, callbackIndex) {
+      const callback = args[callbackIndex];
+      if (typeof callback === "function") {
+        fn.apply(thisArg, args);
+        return undefined;
+      }
+      return new Promise((resolve, reject) => {
+        fn.call(thisArg, ...args, (result) => {
+          const error = raw.runtime && raw.runtime.lastError;
+          if (error) {
+            reject(new Error(error.message));
+          } else {
+            resolve(result);
+          }
+        });
+      });
+    }
+
+    function callAsync(fn, thisArg, ...args) {
+      return new Promise((resolve, reject) => {
+        fn.call(thisArg, ...args, (result) => {
+          const error = raw.runtime && raw.runtime.lastError;
+          if (error) {
+            reject(new Error(error.message));
+          } else {
+            resolve(result);
+          }
+        });
+      });
+    }
+
+    async function executeScript(tabId, details) {
+      if (raw.tabs && typeof raw.tabs.executeScript === "function") {
+        return callAsync(raw.tabs.executeScript, raw.tabs, tabId, details);
+      }
+      if (!raw.scripting || typeof raw.scripting.executeScript !== "function") {
+        throw new Error("Chrome scripting API 不可用，请确认 manifest 已授予 scripting 权限");
+      }
+
+      const target = {
+        tabId,
+        allFrames: Boolean(details && details.allFrames)
+      };
+      const scriptDetails = { target };
+      if (details && details.file) {
+        scriptDetails.files = [details.file];
+      } else if (details && typeof details.func === "function") {
+        scriptDetails.func = details.func;
+        scriptDetails.args = Array.isArray(details.args) ? details.args : [];
+      } else if (details && details.code !== undefined) {
+        scriptDetails.func = (code) => {
+          return new Function(code)();
+        };
+        scriptDetails.args = [String(details.code || "")];
+      } else {
+        throw new Error("缺少要注入的脚本 file/code");
+      }
+      const results = await callAsync(raw.scripting.executeScript, raw.scripting, scriptDetails);
+      return (results || []).map((item) => item && item.result);
+    }
+
+    async function goBack(tabId) {
+      if (raw.tabs && typeof raw.tabs.goBack === "function") {
+        return callAsync(raw.tabs.goBack, raw.tabs, tabId);
+      }
+      await executeScript(tabId, {
+        func: () => history.back(),
+        runAt: "document_idle"
+      });
+      return undefined;
+    }
+
+    return {
+      runtime: {
+        getURL: raw.runtime.getURL.bind(raw.runtime),
+        sendMessage: (message, callback) => withCallback(raw.runtime.sendMessage, raw.runtime, [message, callback], 1)
+      },
+      storage: {
+        local: {
+          get: (keys, callback) => withCallback(raw.storage.local.get, raw.storage.local, [keys, callback], 1),
+          set: (values, callback) => withCallback(raw.storage.local.set, raw.storage.local, [values, callback], 1),
+          remove: (keys, callback) => withCallback(raw.storage.local.remove, raw.storage.local, [keys, callback], 1)
+        }
+      },
+      tabs: {
+        get: (tabId, callback) => withCallback(raw.tabs.get, raw.tabs, [tabId, callback], 1),
+        query: (queryInfo, callback) => withCallback(raw.tabs.query, raw.tabs, [queryInfo, callback], 1),
+        create: (createProperties, callback) => withCallback(raw.tabs.create, raw.tabs, [createProperties, callback], 1),
+        update: (tabId, updateProperties, callback) => withCallback(raw.tabs.update, raw.tabs, [tabId, updateProperties, callback], 2),
+        remove: (tabIds, callback) => withCallback(raw.tabs.remove, raw.tabs, [tabIds, callback], 1),
+        goBack,
+        executeScript
+      },
+      windows: {
+        create: (createData, callback) => withCallback(raw.windows.create, raw.windows, [createData, callback], 1),
+        get: (windowId, getInfoOrCallback, callback) => {
+          if (typeof getInfoOrCallback === "function" || getInfoOrCallback === undefined) {
+            return withCallback(raw.windows.get, raw.windows, [windowId, getInfoOrCallback], 1);
+          }
+          return withCallback(raw.windows.get, raw.windows, [windowId, getInfoOrCallback, callback], 2);
+        },
+        getAll: (getInfoOrCallback, callback) => {
+          if (typeof getInfoOrCallback === "function" || getInfoOrCallback === undefined) {
+            return withCallback(raw.windows.getAll, raw.windows, [getInfoOrCallback], 0);
+          }
+          return withCallback(raw.windows.getAll, raw.windows, [getInfoOrCallback, callback], 1);
+        },
+        update: (windowId, updateInfo, callback) => withCallback(raw.windows.update, raw.windows, [windowId, updateInfo, callback], 2),
+        remove: (windowId, callback) => withCallback(raw.windows.remove, raw.windows, [windowId, callback], 1)
+      }
+    };
   }
 
   function init() {

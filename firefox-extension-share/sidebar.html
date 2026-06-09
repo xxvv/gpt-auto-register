@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>GPT Auto Register v2</title>
+  <title>GPT Auto Register Share</title>
   <style>
     body { font-family: sans-serif; margin: 0; padding: 10px; width: 360px; color: #222; }
     .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 12px; }
@@ -59,7 +59,12 @@
       <span>开启代理</span>
     </label>
     <label for="webshareApiKeyInput">Webshare API Key</label>
-    <input id="webshareApiKeyInput" type="password" spellcheck="false" placeholder="输入 Webshare API Key">
+    <textarea
+      id="webshareApiKeyInput"
+      rows="3"
+      spellcheck="false"
+      placeholder="一行一个 Webshare API Key"
+    ></textarea>
     <label for="proxyProtocolSelect">代理协议</label>
     <select id="proxyProtocolSelect">
       <option value="http">http</option>
@@ -166,6 +171,18 @@
       <option value="long">长链</option>
       <option value="short">短链</option>
     </select>
+    <label for="paymentMethodSelect">支付方式</label>
+    <select id="paymentMethodSelect">
+      <option value="default">默认</option>
+      <option value="protocol">协议</option>
+    </select>
+    <label for="protocolCdkInput">协议 CDK</label>
+    <textarea
+      id="protocolCdkInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="一行一个协议 CDK"
+    ></textarea>
     <label for="flowCountrySelect">第3/5步流程国家</label>
     <select id="flowCountrySelect">
       <option value="US">美国 (US)</option>
@@ -183,6 +200,13 @@
       <input id="continueAuthorizationCheckbox" type="checkbox">
       <span>继续授权</span>
     </label>
+    <label for="teamProviderSelect">Team Provider</label>
+    <select id="teamProviderSelect">
+      <option value="xperiabox.shop">xperiabox.shop</option>
+      <option value="edu.pilipala.store">edu.pilipala.store</option>
+      <option value="lty.pilipala.store">lty.pilipala.store</option>
+      <option value="gpt.edu.sixoner.com">gpt.edu.sixoner.com</option>
+    </select>
     <label for="codexSmsVoucherInput">Codex 接码券</label>
     <input id="codexSmsVoucherInput" type="text" spellcheck="false" placeholder="用于授权手机号验证">
     <button id="authorizeCurrentAccountButton" class="secondary" type="button">授权</button>
@@ -191,6 +215,7 @@
       <button id="getPayUrlBtn" class="secondary" type="button">获取 PayURL</button>
       <button id="startPayUrlBtn" class="secondary" type="button">从 PayURL 开始支付</button>
       <button id="startStep3Btn" class="secondary" type="button">从第3步开始</button>
+      <button id="startStep4Btn" class="secondary" type="button">从第4步开始</button>
       <button id="fillStep5FormBtn" class="secondary wide" type="button">填充第5步表单</button>
       <button id="continueBrazilPixPaymentBtn" class="secondary wide" type="button">继续支付</button>
     </div>
@@ -260,6 +285,7 @@
 
   <div class="batch-actions">
     <button id="startToStep2Btn" class="secondary" type="button">只执行到第2步</button>
+    <button id="startTeamRegistrationBtn" class="secondary" type="button">注册 Team</button>
     <button id="startBtn" type="button">开始完整流程</button>
     <button id="cancelBatchBtn" class="danger" type="button" disabled>取消</button>
   </div>

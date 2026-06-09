@@ -8,8 +8,36 @@
     "ciat.edu.kg",
     "cars.edu.kg",
     "xymit.edu.kg",
-    "nnai.uk"
   ];
+  const DEFAULT_TEAM_PROVIDER_DOMAIN = "xperiabox.shop";
+  const TEAM_REGISTRATION_INVITE_CODE = "6f904cb02f70390ab6bcad916d63b3d8e86f698f6d2ccb8d466b5e1cef6417a8";
+  const TEAM_SSO_URL_PREFIX = "https://auth.openai.com/sso";
+  const TEAM_SIGNIN_CONSENT_URL_PREFIX = "https://external.auth.openai.com/sso/signin-consent";
+  const TEAM_PROVIDER_DEFINITIONS = Object.freeze({
+    "xperiabox.shop": Object.freeze({
+      domain: "xperiabox.shop",
+      authorizeUrlPrefix: "https://2add0d82.r7.vip.cpolar.cn/authorize",
+      type: "invite"
+    }),
+    "edu.pilipala.store": Object.freeze({
+      domain: "edu.pilipala.store",
+      authorizeUrlPrefix: "https://sso.pilipala.store/authorize",
+      type: "pilipala",
+      password: "ciallo"
+    }),
+    "lty.pilipala.store": Object.freeze({
+      domain: "lty.pilipala.store",
+      authorizeUrlPrefix: "https://sso2.pilipala.store/authorize",
+      type: "pilipala",
+      password: "ciallo"
+    }),
+    "gpt.edu.sixoner.com": Object.freeze({
+      domain: "gpt.edu.sixoner.com",
+      authorizeUrlPrefix: "https://sso.sixoner.com/authorize",
+      type: "emailOnly",
+      submitSelector: "#submit"
+    })
+  });
   const CODE_API = "https://getemail.nnai.uk/api/code";
   const HERO_SMS_API = "https://hero-sms.com/stubs/handler_api.php";
   const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
@@ -39,6 +67,7 @@
   const HERO_SMS_POLL_TIMEOUT_MS = 90000;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
+  const DEFAULT_PAYMENT_METHOD = "default";
   const DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES = 30;
   const CHECKOUT_REGION_CODES = Object.freeze(["CA", "ID", "IE", "JP", "BR", "US", "DE"]);
   const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
@@ -47,6 +76,9 @@
   const BRAZIL_PIX_POLL_INTERVAL_MS = 4000;
   const BRAZIL_PIX_POLL_TIMEOUT_MS = 300000;
   const BRAZIL_PIX_FAILED_STATUSES = new Set(["failed", "expired", "canceled"]);
+  const PROTOCOL_PAYMENT_JOBS_API = "https://plus.iceaix.com/api/jobs";
+  const PROTOCOL_PAYMENT_PPLINK_RETRY = 3;
+  const PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS = 180;
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const DEFAULT_FILL_SETTINGS = Object.freeze({
     phoneSelector: ["#phone", ""],
@@ -77,6 +109,7 @@
     heroCountrySearch: "",
     heroMaxPrice: "",
     specifiedAccountInput: "",
+    teamProviderDomain: DEFAULT_TEAM_PROVIDER_DOMAIN,
     paymentFlowEnabled: true,
     continueAuthorizationEnabled: false,
     codexSmsVoucherCode: "",
@@ -86,12 +119,14 @@
     debugModeEnabled: false,
     phoneKeyInput: "",
     pixCdkInput: "",
+    protocolCdkInput: "",
     phoneKey: null,
     phoneKeyCursor: 0,
     phoneFailureCooldownMinutes: DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES,
     phoneFailureCooldowns: {},
     flowCountry: DEFAULT_FLOW_COUNTRY,
     payUrlMode: DEFAULT_PAY_URL_MODE,
+    paymentMethod: DEFAULT_PAYMENT_METHOD,
     lastLongPayUrl: "",
     lastShortPayUrl: "",
     lastCheckoutRegion: "",
@@ -109,6 +144,7 @@
     cancelAutomationBatchRequested: false,
     payUrlBatchRunning: false,
     brazilPixContinueRunning: false,
+    teamRegistrationRunning: false,
     brazilPixResume: null,
     runStats: {
       total: 0,
@@ -157,6 +193,44 @@
 
   function generateDomainEmail() {
     return `${generateLocalPart()}@${DOMAINS[Math.floor(Math.random() * DOMAINS.length)]}`;
+  }
+
+  function normalizeTeamProviderDomain(value) {
+    const domain = String(value || "").trim().toLowerCase();
+    return TEAM_PROVIDER_DEFINITIONS[domain] ? domain : DEFAULT_TEAM_PROVIDER_DOMAIN;
+  }
+
+  function getTeamProviderDefinition(domain) {
+    return TEAM_PROVIDER_DEFINITIONS[normalizeTeamProviderDomain(domain)];
+  }
+
+  function inferTeamProviderDomainFromEmail(email) {
+    const match = String(email || "").trim().toLowerCase().match(/@([^@\s]+)$/);
+    return match && TEAM_PROVIDER_DEFINITIONS[match[1]] ? match[1] : "";
+  }
+
+  function getTeamProviderDomain() {
+    const input = document.getElementById("teamProviderSelect");
+    state.teamProviderDomain = normalizeTeamProviderDomain(input ? input.value : state.teamProviderDomain);
+    return state.teamProviderDomain;
+  }
+
+  function getTeamProviderDomainForAccount(accountContext) {
+    const context = accountContext && typeof accountContext === "object" ? accountContext : {};
+    return normalizeTeamProviderDomain(
+      context.teamProviderDomain ||
+      context.providerDomain ||
+      inferTeamProviderDomainFromEmail(context.account || context.email) ||
+      getTeamProviderDomain()
+    );
+  }
+
+  function getEmailPrefix(email) {
+    return String(email || "").trim().split("@")[0] || "";
+  }
+
+  function generateTeamRegistrationEmail(providerDomain = getTeamProviderDomain()) {
+    return `${generateLocalPart()}@${normalizeTeamProviderDomain(providerDomain)}`;
   }
 
   function generateRandomName() {
@@ -732,13 +806,49 @@
     return `${type}://${proxy.host}:${proxy.port}${auth}`;
   }
 
+  function parseWebshareApiKeys(rawValue) {
+    return String(rawValue || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
   function requireWebshareApiKey() {
-    const apiKey = String(document.getElementById("webshareApiKeyInput").value || "").trim();
+    const apiKeys = parseWebshareApiKeys(document.getElementById("webshareApiKeyInput").value);
+    const apiKey = apiKeys[0] || "";
     if (!apiKey) {
       throw new Error("请先输入 Webshare API Key");
     }
-    state.webshareApiKey = apiKey;
+    state.webshareApiKey = document.getElementById("webshareApiKeyInput").value;
     return apiKey;
+  }
+
+  function requireProtocolWebshareApiKeys() {
+    const rawValue = document.getElementById("webshareApiKeyInput").value || "";
+    const apiKeys = parseWebshareApiKeys(rawValue);
+    if (apiKeys.length < 2) {
+      throw new Error("协议支付需要至少两行 Webshare API Key：第1行用于日本，第2行用于美国");
+    }
+    state.webshareApiKey = rawValue;
+    return {
+      japanApiKey: apiKeys[0],
+      usApiKey: apiKeys[1]
+    };
+  }
+
+  function formatProxyUrlForProtocol(proxy, protocol, options = {}) {
+    const runtimeProxy = requireRuntimeProxy(proxy);
+    const proxyType = normalizeProxyProtocol(protocol || runtimeProxy.type);
+    const host = String(runtimeProxy.host || "").trim();
+    const port = Number(runtimeProxy.port || 0);
+    if (!host || !port) {
+      throw new Error("协议代理缺少 host/port");
+    }
+    const username = String(runtimeProxy.username || "").trim();
+    const password = String(runtimeProxy.password || "").trim();
+    const auth = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : "";
+    const suffix = options.trailingSlash ? "/" : "";
+    return `${proxyType}://${auth}${host}:${port}${suffix}`;
   }
 
   function isProxyEnabled() {
@@ -802,6 +912,23 @@
     const mode = String(value || "").trim().toLowerCase();
     if (mode === "short") return "short";
     return DEFAULT_PAY_URL_MODE;
+  }
+
+  function normalizePaymentMethod(value) {
+    return String(value || "").trim().toLowerCase() === "protocol" ? "protocol" : DEFAULT_PAYMENT_METHOD;
+  }
+
+  function getPaymentMethod() {
+    const input = document.getElementById("paymentMethodSelect");
+    state.paymentMethod = normalizePaymentMethod(input ? input.value : state.paymentMethod);
+    if (input) {
+      input.value = state.paymentMethod;
+    }
+    return state.paymentMethod;
+  }
+
+  function isProtocolPaymentMethod() {
+    return getPaymentMethod() === "protocol";
   }
 
   function normalizeCheckoutRegion(value) {
@@ -909,6 +1036,47 @@
       .filter(Boolean);
   }
 
+  function getNextProtocolCdkEntry() {
+    const input = document.getElementById("protocolCdkInput");
+    const lines = String(input && input.value || state.protocolCdkInput || "").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = String(line || "").trim();
+      if (trimmed) {
+        return { line: trimmed, cdk: trimmed };
+      }
+    }
+    throw new Error("请输入协议 CDK，一行一个");
+  }
+
+  async function removeUsedProtocolCdk(cdkEntry) {
+    const usedLine = String(cdkEntry && cdkEntry.line || cdkEntry && cdkEntry.cdk || "").trim();
+    if (!usedLine) {
+      return;
+    }
+    const input = document.getElementById("protocolCdkInput");
+    if (!input) {
+      return;
+    }
+    const lines = String(input.value || "").split(/\r?\n/);
+    let removed = false;
+    const remainingLines = [];
+    for (const line of lines) {
+      if (!removed && String(line || "").trim() === usedLine) {
+        removed = true;
+        continue;
+      }
+      remainingLines.push(line);
+    }
+    if (!removed) {
+      logMessage("未找到本次使用的协议 CDK，协议 CDK 列表未修改");
+      return;
+    }
+    input.value = remainingLines.join("\n");
+    state.protocolCdkInput = input.value;
+    await persistState();
+    logMessage(`协议支付成功，已删除本次使用的协议 CDK: ${usedLine}`);
+  }
+
   function updatePixCdkVisibility() {
     const panel = document.getElementById("pixCdkPanel");
     const country = document.getElementById("country").value;
@@ -924,9 +1092,11 @@
         credentials: "include"
       });
       const data = await response.json();
+      const account = data && data.account && typeof data.account === "object" ? data.account : {};
       return {
         accessToken: data && data.accessToken || "",
-        userEmail: data && data.user && data.user.email || ""
+        userEmail: data && data.user && data.user.email || "",
+        accountPlanType: account.planType || ""
       };
     });
     return result || {};
@@ -1065,6 +1235,213 @@
     return { ok: true, ticketId, code: selectedCode, accessToken };
   }
 
+  async function prepareProtocolPaymentPhoneKey() {
+    const firstStepCountry = getStep1ProxyCountry();
+    const phoneKey = await preparePhoneKeyForFlow(firstStepCountry === "JP" ? "JP" : getFlowCountry());
+    if (!phoneKey || !phoneKey.phone || !phoneKey.smsUrl) {
+      throw new Error("协议支付未准备好手机区域手机号和短信地址");
+    }
+    state.phoneKey = phoneKey;
+    await persistState();
+    logMessage(`协议支付已准备手机号: ${phoneKey.phone}`);
+    return phoneKey;
+  }
+
+  async function prepareProtocolPaymentProxies(registrationProxy) {
+    const keys = requireProtocolWebshareApiKeys();
+    const firstStepCountry = getStep1ProxyCountry();
+    let japanProxy = null;
+    if (firstStepCountry === "JP" && isRuntimeProxy(registrationProxy)) {
+      japanProxy = {
+        ...registrationProxy,
+        type: "socks5"
+      };
+      logMessage(`协议支付: 日本代理沿用第一步代理 ${formatProxy(japanProxy)}`);
+    } else {
+      logMessage("协议支付: 第一步不是日本，使用第1行 Webshare Key 获取日本代理");
+      japanProxy = await replaceWebshareProxyDirect(keys.japanApiKey, "JP", "socks5");
+      logMessage(`协议支付: 日本代理已准备 ${formatProxy(japanProxy)}`);
+    }
+
+    logMessage("协议支付: 使用第2行 Webshare Key 获取美国代理");
+    const usProxy = await replaceWebshareProxyDirect(keys.usApiKey, "US", "http");
+    await applyFirefoxProxy(usProxy);
+    state.currentProxy = usProxy;
+    state.currentIpLocation = null;
+    renderProxyStatus();
+    await persistState();
+    logMessage(`协议支付: 美国代理已写入 Firefox ${formatProxy(usProxy)}`);
+
+    return {
+      proxyJp: formatProxyUrlForProtocol(japanProxy, "socks5"),
+      proxyUs: formatProxyUrlForProtocol(usProxy, "http", { trailingSlash: true }),
+      japanProxy,
+      usProxy
+    };
+  }
+
+  async function createProtocolPaymentJob(payload) {
+    const response = await fetch(PROTOCOL_PAYMENT_JOBS_API, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await readJsonResponse(response, "协议支付创建任务");
+    logMessage(`协议支付创建任务响应: ${JSON.stringify(data)}`);
+    if (!response.ok) {
+      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
+    const jobId = String(data.job_id || data.id || "").trim();
+    if (!jobId) {
+      throw new Error("协议支付创建任务响应缺少 job_id");
+    }
+    return jobId;
+  }
+
+  async function submitProtocolPaymentOtp(jobId, pin) {
+    const response = await fetch(`${PROTOCOL_PAYMENT_JOBS_API}/${encodeURIComponent(jobId)}/otp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ pin })
+    });
+    const data = await readJsonResponse(response, "协议支付设置短信");
+    logMessage(`协议支付设置短信响应: ${JSON.stringify(data)}`);
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  function parseSseEventLines(lines) {
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    const dataText = dataLines.length
+      ? dataLines.join("\n").trim()
+      : lines
+        .filter((line) => line && !line.startsWith(":") && !/^[a-z]+:/i.test(line))
+        .join("\n")
+        .trim();
+    if (!dataText || dataText === "[DONE]") {
+      return null;
+    }
+    try {
+      return JSON.parse(dataText);
+    } catch (error) {
+      logMessage(`协议支付 SSE 事件不是 JSON: ${dataText}`);
+      return null;
+    }
+  }
+
+  async function readProtocolPaymentEvents(jobId, phoneKey) {
+    const response = await fetch(`${PROTOCOL_PAYMENT_JOBS_API}/${encodeURIComponent(jobId)}/events`, {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "text/event-stream"
+      }
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`协议支付 SSE 连接失败: HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let otpSubmitted = false;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\r?\n\r?\n/);
+      buffer = chunks.pop() || "";
+      for (const chunk of chunks) {
+        const event = parseSseEventLines(chunk.split(/\r?\n/));
+        if (!event) {
+          continue;
+        }
+        logMessage(`协议支付 SSE: ${JSON.stringify(event)}`);
+        if (event.type === "otp_needed") {
+          if (otpSubmitted) {
+            logMessage("协议支付: 已提交过短信验证码，忽略重复 otp_needed");
+            continue;
+          }
+          logMessage("协议支付: 收到 otp_needed，开始自动获取短信验证码");
+          const pin = await fetchPhoneVerificationCode(phoneKey, {
+            timeoutMs: PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS * 1000
+          });
+          logMessage(`协议支付: 已获取短信验证码 ${pin}`);
+          await submitProtocolPaymentOtp(jobId, pin);
+          otpSubmitted = true;
+        }
+        if (event.type === "result") {
+          const result = event.result && typeof event.result === "object" ? event.result : {};
+          if (result.success === true) {
+            return { ok: true, event, result };
+          }
+          return {
+            ok: false,
+            event,
+            result,
+            error: result.error || result.stage || "协议支付任务失败"
+          };
+        }
+      }
+    }
+    throw new Error("协议支付 SSE 已结束但未收到 result");
+  }
+
+  async function runProtocolPaymentFlow(context) {
+    const accessToken = String(context && context.accessToken || "").trim();
+    if (!accessToken) {
+      throw new Error("协议支付缺少 ChatGPT accessToken");
+    }
+    const phoneKey = await prepareProtocolPaymentPhoneKey();
+    const proxies = await prepareProtocolPaymentProxies(context && context.registrationProxy);
+    const cdkEntry = getNextProtocolCdkEntry();
+    const payload = {
+      input: accessToken,
+      cdk: cdkEntry.cdk,
+      proxy: proxies.proxyUs,
+      proxy_jp: proxies.proxyJp,
+      phone: phoneKey.phone,
+      email: "",
+      sms_api: "",
+      otp: "",
+      pplink_retry: PROTOCOL_PAYMENT_PPLINK_RETRY,
+      otp_timeout: PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS
+    };
+    logMessage(`协议支付创建任务请求: ${JSON.stringify({
+      ...payload,
+      input: `${accessToken.slice(0, 12)}...`
+    })}`);
+    const jobId = await createProtocolPaymentJob(payload);
+    logMessage(`协议支付任务已创建: ${jobId}`);
+    const result = await readProtocolPaymentEvents(jobId, phoneKey);
+    if (result.ok) {
+      await advancePhoneCursorAfterSuccess(phoneKey);
+      await removeUsedProtocolCdk(cdkEntry);
+      logMessage("协议支付任务成功");
+    } else {
+      logMessage(`协议支付任务失败: ${result.error || "未知错误"}`);
+    }
+    return {
+      ...result,
+      phoneKey,
+      cdkEntry,
+      jobId
+    };
+  }
+
   async function saveBrazilPixResumeContext(context) {
     state.brazilPixResume = normalizeBrazilPixResumeContext(context);
     await persistState();
@@ -1137,6 +1514,8 @@
 
   async function finalizeBrazilPixPaymentSuccess(pixResult, context) {
     const resumeContext = normalizeBrazilPixResumeContext(context);
+    logMessage("巴西 PIX 支付成功，share 版跳过第三方账号提交");
+
     if (resumeContext && !resumeContext.phoneRegistration && resumeContext.specifiedAccountEntry) {
       await removeSpecifiedAccountAfterPaymentSuccess(resumeContext.specifiedAccountEntry, resumeContext.registrationAccount);
     }
@@ -1572,6 +1951,15 @@
     return state.continueAuthorizationEnabled;
   }
 
+  function normalizeAccountPlanType(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function isTeamAuthorizationAccount(value) {
+    const context = value && typeof value === "object" ? value : {};
+    return normalizeAccountPlanType(context.planType || context.accountPlanType) === "team";
+  }
+
   function normalizeAuthorizationAccount(value) {
     if (!value || typeof value !== "object") {
       return null;
@@ -1585,6 +1973,12 @@
       account,
       email: String(value.email || account).trim(),
       registrationMethod,
+      planType: normalizeAccountPlanType(value.planType || value.accountPlanType),
+      teamProviderDomain: normalizeTeamProviderDomain(
+        value.teamProviderDomain ||
+        value.providerDomain ||
+        inferTeamProviderDomainFromEmail(account)
+      ),
       proxy: isRuntimeProxy(value.proxy) ? { ...value.proxy } : null,
       createdAt: Number(value.createdAt) || Date.now()
     };
@@ -1638,7 +2032,7 @@
       voucherInput.value = state.codexSmsVoucherCode || "";
     }
     if (button) {
-      const running = state.automationBatchRunning || state.authorizationRunning;
+      const running = state.automationBatchRunning || state.authorizationRunning || state.teamRegistrationRunning;
       button.disabled = running;
       button.textContent = state.authorizationRunning ? "授权中" : "授权";
     }
@@ -1989,6 +2383,9 @@
   async function driveCodexOAuthTab(tabId, context, oauthState, voucherCode) {
     const email = String(context.account || context.email || "").trim();
     const password = getAuthorizationPassword(context);
+    const teamAuthorization = isTeamAuthorizationAccount(context);
+    const teamProviderDomain = getTeamProviderDomainForAccount(context);
+    const teamProvider = getTeamProviderDefinition(teamProviderDomain);
     const triedEmailCodes = new Set();
     const deadline = Date.now() + CODEX_AUTH_TIMEOUT_MS;
     let lastAction = "";
@@ -2013,7 +2410,17 @@
         continue;
       }
 
+      if (teamAuthorization && href.startsWith(teamProvider.authorizeUrlPrefix)) {
+        lastAction = "team_invite";
+        await submitTeamProviderAuthorizeForm(tabId, email, teamProviderDomain, "Codex Team 授权");
+        await delay(3000);
+        continue;
+      }
+
       if (pageState.hasPhoneInput || href.toLowerCase().includes("add-phone") || href.toLowerCase().includes("phone-verification")) {
+        if (teamAuthorization) {
+          throw new Error("Codex Team 授权不应进入 add-phone/phone-verification 页面");
+        }
         lastAction = "phone";
         await handleCodexPhoneVerification(tabId, voucherCode);
         await delay(2000);
@@ -2090,7 +2497,8 @@
       throw new Error("没有可授权的最近成功账号");
     }
     const voucherCode = String(options.smsVoucherCode || getCodexSmsVoucherCode()).trim();
-    if (!voucherCode) {
+    const teamAuthorization = isTeamAuthorizationAccount(context);
+    if (!voucherCode && !teamAuthorization) {
       throw new Error("请输入 Codex 接码券");
     }
     if (state.authorizationRunning && !options.allowConcurrent) {
@@ -2101,7 +2509,6 @@
     setAuthorizationStatus(`授权中: ${context.account}`, { persist: true });
     renderAutomationBatchControls();
 
-    let oauthWindowId = null;
     let proxyAppliedForAuthorization = false;
     try {
       if (isRuntimeProxy(context.proxy)) {
@@ -2122,24 +2529,20 @@
       const pkce = await createPkcePair();
       const oauthState = createOauthState();
       const authorizeUrl = buildCodexAuthorizeUrl(oauthState, pkce.challenge);
-      const oauthWindow = await createPrivateAutomationWindow(authorizeUrl);
-      oauthWindowId = oauthWindow.windowId;
-      logMessage(`Codex 授权: 已打开浏览器页面 ${context.account}`);
-      const code = await driveCodexOAuthTab(oauthWindow.tab.id, context, oauthState, voucherCode);
+      const oauthTab = await updatePrivateAuthorizationTab(authorizeUrl, options);
+      logMessage(`Codex 授权: 已在当前隐私窗口打开授权页面 ${context.account}`);
+      const code = await driveCodexOAuthTab(oauthTab.id, context, oauthState, voucherCode);
       logMessage("Codex 授权: 已获取 authorization code，交换 token");
       const tokens = await exchangeCodexOAuthCode(code, pkce.verifier);
       const refreshToken = String(tokens.refresh_token || "").trim();
-      if (!refreshToken) {
-        throw new Error("Codex 授权成功但未返回 refresh_token");
-      }
+      logMessage(`Codex 授权: token 获取成功，share 版不上传 rt_token${refreshToken ? "" : "（响应缺少 refresh_token）"}`);
       setAuthorizationStatus(`成功: ${context.account}`, { persist: true });
-      logMessage(`Codex 授权成功，share 版不上传 rt_token: ${context.account}`);
+      logMessage(`Codex 授权成功，share 版已跳过第三方 rt_token 更新: ${context.account}`);
       return { ok: true, account: context.account };
     } catch (error) {
       setAuthorizationStatus(`失败: ${context.account}，${formatError(error)}`, { persist: true });
       throw error;
     } finally {
-      await closeAutomationWindow(oauthWindowId, { failed: false });
       if (proxyAppliedForAuthorization && options.cleanupProxyAfter) {
         await cleanupAutomationProxy("授权任务已关闭");
       }
@@ -2155,24 +2558,33 @@
       logMessage("完整流程运行中，暂不执行手动授权");
       return { ok: false };
     }
-    const voucherCode = getCodexSmsVoucherCode();
-    if (!voucherCode) {
-      logMessage("错误: 请输入 Codex 接码券");
-      return { ok: false };
-    }
     try {
       const sessionTab = await getCurrentBrowserChatGptSessionTab();
-      const sessionEmail = await getChatGptSessionUserEmailFromTab(sessionTab.id);
-      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}`);
+      const session = await getChatGptSessionFromTab(sessionTab.id);
+      const sessionEmail = String(session && session.userEmail || "").trim();
+      if (!sessionEmail) {
+        throw new Error("ChatGPT session user.email: null");
+      }
+      const planType = normalizeAccountPlanType(session && session.accountPlanType);
+      const voucherCode = getCodexSmsVoucherCode();
+      if (!voucherCode && planType !== "team") {
+        logMessage("错误: 请输入 Codex 接码券");
+        return { ok: false };
+      }
+      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
       const account = await rememberSuccessfulAuthorizationAccount({
         account: sessionEmail,
         email: sessionEmail,
         registrationMethod: "email",
+        planType,
+        teamProviderDomain: getTeamProviderDomainForAccount({ account: sessionEmail, email: sessionEmail }),
         proxy: cloneRuntimeProxy(state.currentProxy)
       });
       return await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
-        cleanupProxyAfter: true
+        cleanupProxyAfter: true,
+        tabId: sessionTab.id,
+        windowId: sessionTab.windowId
       });
     } catch (error) {
       logMessage("Codex 授权失败: " + formatError(error));
@@ -2187,25 +2599,48 @@
       if (!cachedSessionEmail && (!Number.isInteger(tabId) || tabId < 0)) {
         throw new Error("缺少 ChatGPT 标签页，无法读取 session user.email");
       }
-      const sessionEmail = cachedSessionEmail || await getChatGptSessionUserEmailFromTab(tabId);
-      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}`);
+      let session = null;
+      if (Number.isInteger(tabId) && tabId >= 0) {
+        try {
+          session = await getChatGptSessionFromTab(tabId);
+        } catch (error) {
+          logMessage(`读取 ChatGPT session planType 失败，继续使用已有授权上下文: ${formatError(error)}`);
+        }
+      }
+      const sessionEmail = cachedSessionEmail || String(session && session.userEmail || "").trim();
+      if (!sessionEmail) {
+        throw new Error("ChatGPT session user.email: null");
+      }
+      const planType = normalizeAccountPlanType(
+        (context && (context.planType || context.accountPlanType)) ||
+        (session && session.accountPlanType)
+      );
+      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
       const account = await rememberSuccessfulAuthorizationAccount({
         ...context,
         account: sessionEmail,
-        email: sessionEmail
+        email: sessionEmail,
+        planType,
+        teamProviderDomain: getTeamProviderDomainForAccount({
+          ...context,
+          account: sessionEmail,
+          email: sessionEmail
+        })
       });
       if (!account || !isContinueAuthorizationEnabled()) {
         return;
       }
       const voucherCode = getCodexSmsVoucherCode();
-      if (!voucherCode) {
+      if (!voucherCode && !isTeamAuthorizationAccount(account)) {
         logMessage("继续授权已开启，但未填写 Codex 接码券，跳过自动授权");
         setAuthorizationStatus(`跳过: ${account.account}，缺少接码券`, { persist: true });
         return;
       }
       await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
-        cleanupProxyAfter: false
+        cleanupProxyAfter: false,
+        tabId,
+        windowId: context && context.windowId
       });
     } catch (error) {
       logMessage(`Codex 授权收尾失败，注册/支付成功仍保留: ${formatError(error)}`);
@@ -2256,27 +2691,8 @@
     logMessage("等待注册按钮...");
     const clickRegisterCode = `
       (function() {
-        function simulateClick(el) {
-          el.scrollIntoView({ block: 'center', inline: 'center' });
-          el.focus();
-          const rect = el.getBoundingClientRect();
-          const clientX = rect.left + rect.width / 2;
-          const clientY = rect.top + rect.height / 2;
-          ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
-            el.dispatchEvent(new MouseEvent(type, {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX,
-              clientY,
-              button: 0,
-              buttons: type === 'mousedown' ? 1 : 0
-            }));
-          });
-        }
-        const btns = Array.from(document.querySelectorAll('button'));
-        const regBtn = btns.find(b => /注册|Sign up|Create account/i.test(b.textContent || ''));
-        if (regBtn) { simulateClick(regBtn); return true; }
+        const regBtn = document.querySelector('button[data-testid="login-button"]');
+        if (regBtn) { regBtn.click(); return true; }
         return false;
       })();
     `;
@@ -2819,9 +3235,7 @@
     if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
       throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
     }
-    const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
     await ext.tabs.update(tab.id, { url, active: true });
-    logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "隐私窗口新 URL");
     return {
       windowId: createdWindow.id,
       tab: await ext.tabs.get(tab.id)
@@ -2997,50 +3411,77 @@
     if (!tab) {
       tab = await ext.tabs.create({ active: true });
     }
-    const preparedUserAgent = await prepareRandomUserAgentForTab(tab.id, url);
     await ext.tabs.update(tab.id, { url, active: true });
-    logTabUserAgentAfterNavigation(tab.id, preparedUserAgent, "新标签页 URL");
     return ext.tabs.get(tab.id);
   }
 
-  async function prepareRandomUserAgentForTab(tabId, url) {
-    try {
-      const response = await ext.runtime.sendMessage({
-        type: "gptAutoRegisterUserAgent",
-        action: "prepare",
-        tabId,
-        url
-      });
-      if (response && response.userAgent) {
-        logMessage(`请求头 User-Agent 已设置: ${response.userAgent}`);
-        return response.userAgent;
-      }
-      logMessage("请求头 User-Agent 设置未返回有效结果");
-    } catch (error) {
-      console.warn("Failed to prepare random User-Agent", error);
-      logMessage("User-Agent 随机化失败: " + formatError(error));
+  async function getActiveTabInWindow(windowId) {
+    const activeTabs = await ext.tabs.query({ windowId, active: true });
+    if (activeTabs && activeTabs[0]) {
+      return activeTabs[0];
     }
-    return "";
+    const tabs = await ext.tabs.query({ windowId });
+    return tabs && tabs[0] ? tabs[0] : null;
   }
 
-  async function logTabUserAgentAfterNavigation(tabId, preparedUserAgent, label) {
-    if (preparedUserAgent) {
-      logMessage(`${label || "页面"} 请求头 User-Agent: ${preparedUserAgent}`);
+  async function findOpenPrivateWindow() {
+    const windows = await ext.windows.getAll({ populate: true });
+    const privateWindows = (windows || []).filter((item) => item && item.incognito);
+    if (!privateWindows.length) {
+      return null;
     }
-    try {
-      await waitForScriptableTab(tabId, 15000);
-      const loaded = await waitForPageComplete(tabId, 45000);
-      if (!loaded) {
-        logMessage(`${label || "页面"} 页面仍在加载，继续读取 navigator.userAgent`);
+    return privateWindows.find((item) => item.focused) || privateWindows[privateWindows.length - 1];
+  }
+
+  async function updatePrivateAuthorizationTab(url, options = {}) {
+    let tab = null;
+    const optionTabId = Number(options && options.tabId);
+    const optionWindowId = Number(options && options.windowId);
+
+    if (Number.isInteger(optionTabId) && optionTabId >= 0) {
+      try {
+        const candidate = await ext.tabs.get(optionTabId);
+        if (candidate && candidate.id !== undefined && candidate.incognito) {
+          tab = candidate;
+        }
+      } catch (error) {
+        console.warn("Failed to get authorization tab", error);
       }
-      const pageUserAgentResult = await executePageFunction(tabId, "__gptAutoRegisterGetNavigatorUserAgent", {}, {
-        loadTimeoutMs: 15000
-      });
-      const pageUserAgent = pageUserAgentResult && pageUserAgentResult.userAgent;
-      logMessage(`${label || "页面"} window navigator.userAgent: ${pageUserAgent || ""}`);
-    } catch (error) {
-      logMessage(`${label || "页面"} window navigator.userAgent 读取失败: ${formatError(error)}`);
     }
+
+    if (!tab && Number.isInteger(optionWindowId) && optionWindowId >= 0) {
+      try {
+        const windowInfo = await ext.windows.get(optionWindowId);
+        if (windowInfo && windowInfo.incognito) {
+          tab = await getActiveTabInWindow(optionWindowId);
+        }
+      } catch (error) {
+        console.warn("Failed to get authorization window", error);
+      }
+    }
+
+    if (!tab) {
+      const privateWindow = await findOpenPrivateWindow();
+      if (!privateWindow || privateWindow.id === undefined) {
+        throw new Error("未找到已打开的隐私窗口，请先打开隐私窗口再执行授权");
+      }
+      tab = await getActiveTabInWindow(privateWindow.id);
+      if (!tab && privateWindow.id !== undefined) {
+        tab = await ext.tabs.create({ windowId: privateWindow.id, active: true });
+      }
+    }
+
+    if (!tab || tab.id === undefined || !tab.incognito) {
+      throw new Error("未找到可用于授权的隐私标签页");
+    }
+
+    if (tab.windowId !== undefined) {
+      try {
+        await ext.windows.update(tab.windowId, { focused: true });
+      } catch (_) {}
+    }
+    await ext.tabs.update(tab.id, { url, active: true });
+    return ext.tabs.get(tab.id);
   }
 
   function getRunCount() {
@@ -3057,12 +3498,21 @@
 
   function renderAutomationBatchControls() {
     const startButton = document.getElementById("startBtn");
+    const startToStep2Button = document.getElementById("startToStep2Btn");
+    const startTeamRegistrationButton = document.getElementById("startTeamRegistrationBtn");
     const cancelButton = document.getElementById("cancelBatchBtn");
     const startPayUrlButton = document.getElementById("startPayUrlBtn");
     const continueBrazilPixPaymentButton = document.getElementById("continueBrazilPixPaymentBtn");
-    const running = state.automationBatchRunning || state.payUrlBatchRunning || state.brazilPixContinueRunning;
+    const running = state.automationBatchRunning || state.payUrlBatchRunning || state.brazilPixContinueRunning || state.teamRegistrationRunning;
     if (startButton) {
       startButton.disabled = running;
+    }
+    if (startToStep2Button) {
+      startToStep2Button.disabled = running;
+    }
+    if (startTeamRegistrationButton) {
+      startTeamRegistrationButton.disabled = running;
+      startTeamRegistrationButton.textContent = state.teamRegistrationRunning ? "Team 注册中" : "注册 Team";
     }
     if (startPayUrlButton) {
       startPayUrlButton.disabled = running;
@@ -3072,14 +3522,15 @@
     }
     renderAuthorizationControls();
     if (cancelButton) {
-      cancelButton.disabled = !state.automationBatchRunning || state.cancelAutomationBatchRequested;
+      const cancellableBatchRunning = state.automationBatchRunning || state.teamRegistrationRunning;
+      cancelButton.disabled = !cancellableBatchRunning || state.cancelAutomationBatchRequested;
       cancelButton.textContent = state.cancelAutomationBatchRequested ? "取消中" : "取消";
     }
   }
 
   function requestCancelAutomationBatch() {
-    if (!state.automationBatchRunning) {
-      logMessage("当前没有正在执行的完整流程");
+    if (!state.automationBatchRunning && !state.teamRegistrationRunning) {
+      logMessage("当前没有正在执行的连续流程");
       return;
     }
     if (state.cancelAutomationBatchRequested) {
@@ -3089,6 +3540,267 @@
     state.cancelAutomationBatchRequested = true;
     renderAutomationBatchControls();
     logMessage("已请求取消，当前流程执行完后不再执行后续次数");
+  }
+
+  async function waitForChatGptSessionWithAccessToken(tabId, timeoutMs = 60000) {
+    const start = Date.now();
+    let lastError = "";
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const session = await getChatGptSessionFromTab(tabId);
+        const accessToken = String(session && session.accessToken || "").trim();
+        if (accessToken) {
+          return session;
+        }
+        lastError = "accessToken 为空";
+      } catch (error) {
+        lastError = formatError(error);
+      }
+      await delay(2000);
+    }
+    throw new Error(`等待 ChatGPT session accessToken 超时${lastError ? `: ${lastError}` : ""}`);
+  }
+
+  async function waitForAnyUrlPrefix(tabId, prefixes, timeoutMs) {
+    const prefixList = (Array.isArray(prefixes) ? prefixes : [prefixes])
+      .map((prefix) => String(prefix || "").trim())
+      .filter(Boolean);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const tab = await ext.tabs.get(tabId);
+      const url = String(tab && tab.url || "");
+      const matchedPrefix = prefixList.find((prefix) => prefix && url.startsWith(prefix));
+      if (matchedPrefix) {
+        return { url, prefix: matchedPrefix };
+      }
+      await delay(1000);
+    }
+    throw new Error(`等待 URL 超时: ${prefixList.join(" 或 ")}`);
+  }
+
+  async function submitTeamProviderAuthorizeForm(tabId, email, providerDomain, label = "Team") {
+    const provider = getTeamProviderDefinition(providerDomain);
+    const prefix = getEmailPrefix(email);
+    if (!prefix) {
+      throw new Error(`${label}: 邮箱前缀为空`);
+    }
+
+    logMessage(`${label}: 等待进入 ${provider.authorizeUrlPrefix}`);
+    await waitForUrlPrefix(tabId, provider.authorizeUrlPrefix, 120000);
+    logMessage(`${label}: 使用 provider ${provider.domain}`);
+
+    if (provider.type === "pilipala") {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: "#prefix",
+        value: prefix,
+        timeoutMs: 60000
+      }, `${label}: prefix 输入失败`);
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: "#password",
+        value: provider.password,
+        timeoutMs: 30000
+      }, `${label}: password 输入失败`);
+    } else if (provider.type === "emailOnly") {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="email"]',
+        value: email,
+        timeoutMs: 60000
+      }, `${label}: 邮箱输入失败`);
+    } else {
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="email"]',
+        value: email,
+        timeoutMs: 60000
+      }, `${label}: invite 邮箱输入失败`);
+      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+        selector: 'input[name="invite_code"]',
+        value: TEAM_REGISTRATION_INVITE_CODE,
+        timeoutMs: 30000
+      }, `${label}: invite_code 输入失败`);
+    }
+
+    await clickPageElement(tabId, {
+      selector: provider.submitSelector || 'button[type="submit"]',
+      timeoutMs: 30000
+    }, `${label}: provider 表单提交失败`);
+  }
+
+  async function completeTeamRegistrationProviderFlow(tabId, email, providerDomain) {
+    await submitTeamProviderAuthorizeForm(tabId, email, providerDomain, "Team 注册");
+    logMessage("Team 注册: 等待 signin-consent 或返回 ChatGPT");
+    const nextUrl = await waitForAnyUrlPrefix(tabId, [TEAM_SIGNIN_CONSENT_URL_PREFIX, "https://chatgpt.com"], 120000);
+    if (nextUrl.prefix === TEAM_SIGNIN_CONSENT_URL_PREFIX) {
+      logMessage("Team 注册: 提交 signin consent，等待返回 ChatGPT");
+      await clickPageElement(tabId, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 60000
+      }, "Team 注册 signin consent 提交失败");
+      await waitForUrlPrefix(tabId, "https://chatgpt.com", 180000);
+    }
+  }
+
+  async function runTeamRegistrationBatch() {
+    if (
+      state.automationBatchRunning ||
+      state.payUrlBatchRunning ||
+      state.brazilPixContinueRunning ||
+      state.teamRegistrationRunning ||
+      state.authorizationRunning
+    ) {
+      logMessage("已有流程正在执行中，暂不启动 Team 注册");
+      return { ok: false };
+    }
+
+    state.teamRegistrationRunning = true;
+    state.cancelAutomationBatchRequested = false;
+    renderAutomationBatchControls();
+
+    const runCount = getRunCount();
+    resetRunStats(runCount);
+    let completedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
+    try {
+      logMessage(`准备连续执行 ${runCount} 次 Team 注册`);
+      for (let index = 1; index <= runCount; index += 1) {
+        logMessage(`===== Team 注册第 ${index}/${runCount} 次开始 =====`);
+        try {
+          const result = await runSingleTeamRegistrationFlow();
+          completedCount = index;
+          if (result && result.ok) {
+            successCount += 1;
+            updateRunStats("success");
+            logMessage(`===== Team 注册第 ${index}/${runCount} 次结束 =====`);
+          } else {
+            failCount += 1;
+            updateRunStats("fail");
+            logMessage(`Team 注册第 ${index}/${runCount} 次失败结束`);
+          }
+        } catch (error) {
+          completedCount = index;
+          failCount += 1;
+          updateRunStats("fail");
+          logMessage(`Team 注册第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
+        }
+        if (state.cancelAutomationBatchRequested) {
+          logMessage(`已取消后续 Team 注册，停止在第 ${completedCount}/${runCount} 次之后`);
+          break;
+        }
+      }
+      if (state.cancelAutomationBatchRequested && completedCount < runCount) {
+        logMessage(
+          `Team 注册连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
+        );
+      } else {
+        logMessage(`Team 注册连续执行完成，共 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次`);
+      }
+    } finally {
+      state.teamRegistrationRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+    }
+  }
+
+  async function runSingleTeamRegistrationFlow() {
+    setActiveStep(1);
+
+    const teamProviderDomain = getTeamProviderDomain();
+    const email = generateTeamRegistrationEmail(teamProviderDomain);
+    let automationWindowId = null;
+    let automationSucceeded = false;
+
+    try {
+      logMessage(`Team 注册: 使用 provider ${teamProviderDomain}，随机邮箱 ${email}`);
+      try {
+        await ensureProxyForStage("第一步");
+      } catch (error) {
+        throw new Error(`第一步代理设置失败: ${formatError(error)}`);
+      }
+
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com/");
+      automationWindowId = automationWindow.windowId;
+      const tab = automationWindow.tab;
+      logMessage("Team 注册: 已打开 chatgpt.com");
+
+      const pageLoaded = await waitForPageComplete(tab.id, 90000);
+      if (!pageLoaded) {
+        throw new Error("chatgpt.com 页面加载超时");
+      }
+      await delay();
+      logMessage("Team 注册: 点击登录");
+      await clickPageElement(tab.id, {
+        selector: 'button[data-testid="signup-button"]',
+        timeoutMs: 60000
+      }, "Team 注册登录按钮点击失败");
+      await delay(3000);
+
+      logMessage(`Team 注册: 输入邮箱 ${email}`);
+      await setFirstOAuthValue(tab.id, [
+        "#email",
+        'input[type="email"]',
+        'input[name="username"]',
+        'input[name="email"]',
+        'input[autocomplete="username"]'
+      ], email, "Team 登录邮箱");
+
+      logMessage("Team 注册: 提交邮箱，等待进入 SSO");
+      await clickPageElement(tab.id, {
+        selector: 'button[type="submit"]',
+        timeoutMs: 30000
+      }, "Team 注册邮箱提交按钮点击失败");
+      await waitForUrlPrefix(tab.id, TEAM_SSO_URL_PREFIX, 120000);
+
+      logMessage("Team 注册: 点击 SSO connection");
+      await clickPageElement(tab.id, {
+        selector: 'button[name="ssoConnection"]',
+        timeoutMs: 60000
+      }, "Team 注册 SSO connection 按钮点击失败");
+
+      await completeTeamRegistrationProviderFlow(tab.id, email, teamProviderDomain);
+      await waitForPageComplete(tab.id, 60000);
+
+      const session = await waitForChatGptSessionWithAccessToken(tab.id, 60000);
+      const sessionEmail = String(session && session.userEmail || "").trim();
+      if (sessionEmail && sessionEmail.toLowerCase() !== email.toLowerCase()) {
+        logMessage(`Team 注册: ChatGPT session user.email=${sessionEmail}，生成邮箱 ${email}`);
+      } else if (sessionEmail) {
+        logMessage(`Team 注册: ChatGPT session user.email=${sessionEmail}`);
+      }
+
+      logMessage("Team 注册: share 版跳过第三方账号提交");
+
+      const authorizationAccount = await rememberSuccessfulAuthorizationAccount({
+        account: email,
+        email,
+        registrationMethod: "email",
+        planType: normalizeAccountPlanType(session && session.accountPlanType) || "team",
+        teamProviderDomain,
+        proxy: cloneRuntimeProxy(state.currentProxy)
+      });
+      if (isContinueAuthorizationEnabled()) {
+        logMessage("Team 注册: 已勾选继续授权，开始 Codex 授权");
+        await authorizeCodexAccount(authorizationAccount, {
+          smsVoucherCode: getCodexSmsVoucherCode(),
+          cleanupProxyAfter: false,
+          tabId: tab.id,
+          windowId: automationWindowId
+        });
+      } else {
+        logMessage("Team 注册: 未勾选继续授权，跳过 Codex 授权");
+      }
+
+      automationSucceeded = true;
+      logMessage(`Team 注册成功: ${email}`);
+      return { ok: true, email };
+    } catch (error) {
+      logMessage(`Team 注册失败: ${formatError(error)}`);
+      return { ok: false, email, error: formatError(error) };
+    } finally {
+      await cleanupAutomationProxy("Team 注册任务已关闭");
+      await closeAutomationWindow(automationWindowId, {
+        failed: !automationSucceeded
+      });
+    }
   }
 
   async function runAutomationBatch() {
@@ -3103,6 +3815,10 @@
       validateRegistrationSettings();
       if (isContinueAuthorizationEnabled() && !getCodexSmsVoucherCode()) {
         throw new Error("继续授权已开启，请填写 Codex 接码券");
+      }
+      if (isPaymentFlowEnabled() && isProtocolPaymentMethod()) {
+        requireProtocolWebshareApiKeys();
+        getNextProtocolCdkEntry();
       }
     } catch (error) {
       logMessage("错误: " + formatError(error));
@@ -3184,6 +3900,7 @@
     const countrySel = document.getElementById("country").value;
     const phoneRegistration = isPhoneRegistrationMethod();
     const paymentFlowEnabled = isPaymentFlowEnabled();
+    const protocolPayment = paymentFlowEnabled && isProtocolPaymentMethod();
     let specifiedAccountEntry = null;
     try {
       specifiedAccountEntry = phoneRegistration ? null : getNextSpecifiedAccountEntry();
@@ -3192,13 +3909,15 @@
       return { ok: false };
     }
     let prepared = null;
-    if (paymentFlowEnabled) {
+    if (paymentFlowEnabled && !protocolPayment) {
       try {
         prepared = await preparePaymentInputs(false);
       } catch (error) {
         logMessage("错误: " + formatError(error));
         return { ok: false };
       }
+    } else if (protocolPayment) {
+      logMessage("已选择协议支付，本次流程不要求卡片和 PayURL");
     } else {
       logMessage("已关闭支付流程，本次完整流程将在账号注册成功后结束");
     }
@@ -3273,6 +3992,52 @@
         return { ok: true, paymentSkipped: true };
       }
 
+      if (protocolPayment) {
+        setActiveStep(2);
+        logMessage("步骤2: 已选择协议支付，跳过 PayURL/PayPal");
+        try {
+          if (!phoneRegistration) logSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
+        } catch (error) {
+          logMessage("指定账号创建日志记录失败，继续协议支付: " + formatError(error));
+        }
+
+        const accessToken = await getChatGptAccessTokenFromTab(tab.id);
+        logMessage("协议支付: share 版跳过第三方账号提交");
+
+        let protocolResult = null;
+        try {
+          protocolResult = await runProtocolPaymentFlow({
+            accessToken,
+            registrationProxy
+          });
+          automationSucceeded = Boolean(protocolResult && protocolResult.ok);
+        } catch (error) {
+          logMessage("协议支付流程异常，按支付失败处理: " + formatError(error));
+          if (state.phoneKey) {
+            logPaymentFailurePhone(state.phoneKey, formatError(error));
+          }
+          automationSucceeded = false;
+        }
+
+        if (automationSucceeded) {
+          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
+          await handleSuccessfulAccountAuthorization({
+            tabId: tab.id,
+            sessionEmail: chatGptSessionEmail,
+            registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+            proxy: registrationProxy
+          });
+        } else {
+          if (protocolResult && protocolResult.phoneKey) {
+            logPaymentFailurePhone(protocolResult.phoneKey, protocolResult.error || "协议支付流程失败");
+          } else if (state.phoneKey) {
+            logPaymentFailurePhone(state.phoneKey, "协议支付流程失败");
+          }
+          if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentFailure(specifiedAccountEntry);
+        }
+        return { ok: automationSucceeded };
+      }
+
       setActiveStep(2);
       if (countrySel === "BR") {
         logMessage("步骤2: 已选择巴西 PIX，跳过 PayURL/PayPal");
@@ -3328,13 +4093,12 @@
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
-      logMessage("支付链接已写入，准备进入支付流程");
+      logMessage("支付链接已写入，share 版跳过第三方账号提交并进入支付流程");
       try {
         if (!phoneRegistration) logSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
       } catch (error) {
         logMessage("指定账号创建日志记录失败，继续支付流程: " + formatError(error));
       }
-
       prepared.payUrl = selectedPaymentLink;
       prepared.longPayUrl = state.lastLongPayUrl;
       prepared.shortPayUrl = state.lastShortPayUrl;
@@ -3616,6 +4380,44 @@
     } finally {
       await cleanupAutomationProxy("第3步任务已关闭");
       await closeAutomationWindow(retryAutomationWindowId);
+    }
+  }
+
+  async function startFromStep4() {
+    let prepared;
+    try {
+      prepared = await preparePaymentInputs(false);
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      return;
+    }
+
+    const tab = await getCurrentWindowActiveTab();
+    if (!tab || !tab.id) {
+      logMessage("错误: 未找到当前标签页");
+      return;
+    }
+
+    logMessage("从当前页面第4步开始执行 PayPal 流程...");
+    try {
+      try {
+        await ensureProxyForStage("第四步");
+      } catch (error) {
+        logMessage("第四步代理设置失败，流程终止: " + formatError(error));
+        return;
+      }
+      await applyCurrentIpLocationToPrepared(prepared);
+      await runPayPalLoginPage(tab.id, prepared);
+      await runPayPalSignupPage(tab.id, prepared);
+      await advancePhoneCursorAfterSuccess(prepared.phoneKey);
+      logMessage("第4步开始流程已完成，短信验证码已输入");
+    } catch (error) {
+      if (prepared && prepared.smsCodeEntered) {
+        logPaymentFailurePhone(prepared.phoneKey, formatError(error));
+      }
+      logMessage("第4步开始流程异常，按支付失败处理: " + formatError(error));
+    } finally {
+      await cleanupAutomationProxy("第4步任务已关闭");
     }
   }
 
@@ -4586,13 +5388,7 @@
     return true;
   }
 
-  async function runPayPalLoginPage(tabId, prepared) {
-    setActiveStep(4);
-    logMessage("步骤4: 等待进入 paypal.com");
-    await waitForUrlPrefix(tabId, "https://www.paypal.com", 30000);
-    await delay();
-    await ensureContentScript(tabId);
-    await delay();
+  async function runCaptcha (tabId) {
     logMessage("检测是否有滑块验证码");
     const captchaChecks = await executePageFunction(tabId, "__gptAutoRegisterCheckCaptcha", {
       timeoutMs: 5000
@@ -4625,6 +5421,17 @@
     } else {
       logMessage("没有滑块")
     }
+    return captchaSolved;
+  }
+
+  async function runPayPalLoginPage(tabId, prepared) {
+    setActiveStep(4);
+    logMessage("步骤4: 等待进入 paypal.com");
+    await waitForUrlPrefix(tabId, "https://www.paypal.com", 30000);
+    await delay();
+    await ensureContentScript(tabId);
+    await delay();
+    const captchaSolved = await runCaptcha(tabId);
 
     logMessage("等待点击");
     try {
@@ -4641,9 +5448,15 @@
     logMessage("点击了按钮");
     await delay();
     
+    const loginEmailSelector = '#login_email, #onboardingFlowEmail';
     logMessage("等待插件邮箱输入框");
+    await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: loginEmailSelector,
+      timeoutMs: 10000
+    });
+    await delay(500);
     const loginEmailResult = await executePageFunction(tabId, "__gptAutoRegisterSetValue", {
-      selector: '#login_email, #onboardingFlowEmail',
+      selector: loginEmailSelector,
       value: prepared.paypalEmail,
       type: true,
       timeoutMs: 10000
@@ -4661,10 +5474,12 @@
     } else {
       logMessage("未找到 PayPal login_email，跳过邮箱输入");
     }
+  
   }
 
   async function runPayPalSignupPage(tabId, prepared) {
     setActiveStep(5);
+    await runCaptcha(tabId);
     logMessage("步骤5: 等待 PayPal signup 页面");
     await waitForUrlPrefix(tabId, "https://www.paypal.com/checkoutweb/signup", 120000);
     const stopCaptchaCleaner = startCaptchaCleaner(tabId, "#captchaComponent");
@@ -5003,9 +5818,7 @@
   async function updateTabUrl(tabId, url) {
     const tab = await ext.tabs.get(tabId);
     if (!String(tab.url || "").startsWith(url)) {
-      const preparedUserAgent = await prepareRandomUserAgentForTab(tabId, url);
       await ext.tabs.update(tabId, { url, active: true });
-      logTabUserAgentAfterNavigation(tabId, preparedUserAgent, "更新标签页 URL");
     }
     const loaded = await waitForPageComplete(tabId, 45000);
     if (!loaded) {
@@ -5323,7 +6136,8 @@
     }
     const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
     let lastError = "";
-    for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+    const maxAttempts = normalizeSmsPollAttempts(options.timeoutMs);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
       if (result.code) {
         const isNewCode = !seenCodes.has(result.code);
@@ -5338,20 +6152,21 @@
       } else {
         lastError = result.error || "没有匹配到 6 位验证码";
       }
-      if (attempt < POLL_ATTEMPTS) {
-        logMessage(`第 ${attempt}/${POLL_ATTEMPTS} 次未取到新短信码，继续轮询: ${lastError}`);
+      if (attempt < maxAttempts) {
+        logMessage(`第 ${attempt}/${maxAttempts} 次未取到新短信码，继续轮询: ${lastError}`);
         await delay(POLL_DELAY_MS);
       }
     }
-    throw new Error(`获取短信验证码失败，已轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到 6 位验证码"}`);
+    throw new Error(`获取短信验证码失败，已轮询 ${maxAttempts} 次: ${lastError || "没有匹配到 6 位验证码"}`);
   }
 
   async function fetchJapanLegacyPhoneVerificationCode(phoneKey, options = {}) {
     const seenCodes = createSeenSmsCodes(phoneKey, options.previousCode);
     let lastError = "";
+    const maxAttempts = normalizeSmsPollAttempts(options.timeoutMs);
 
     async function pollJapanLegacySmsCode(roundLabel) {
-      for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const result = await fetchCurrentPhoneVerificationCodeResult(phoneKey);
         if (result.code) {
           const isNewCode = !seenCodes.has(result.code);
@@ -5366,8 +6181,8 @@
         } else {
           lastError = result.error || "没有匹配到 6 位验证码";
         }
-        if (attempt < POLL_ATTEMPTS) {
-          logMessage(`日本短信${roundLabel}第 ${attempt}/${POLL_ATTEMPTS} 次未取到新验证码，继续轮询: ${lastError}`);
+        if (attempt < maxAttempts) {
+          logMessage(`日本短信${roundLabel}第 ${attempt}/${maxAttempts} 次未取到新验证码，继续轮询: ${lastError}`);
           await delay(POLL_DELAY_MS);
         }
       }
@@ -5386,7 +6201,15 @@
       return resentCode;
     }
 
-    throw new Error(`获取日本短信验证码失败，重发前后各轮询 ${POLL_ATTEMPTS} 次: ${lastError || "没有匹配到新验证码"}`);
+    throw new Error(`获取日本短信验证码失败，重发前后各轮询 ${maxAttempts} 次: ${lastError || "没有匹配到新验证码"}`);
+  }
+
+  function normalizeSmsPollAttempts(timeoutMs) {
+    const timeout = Number(timeoutMs);
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      return POLL_ATTEMPTS;
+    }
+    return Math.max(1, Math.ceil(timeout / POLL_DELAY_MS));
   }
 
   async function clickJapanSmsResendButton(tabId) {
@@ -6108,6 +6931,8 @@
       if (saved.country) document.getElementById("country").value = saved.country;
       state.pixCdkInput = typeof saved.pixCdkInput === "string" ? saved.pixCdkInput : "";
       document.getElementById("pixCdkInput").value = state.pixCdkInput;
+      state.protocolCdkInput = typeof saved.protocolCdkInput === "string" ? saved.protocolCdkInput : "";
+      document.getElementById("protocolCdkInput").value = state.protocolCdkInput;
       updatePixCdkVisibility();
       const runCountInput = document.getElementById("runCountInput");
       if (runCountInput) {
@@ -6118,11 +6943,15 @@
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       state.payUrlMode = normalizePayUrlMode(saved.payUrlMode);
       document.getElementById("payUrlModeSelect").value = state.payUrlMode;
+      state.paymentMethod = normalizePaymentMethod(saved.paymentMethod);
+      document.getElementById("paymentMethodSelect").value = state.paymentMethod;
       state.lastLongPayUrl = typeof saved.lastLongPayUrl === "string" ? saved.lastLongPayUrl : "";
       state.lastShortPayUrl = typeof saved.lastShortPayUrl === "string" ? saved.lastShortPayUrl : "";
       state.lastCheckoutRegion = normalizeOptionalCheckoutRegion(saved.lastCheckoutRegion);
       state.specifiedAccountInput = typeof saved.specifiedAccountInput === "string" ? saved.specifiedAccountInput : "";
       document.getElementById("specifiedAccountInput").value = state.specifiedAccountInput;
+      state.teamProviderDomain = normalizeTeamProviderDomain(saved.teamProviderDomain);
+      document.getElementById("teamProviderSelect").value = state.teamProviderDomain;
       state.registrationMethod = normalizeRegistrationMethod(saved.registrationMethod);
       document.getElementById("registrationMethodSelect").value = state.registrationMethod;
       state.heroApiKey = typeof saved.heroApiKey === "string" ? saved.heroApiKey : "";
@@ -6206,6 +7035,7 @@
       heroCountry: document.getElementById("heroCountrySelect").value.trim(),
       heroMaxPrice: document.getElementById("heroMaxPriceInput").value.trim(),
       specifiedAccountInput: document.getElementById("specifiedAccountInput").value,
+      teamProviderDomain: normalizeTeamProviderDomain(document.getElementById("teamProviderSelect").value),
       paymentFlowEnabled: document.getElementById("paymentFlowEnabledCheckbox").checked,
       continueAuthorizationEnabled: document.getElementById("continueAuthorizationCheckbox").checked,
       codexSmsVoucherCode: document.getElementById("codexSmsVoucherInput").value.trim(),
@@ -6213,8 +7043,10 @@
       lastAuthorizationStatus: state.lastAuthorizationStatus,
       debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
       pixCdkInput: document.getElementById("pixCdkInput").value,
+      protocolCdkInput: document.getElementById("protocolCdkInput").value,
       payUrlInput: document.getElementById("payUrlInput").value,
       payUrlMode: normalizePayUrlMode(document.getElementById("payUrlModeSelect").value),
+      paymentMethod: normalizePaymentMethod(document.getElementById("paymentMethodSelect").value),
       lastLongPayUrl: state.lastLongPayUrl,
       lastShortPayUrl: state.lastShortPayUrl,
       lastCheckoutRegion: normalizeOptionalCheckoutRegion(state.lastCheckoutRegion),
@@ -6242,10 +7074,12 @@
   function bindEvents() {
     document.getElementById("startBtn").addEventListener("click", () => runWithErrorHandling(runAutomationBatch));
     document.getElementById("startToStep2Btn").addEventListener("click", () => runWithErrorHandling(startToStep2));
+    document.getElementById("startTeamRegistrationBtn").addEventListener("click", () => runWithErrorHandling(runTeamRegistrationBatch));
     document.getElementById("cancelBatchBtn").addEventListener("click", requestCancelAutomationBatch);
     document.getElementById("getPayUrlBtn").addEventListener("click", () => runWithErrorHandling(getPayUrlFromCurrentTab));
     document.getElementById("startPayUrlBtn").addEventListener("click", () => runWithErrorHandling(startFromPayUrl));
     document.getElementById("startStep3Btn").addEventListener("click", () => runWithErrorHandling(startFromStep3));
+    document.getElementById("startStep4Btn").addEventListener("click", () => runWithErrorHandling(startFromStep4));
     document.getElementById("fillStep5FormBtn").addEventListener("click", () => runWithErrorHandling(manualFillStep5Form));
     document.getElementById("continueBrazilPixPaymentBtn").addEventListener("click", () => runWithErrorHandling(continueBrazilPixPayment));
     document.getElementById("getWebshareProxyButton").addEventListener("click", () => runWithErrorHandling(getCurrentWebshareProxy));
@@ -6258,7 +7092,7 @@
       logMessage(state.proxyEnabled ? "代理已开启" : "代理已关闭");
     });
     document.getElementById("webshareApiKeyInput").addEventListener("input", () => {
-      state.webshareApiKey = document.getElementById("webshareApiKeyInput").value.trim();
+      state.webshareApiKey = document.getElementById("webshareApiKeyInput").value;
       persistState();
     });
     document.getElementById("proxyProtocolSelect").addEventListener("change", () => {
@@ -6283,6 +7117,10 @@
     });
     document.getElementById("pixCdkInput").addEventListener("input", () => {
       state.pixCdkInput = document.getElementById("pixCdkInput").value.trim();
+      persistState();
+    });
+    document.getElementById("protocolCdkInput").addEventListener("input", () => {
+      state.protocolCdkInput = document.getElementById("protocolCdkInput").value;
       persistState();
     });
     document.getElementById("specifiedAccountInput").addEventListener("input", () => {
@@ -6324,6 +7162,12 @@
       persistState();
       logMessage(state.continueAuthorizationEnabled ? "继续授权已开启" : "继续授权已关闭");
     });
+    document.getElementById("teamProviderSelect").addEventListener("change", () => {
+      const domain = getTeamProviderDomain();
+      document.getElementById("teamProviderSelect").value = domain;
+      persistState();
+      logMessage(`Team Provider 已切换为 ${domain}`);
+    });
     document.getElementById("codexSmsVoucherInput").addEventListener("input", () => {
       state.codexSmsVoucherCode = document.getElementById("codexSmsVoucherInput").value.trim();
       persistState();
@@ -6344,6 +7188,11 @@
         logMessage("支付链接类型已切换，当前 PayURL 队列保持不变");
       }
       persistState();
+    });
+    document.getElementById("paymentMethodSelect").addEventListener("change", () => {
+      const method = getPaymentMethod();
+      persistState();
+      logMessage(method === "protocol" ? "支付方式已切换为协议" : "支付方式已切换为默认");
     });
     document.getElementById("phoneFailureCooldownMinutesInput").addEventListener("input", () => {
       getPhoneFailureCooldownMinutes();

@@ -888,10 +888,6 @@
     return { ok: true, readyState: document.readyState, href: location.href };
   };
 
-  window.__gptAutoRegisterGetNavigatorUserAgent = function getNavigatorUserAgentExport() {
-    return { ok: true, userAgent: navigator.userAgent || "" };
-  };
-
   window.__gptAutoRegisterBodyContainsText = function bodyContainsTextExport(payload) {
     const text = String((payload && payload.text) || "");
     const bodyText = document.body ? String(document.body.innerHTML || "") : "";

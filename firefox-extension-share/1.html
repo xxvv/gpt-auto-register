@@ -61,16 +61,19 @@ billingAddress-addressLine1Input Jingumae
 
 
 
-
-1. 打开  https://auth.80101.xyz/chatgpt 
-等待进入 https://auth.80101.xyz/开头的
-
-等待 id="username" 输入框 34891.xyz 域名注册的邮箱 
-id="password" 固定输入 Aa123456..
-等待后 点击  id="kc-login"
-等待点击跳转到 
-https://external.auth.openai.com
+添加一个注册team的按钮，点击后的流程是
+打开 https://chatgpt.com/ ，点击登录 域名邮箱是xperiabox.shop
+点击 button type=submit后 等待跳转到
+https://auth.openai.com/sso
+等待
+点击 button name="ssoConnection"
+等待进入 https://2add0d82.r7.vip.cpolar.cn/authorize 后
+input name="email" 输入注册的邮箱
+name="invite_code" 输入固定的 6f904cb02f70390ab6bcad916d63b3d8e86f698f6d2ccb8d466b5e1cef6417a8
+点击 button type="submit"
+等待跳转到 https://external.auth.openai.com/sso/signin-consent
 点击 button[type="submit"]
+跳转到chatgpt.com
 这里就注册成功了。share 版不上传账号到第三方。
 
 
@@ -80,3 +83,22 @@ checkbox勾选后，任务流程正常完成后进行自动授权。
 授权按钮，点击后进行授权操作
 
 授权流程根据 D:\code\gpt-codex-oauth\scripts下的python自动授权逻辑来。打开的页面直接在浏览器打开，不是使用python的功能，最后拿到 rt_token 后 share 版不提交第三方接口。
+面板添加一个支付方式选择，选项有默认和协议。现在得流程就是默认得，协议就使用下面得流程
+在面板把webshare得apikey输入框改成多行，一行一个，下面创建任务时， 一个获取日本代理，一个获取美国代理传入。手机号就用现在手机面板里得
+账号注册完成后，share 版跳过第三方账号上传，直接调用创建任务
+post 创建任务 https://plus.iceaix.com/api/jobs
+
+body {"input":"eyJhbGciOiJSUzI1NiIsImtpZCI6IjE5MzQ0ZTY1LWJiYzktNDRkMS1hOWQwLWY5NTdiMDc5YmQwZSIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWDh6WTZ2VzJwUTl0UjNkRTduSzFqTDVnSCIsImV4cCI6MTc4MTgzNjE1MywiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6IjNjNmEwNDNhLTQ4YWMtNDI3Yy1hYTUxLWQyMzIxZWFmYzgyZCIsImNoYXRncHRfYWNjb3VudF91c2VyX2lkIjoidXNlci1jb09wUkFvcjB1TG8wMWpvSFBzR3l4aWpfXzNjNmEwNDNhLTQ4YWMtNDI3Yy1hYTUxLWQyMzIxZWFmYzgyZCIsImNoYXRncHRfY29tcHV0ZV9yZXNpZGVuY3kiOiJub19jb25zdHJhaW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJmcmVlIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci1jb09wUkFvcjB1TG8wMWpvSFBzR3l4aWoiLCJpc19zaWdudXAiOnRydWUsInVzZXJfaWQiOiJ1c2VyLWNvT3BSQW9yMHVMbzAxam9IUHNHeXhpaiJ9LCJodHRwczovL2FwaS5vcGVuYWkuY29tL3Byb2ZpbGUiOnsiZW1haWwiOiJqb2x0cy5ibGVhcnlfMndAaWNsb3VkLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaWF0IjoxNzgwOTcyMTUyLCJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImp0aSI6IjI4ZTdjNTdiLWZlYzYtNDRkMy05ZDU0LTYwOGYzMWYyYTNjYiIsIm5iZiI6MTc4MDk3MjE1MiwicHdkX2F1dGhfdGltZSI6MTc4MDk3MjE1MDIxOCwic2NwIjpbIm9wZW5pZCIsImVtYWlsIiwicHJvZmlsZSIsIm9mZmxpbmVfYWNjZXNzIiwibW9kZWwucmVxdWVzdCIsIm1vZGVsLnJlYWQiLCJvcmdhbml6YXRpb24ucmVhZCIsIm9yZ2FuaXphdGlvbi53cml0ZSJdLCJzZXNzaW9uX2lkIjoiYXV0aHNlc3Nfd2l0ME95dGRnZ3F4RUhVUGtRc3hlS3RCIiwic2wiOnRydWUsInN1YiI6ImF1dGgwfEtqaE8wcU8yU3pSNDRneWJ3QUJTVDZISiJ9.dmcCso-jyuOdbXNZVF0priD-z2NWti99vOUTWsDSagUEffv4rK5akec5VScYb6ytubZ41h3rAlQYzxrlPtOs28pCBpQaTQGFRGWpW7CPamLlQFarBZOcfxsC6WYgzwvVuHsgOjfOCumcDxLfR_jZSiOmI8rvMFCaqn9WYLYApzboraKvMLccDzbRt5Zh5PLk3yXaAUQEbBgpPFnaHDM7bc9o7ezzp4-oDWHniIjdafFDJLj9pd-P5FPfsVBEujs8AjeuBV60odkF404RGeS94AkiD8wOop3Osa1tk0PAWTbwn6mDurR2GD33DziXChzv9f7sjbgVDAT5cChb7p2ijHjpzyowQP79aKJRLGgsF8yPOzCSxSwX0nSGTxKsEj2X_e6Kby-7ge6NeG2JaGbYtXmgJh8Qn_GuU0BIm8n-1uyzFV6bFvW_KcmKIc_BU19sZCN0psmw-nwuJQIUekMFb2PvU7_VWlz-0a7zwo9YlQySWkZ4ssJc8jSWy6okTJjJpCzOZlJIoBKof_SszrXfM8Mml5IYHxZoR7Q2D8KcCLGgEa0WE-12G9TR8e0s3XwmYqq8nps_Lh0vprF-rn6f_OoE52TD4VVgPGta75ih1FkAZr9l6pvzsGacpFTpmVJJgcdwkk_3CGwiUgORaJsES4VlUJEQ2c_uWcJ2LAE2bbU","proxy":"http://icmcdnbk:ht2oxpr9zrhf@103.105.164.117:5286/","proxy_jp":"socks5://xpesjsuo:hp5shv0olrwd@195.40.120.248:5931","phone":"7083545695","email":"","sms_api":"","otp":"","pplink_retry":3,"otp_timeout":180}
+响应 {job_id: "c6954873237f4cfbaa5e9eb7c6dc8e4f"}
+
+sse get https://plus.iceaix.com/api/jobs/c6954873237f4cfbaa5e9eb7c6dc8e4f/events
+{"type": "otp_needed", "phone": "+81 7083545695", "ts": 1780972204.3379424}
+这里得响应全部要在 日志里输出
+当 type = otp_needed 时，需要用户输入短信验证码:
+任务完成得返回 {"type": "result", "result": {"success": true, "stage": "done", "error": "", "ba_token": "BA-0DT74548CE643443R", "ec_token": "EC-175444200T520622L", "email": "18gjev62wd@gmail.com", "password": "Cc6Vs#JVg9mf4M", "user_id": "3CMHTJ2RE4M7L", "return_url": "https://[redirect]/return/acct_1Pj377KslHRdbaPg/sa_nonce_Ufab8T4NTHTNFOXhXMGALF7haFBfHYV?status=success&token=EC-175444200T520622L", "stripe_finalized": true, "contingency": "R_ERROR", "proxy": "http://icmcdnbk:ht2oxpr9zrhf@103.105.164.117:5286/", "pplink_ran": true, "pplink_succeeded": true}, "ts": 1780972254.3677578}
+success：false 任务失败。
+设置验证码
+
+post 设置短信 https://plus.iceaix.com/api/jobs/c6954873237f4cfbaa5e9eb7c6dc8e4f/otp
+body {"pin":"659275"}
+响应 {"ok":true}

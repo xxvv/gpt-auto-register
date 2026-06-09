@@ -18,7 +18,8 @@
     "https://hero-sms.com/*",
     "https://sms.oapi.vip/*",
     "https://payment.nuo.cm/*",
-    "https://scan.youyushen.icu/*"
+    "https://scan.youyushen.icu/*",
+    "https://plus.iceaix.com/*"
   ],
   "background": {
     "scripts": ["background.js"]
