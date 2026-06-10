@@ -77,8 +77,8 @@
   const DEFAULT_PAY_URL_MODE = "long";
   const DEFAULT_PAYMENT_METHOD = "default";
   const DEFAULT_PHONE_FAILURE_COOLDOWN_MINUTES = 30;
-  const CHECKOUT_REGION_CODES = Object.freeze(["CA", "ID", "IE", "JP", "BR", "US", "DE"]);
-  const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["DE", "IE", "US"]);
+  const CHECKOUT_REGION_CODES = Object.freeze(["CA", "ID", "IE", "AU", "NZ", "JP", "BR", "US", "DE"]);
+  const PAY_URL_OFFICIAL_REGION_ORDER = Object.freeze(["AU", "NZ", "DE", "IE", "US"]);
   const BRAZIL_PIX_API_BASE = "https://scan.youyushen.icu";
   const BRAZIL_PIX_GENERATE_API = "https://payment.nuo.cm/api/pix-generate";
   const BRAZIL_PIX_POLL_INTERVAL_MS = 4000;
@@ -1808,6 +1808,8 @@
     CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
     ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
     IE: { country: "IE", currency: "EUR", paymentLocale: "en-IE" },
+    AU: { country: "AU", currency: "AUD", paymentLocale: "en-AU" },
+    NZ: { country: "NZ", currency: "NZD", paymentLocale: "en-NZ" },
     JP: { country: "JP", currency: "JPY", paymentLocale: "ja-JP" },
     BR: { country: "BR", currency: "BRL", paymentLocale: "pt-BR" },
     US: { country: "US", currency: "USD", paymentLocale: "en-US" },
@@ -1821,6 +1823,8 @@
         CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
         ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
         IE: { country: "IE", currency: "EUR", paymentLocale: "en-IE" },
+        AU: { country: "AU", currency: "AUD", paymentLocale: "en-AU" },
+        NZ: { country: "NZ", currency: "NZD", paymentLocale: "en-NZ" },
         JP: { country: "JP", currency: "JPY", paymentLocale: "ja-JP" },
         BR: { country: "BR", currency: "BRL", paymentLocale: "pt-BR" },
         US: { country: "US", currency: "USD", paymentLocale: "en-US" },
@@ -3488,6 +3492,7 @@
 
       await delay(1000);
       await scrollTabToBottom(tabId);
+      await delay(1000);
       await executePageFunction(tabId, "__gptAutoRegisterClick", {
         selector: 'button[type="submit"], button[data-testid="submit"]',
         timeoutMs: 15000
@@ -5744,6 +5749,8 @@
   function defaultShortCheckoutAddress(region) {
     const addresses = {
       JP: { country: "JP", postalCode: "101-8656", administrativeArea: "Tokyo", locality: "Tokyo", addressLine1: "666 Main St" },
+      AU: { country: "AU", postalCode: "2000", administrativeArea: "NSW", locality: "Sydney", addressLine1: "123 George St" },
+      NZ: { country: "NZ", postalCode: "1010", administrativeArea: "Auckland", locality: "Auckland", addressLine1: "123 Queen St" },
       BR: { country: "BR", postalCode: "01310-100", administrativeArea: "SP", locality: "Sao Paulo", addressLine1: "Avenida Paulista 1000" },
       // US: { country: "US", postalCode: "10001", administrativeArea: "NY", locality: "New York", addressLine1: "350 5th Ave" },
     };

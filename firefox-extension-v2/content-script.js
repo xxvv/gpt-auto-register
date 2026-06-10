@@ -1288,6 +1288,8 @@
         CA: { country: "CA", currency: "CAD", paymentLocale: "en-CA" },
         ID: { country: "ID", currency: "IDR", paymentLocale: "en-ID" },
         IE: { country: "IE", currency: "EUR", paymentLocale: "en-IE" },
+        AU: { country: "AU", currency: "AUD", paymentLocale: "en-AU" },
+        NZ: { country: "NZ", currency: "NZD", paymentLocale: "en-NZ" },
         JP: { country: "JP", currency: "JPY", paymentLocale: "ja-JP" },
         BR: { country: "BR", currency: "BRL", paymentLocale: "pt-BR" },
         US: { country: "US", currency: "USD", paymentLocale: "en-US" },

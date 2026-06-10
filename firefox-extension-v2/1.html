@@ -13,13 +13,13 @@
 如果不是就执行
 document.querySelector('button[role="combobox"]').click()
 
-const xpath = "//span[text()='United States']";
-const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+var xpath = "//span[text()='United States']";
+var result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
 
-const span = result.singleNodeValue;
+var span = result.singleNodeValue;
 
 if (span) {
-    console.log('通过 XPath 找到:', span.click());
+    console.log('通过 XPath 找到:', span.parentElement.click());
 } else {
     console.log('未找到');
 }
