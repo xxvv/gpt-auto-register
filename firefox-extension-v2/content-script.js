@@ -1088,7 +1088,7 @@
     const timeoutMs = Number((payload && payload.timeoutMs) || 15000);
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const inputs = Array.from(document.querySelectorAll('input[name="session_id"]'))
+      const inputs = Array.from(document.querySelectorAll('button[name="session_id"]'))
         .filter((input) => !input.disabled);
       const input = inputs.find(isVisibleEnabledElement) || inputs[0];
       if (input) {
@@ -1119,7 +1119,7 @@
       }
       await delay(300);
     }
-    return { ok: false, error: 'input[name="session_id"] not found' };
+    return { ok: false, error: 'button[name="session_id"] not found' };
   };
 
   window.__gptAutoRegisterSetFirstValue = async function setFirstValueExport(payload) {
