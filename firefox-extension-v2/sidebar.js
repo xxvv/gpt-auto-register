@@ -72,7 +72,7 @@
   const DEFAULT_REGISTRATION_METHOD = "email";
   const PHONE_REGISTRATION_PASSWORD = "Aa123456789..";
   const HERO_DEFAULT_SERVICE = "dr";
-  const HERO_SMS_POLL_TIMEOUT_MS = 90000;
+  const HERO_SMS_POLL_TIMEOUT_MS = 60000;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
   const DEFAULT_PAYMENT_METHOD = "default";
@@ -1654,6 +1654,7 @@
       } else if (nextContext && nextContext.thirdPartyAccount) {
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
+          thirdPartyAccount: nextContext.thirdPartyAccount,
           sessionEmail: nextContext.sessionEmail,
           registrationMethod: nextContext.registrationMethod || (nextContext.phoneRegistration ? "phone" : "email"),
           proxy: nextContext.proxy
@@ -2090,6 +2091,31 @@
     }
   }
 
+  async function submitPhoneRegistrationAccountAfterRegistration(account, accessToken) {
+    const thirdPartyAccount = String(account || "").trim();
+    if (!thirdPartyAccount) {
+      logMessage("手机号注册成功后第三方接口提交跳过: 账号为空");
+      return false;
+    }
+    try {
+      logMessage("手机号注册成功，正在立即提交到第三方接口...");
+      const thirdPartyResult = await submitThirdPartyAccount({
+        account: thirdPartyAccount,
+        accessToken: String(accessToken || "").trim(),
+        payurl: ""
+      });
+      if (thirdPartyResult.ok) {
+        logMessage("第三方接口提交成功（手机号注册完成，支付链接为空）");
+        return true;
+      }
+      logMessage("第三方接口提交失败（手机号注册完成），继续后续流程: " + (thirdPartyResult.error || "未知错误"));
+      return false;
+    } catch (error) {
+      logMessage("第三方接口提交异常（手机号注册完成），继续后续流程: " + formatError(error));
+      return false;
+    }
+  }
+
   function getRoxyPhoneQueueText(prepared) {
     const phoneKey = prepared && prepared.phoneKey ? prepared.phoneKey : null;
     const raw = String(phoneKey && phoneKey.raw || "").trim();
@@ -2153,11 +2179,11 @@
     if (!context.phoneRegistration && context.specifiedAccountEntry) {
       await removeSpecifiedAccountAfterPaymentSuccess(context.specifiedAccountEntry, context.registrationAccount);
     }
-    const account = String(context.sessionEmail || context.registrationAccount || "").trim();
+    const account = String(context.thirdPartyAccount || context.registrationAccount || context.sessionEmail || "").trim();
     if (account) {
       await rememberSuccessfulAuthorizationAccount({
         account,
-        email: account,
+        email: String(context.sessionEmail || "").trim(),
         registrationMethod: context.registrationMethod,
         proxy: context.proxy
       });
@@ -2268,14 +2294,16 @@
     if (!value || typeof value !== "object") {
       return null;
     }
-    const account = String(value.account || value.email || "").trim();
+    const phone = String(value.phone || value.registrationPhone || "").trim();
+    const account = String(value.account || value.email || phone).trim();
     if (!account) {
       return null;
     }
     const registrationMethod = normalizeRegistrationMethod(value.registrationMethod);
     return {
       account,
-      email: String(value.email || account).trim(),
+      email: String(value.email || "").trim(),
+      phone,
       registrationMethod,
       planType: normalizeAccountPlanType(value.planType || value.accountPlanType),
       teamProviderDomain: normalizeTeamProviderDomain(
@@ -2684,8 +2712,33 @@
     return "";
   }
 
+  async function handleCodexAddEmailVerification(tabId, triedCodes) {
+    const generatedEmail = generateDomainEmail();
+    logMessage(`Codex 授权: 检测到 add-email，随机生成邮箱 ${generatedEmail}`);
+    await setFirstOAuthValue(tabId, [
+      'input[name="email"]',
+      "#email",
+      'input[type="email"]',
+      'input[autocomplete="email"]',
+      'input[autocomplete="username"]'
+    ], generatedEmail, "add-email 邮箱");
+    await clickOAuthContinue(tabId, "add-email 邮箱提交");
+    logMessage("Codex 授权: add-email 已提交，等待 email-verification 页面");
+    await waitForUrlPrefix(tabId, "https://auth.openai.com/email-verification", 60000);
+    logMessage("Codex 授权: 已进入 email-verification，等待邮箱验证码");
+    const code = await pollCodexEmailCode(generatedEmail, triedCodes, 120000);
+    if (!code) {
+      throw new Error(`Codex 授权 add-email 未获取到邮箱验证码: ${generatedEmail}`);
+    }
+    await fillOAuthCode(tabId, code, "add-email 邮箱验证码");
+    await clickOAuthContinue(tabId, "add-email 邮箱验证码提交");
+    logMessage("Codex 授权: add-email 邮箱验证码已提交");
+    return generatedEmail;
+  }
+
   async function driveCodexOAuthTab(tabId, context, oauthState, voucherCode) {
-    const email = String(context.account || context.email || "").trim();
+    const accountText = String(context.account || "").trim();
+    let email = String(context.email || (accountText === "current-browser-session" ? "" : accountText)).trim();
     const password = getAuthorizationPassword(context);
     const teamAuthorization = isTeamAuthorizationAccount(context);
     const teamProviderDomain = getTeamProviderDomainForAccount(context);
@@ -2721,6 +2774,13 @@
         continue;
       }
 
+      if (href.toLowerCase().includes("/add-email")) {
+        lastAction = "add_email";
+        email = await handleCodexAddEmailVerification(tabId, triedEmailCodes);
+        await delay(3000);
+        continue;
+      }
+
       if (pageState.hasPhoneInput || href.toLowerCase().includes("add-phone") || href.toLowerCase().includes("phone-verification")) {
         if (teamAuthorization) {
           throw new Error("Codex Team 授权不应进入 add-phone/phone-verification 页面");
@@ -2741,6 +2801,11 @@
 
       if (pageState.hasEmailInput) {
         lastAction = "email";
+        if (!email) {
+          logMessage("Codex 授权: 当前没有邮箱，跳过邮箱输入，继续等待当前浏览器登录态授权页面");
+          await delay(3000);
+          continue;
+        }
         logMessage(`Codex 授权: 输入邮箱 ${email}`);
         await setFirstOAuthValue(tabId, [
           "#email",
@@ -2870,22 +2935,30 @@
       const sessionTab = await getCurrentBrowserChatGptSessionTab();
       const session = await getChatGptSessionFromTab(sessionTab.id);
       const sessionEmail = String(session && session.userEmail || "").trim();
-      if (!sessionEmail) {
-        throw new Error("ChatGPT session user.email: null");
-      }
       const planType = normalizeAccountPlanType(session && session.accountPlanType);
       const voucherCode = getCodexSmsVoucherCode();
       if (!voucherCode && planType !== "team") {
         logMessage("错误: 请输入 Codex 接码券");
         return { ok: false };
       }
-      logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
+      const authorizationAccount = sessionEmail || "current-browser-session";
+      const authorizationEmail = sessionEmail;
+      const authorizationPhone = "";
+      if (!sessionEmail) {
+        logMessage("当前浏览器 ChatGPT session user.email 为空，直接使用当前浏览器登录态尝试进入 Codex 授权页面");
+      } else {
+        logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
+      }
       const account = await rememberSuccessfulAuthorizationAccount({
-        account: sessionEmail,
-        email: sessionEmail,
+        account: authorizationAccount,
+        email: authorizationEmail,
+        phone: authorizationPhone,
         registrationMethod: "email",
         planType,
-        teamProviderDomain: getTeamProviderDomainForAccount({ account: sessionEmail, email: sessionEmail }),
+        teamProviderDomain: getTeamProviderDomainForAccount({
+          account: authorizationAccount,
+          email: authorizationEmail
+        }),
         proxy: cloneRuntimeProxy(state.currentProxy)
       });
       return await authorizeCodexAccount(account, {
@@ -2904,7 +2977,10 @@
     try {
       const tabId = Number(context && context.tabId);
       const cachedSessionEmail = String(context && context.sessionEmail || "").trim();
-      if (!cachedSessionEmail && (!Number.isInteger(tabId) || tabId < 0)) {
+      const thirdPartyAccount = String(context && context.thirdPartyAccount || "").trim();
+      const registrationEmail = String(context && context.registrationEmail || "").trim();
+      const registrationPhone = String(context && (context.registrationPhone || context.phone) || "").trim();
+      if (!cachedSessionEmail && !registrationEmail && !registrationPhone && (!Number.isInteger(tabId) || tabId < 0)) {
         throw new Error("缺少 ChatGPT 标签页，无法读取 session user.email");
       }
       let session = null;
@@ -2916,23 +2992,38 @@
         }
       }
       const sessionEmail = cachedSessionEmail || String(session && session.userEmail || "").trim();
+      const authorizationAccount = thirdPartyAccount || registrationEmail || registrationPhone || sessionEmail || "current-browser-session";
+      const authorizationEmail = sessionEmail || registrationEmail;
       if (!sessionEmail) {
-        throw new Error("ChatGPT session user.email: null");
+        logMessage(
+          authorizationEmail
+            ? `ChatGPT session user.email 为空，使用当前注册邮箱继续授权: ${authorizationEmail}`
+            : registrationPhone
+              ? `ChatGPT session user.email 为空，使用当前注册手机号继续授权: ${registrationPhone}`
+              : "ChatGPT session user.email 为空，仍尝试进入 Codex 授权页面"
+        );
       }
       const planType = normalizeAccountPlanType(
         (context && (context.planType || context.accountPlanType)) ||
         (session && session.accountPlanType)
       );
-      logMessage(`Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
+      logMessage(
+        thirdPartyAccount
+          ? `Codex 授权第三方账号取自已上传账号: ${thirdPartyAccount}${sessionEmail ? `，登录邮箱=${sessionEmail}` : ""}${planType ? `，planType=${planType}` : ""}`
+          : sessionEmail
+            ? `Codex 授权账号取自 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`
+          : `Codex 授权账号取自当前注册信息: ${authorizationAccount}${planType ? `，planType=${planType}` : ""}`
+      );
       const account = await rememberSuccessfulAuthorizationAccount({
         ...context,
-        account: sessionEmail,
-        email: sessionEmail,
+        account: authorizationAccount,
+        email: authorizationEmail,
+        phone: registrationPhone,
         planType,
         teamProviderDomain: getTeamProviderDomainForAccount({
           ...context,
-          account: sessionEmail,
-          email: sessionEmail
+          account: authorizationAccount,
+          email: authorizationEmail
         })
       });
       if (!account || !isContinueAuthorizationEnabled()) {
@@ -3356,11 +3447,14 @@
         selector: 'button[type="submit"]',
         timeoutMs: 30000
       }, "手机号提交按钮点击失败");
+      logMessage(`点击提交`);
       await delay();
       await requirePageResult(tabId, "__gptAutoRegisterWaitForUrlPrefix", {
         prefix: "https://auth.openai.com/create-account/password",
         timeoutMs: 90000
       }, "未进入密码设置页面");
+      logMessage(`进入输入密码页面`);
+      await delay(1000);
       await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
         selector: 'input[name="new-password"]',
         value: PHONE_REGISTRATION_PASSWORD,
@@ -3424,57 +3518,58 @@
   }
 
   async function completePhoneRegistrationPromoEmailVerification(tabId, registration) {
-    if (!registration || registration.registrationMethod !== "phone") {
-      return registration;
-    }
-    const email = await prepareRegistrationEmail(null);
-    logMessage(`手机号注册后绑定邮箱: ${email}`);
-    await updateTabUrl(tabId, "https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing");
-    await delay(3000);
-    await requirePageResult(tabId, "__gptAutoRegisterClick", {
-      selector: "button.btn-purple.btn-large.w-full",
-      timeoutMs: 60000
-    }, "未找到 Plus promo 按钮");
-    logMessage("已点击 Plus promo 按钮，等待邮箱输入框");
-    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-      selector: "#email",
-      value: email,
-      timeoutMs: 60000
-    }, "未找到邮箱输入框");
-    await clickPageElement(tabId, {
-      selector: 'button[type="submit"]',
-      timeoutMs: 30000
-    }, "邮箱提交按钮点击失败");
+    return registration
+    // if (!registration || registration.registrationMethod !== "phone") {
+    //   return registration;
+    // }
+    // const email = await prepareRegistrationEmail(null);
+    // logMessage(`手机号注册后绑定邮箱: ${email}`);
+    // await updateTabUrl(tabId, "https://chatgpt.com/?promo_campaign=plus-1-month-free#pricing");
+    // await delay(3000);
+    // await requirePageResult(tabId, "__gptAutoRegisterClick", {
+    //   selector: "button.btn-purple.btn-large.w-full",
+    //   timeoutMs: 60000
+    // }, "未找到 Plus promo 按钮");
+    // logMessage("已点击 Plus promo 按钮，等待邮箱输入框");
+    // await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+    //   selector: "#email",
+    //   value: email,
+    //   timeoutMs: 60000
+    // }, "未找到邮箱输入框");
+    // await clickPageElement(tabId, {
+    //   selector: 'button[type="submit"]',
+    //   timeoutMs: 30000
+    // }, "邮箱提交按钮点击失败");
 
-    logMessage("已提交绑定邮箱，轮询邮箱验证码...");
-    let code = null;
-    for (let i = 0; i < EMAIL_CODE_POLL_ATTEMPTS; i += 1) {
-      code = await fetchVerificationCode(email);
-      if (code) break;
-      await delay(POLL_DELAY_MS);
-    }
-    if (!code) {
-      throw new Error("手机号注册后绑定邮箱未获取到验证码");
-    }
+    // logMessage("已提交绑定邮箱，轮询邮箱验证码...");
+    // let code = null;
+    // for (let i = 0; i < EMAIL_CODE_POLL_ATTEMPTS; i += 1) {
+    //   code = await fetchVerificationCode(email);
+    //   if (code) break;
+    //   await delay(POLL_DELAY_MS);
+    // }
+    // if (!code) {
+    //   throw new Error("手机号注册后绑定邮箱未获取到验证码");
+    // }
 
-    await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-      selector: "#otp",
-      value: code,
-      timeoutMs: 60000
-    }, "未找到邮箱验证码输入框");
-    await clickPageElement(tabId, {
-      selector: 'button[type="submit"]',
-      timeoutMs: 30000
-    }, "邮箱验证码提交按钮点击失败");
-    logMessage("手机号注册后邮箱验证码已提交");
-    logMessage("邮箱验证后主动打开 chatgpt.com");
-    await updateTabUrl(tabId, "https://chatgpt.com");
-    await delay(20000)
-    return {
-      ...registration,
-      email,
-      account: registration.account || registration.phone || email
-    };
+    // await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+    //   selector: "#otp",
+    //   value: code,
+    //   timeoutMs: 60000
+    // }, "未找到邮箱验证码输入框");
+    // await clickPageElement(tabId, {
+    //   selector: 'button[type="submit"]',
+    //   timeoutMs: 30000
+    // }, "邮箱验证码提交按钮点击失败");
+    // logMessage("手机号注册后邮箱验证码已提交");
+    // logMessage("邮箱验证后主动打开 chatgpt.com");
+    // await updateTabUrl(tabId, "https://chatgpt.com");
+    // await delay(20000)
+    // return {
+    //   ...registration,
+    //   email,
+    //   account: registration.account || registration.phone || email
+    // };
   }
 
   async function submitNameAgeWithTryAgainRetry(tabId, randomName, randomAge, randomBirthday) {
@@ -3522,9 +3617,9 @@
       return false;
     }
     const result = await executePageFunction(tabId, "__gptAutoRegisterClickTryAgain", {
-      timeoutMs: 15000
+      timeoutMs: 5000
     }, {
-      loadTimeoutMs: 15000
+      loadTimeoutMs: 5000
     });
     return Boolean(result && result.ok);
   }
@@ -4347,11 +4442,7 @@
           return { ok: false };
         }
       }
-      const thirdPartyAccount = String(
-        phoneRegistration
-          ? registration.email || registration.account || registration.phone || ""
-          : registrationAccount
-      ).trim();
+      const thirdPartyAccount = String(registrationAccount).trim();
       let chatGptSessionEmail = "";
       let trialCheckAccessToken = "";
       try {
@@ -4366,6 +4457,16 @@
         logMessage(`读取 ChatGPT session user.email 失败，授权收尾时会重试: ${formatError(error)}`);
       }
 
+      if (phoneRegistration) {
+        const submittedAfterRegistration = await submitPhoneRegistrationAccountAfterRegistration(
+          thirdPartyAccount,
+          trialCheckAccessToken
+        );
+        if (submittedAfterRegistration) {
+          uploadedThirdPartyAccount = thirdPartyAccount;
+        }
+      }
+
       if (!paymentFlowEnabled) {
         automationSucceeded = true;
         try {
@@ -4376,6 +4477,7 @@
         logMessage("支付流程已关闭，账号注册成功，本次完整流程按成功结束");
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
+          thirdPartyAccount,
           sessionEmail: chatGptSessionEmail,
           registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
           proxy: registrationProxy
@@ -4422,12 +4524,15 @@
             payurl: ""
           });
           if (thirdPartyResult.ok) {
-            uploadedThirdPartyAccount = thirdPartyAccount;
+            if (!uploadedThirdPartyAccount) {
+              uploadedThirdPartyAccount = thirdPartyAccount;
+            }
             logMessage("第三方接口提交成功（协议支付）");
             if (stopAfterThirdPartySubmit) {
               automationSucceeded = true;
               return finishAfterThirdPartySubmit({
                 tabId: tab.id,
+                thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
                 proxy: registrationProxy,
@@ -4462,6 +4567,7 @@
           if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
           await handleSuccessfulAccountAuthorization({
             tabId: tab.id,
+            thirdPartyAccount,
             sessionEmail: chatGptSessionEmail,
             registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
             proxy: registrationProxy
@@ -4509,6 +4615,7 @@
             if (finalizeResult && finalizeResult.thirdPartySubmitted && stopAfterThirdPartySubmit) {
               return finishAfterThirdPartySubmit({
                 tabId: tab.id,
+                thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
                 proxy: registrationProxy,
@@ -4519,6 +4626,7 @@
             } else {
               await handleSuccessfulAccountAuthorization({
                 tabId: tab.id,
+                thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
                 proxy: registrationProxy
@@ -4563,11 +4671,14 @@
           payurl: selectedPaymentLink
         });
         if (submitted) {
-          uploadedThirdPartyAccount = thirdPartyAccount;
+          if (!uploadedThirdPartyAccount) {
+            uploadedThirdPartyAccount = thirdPartyAccount;
+          }
           if (stopAfterThirdPartySubmit) {
             automationSucceeded = true;
             return finishAfterThirdPartySubmit({
               tabId: tab.id,
+              thirdPartyAccount,
               sessionEmail: chatGptSessionEmail,
               registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
               proxy: registrationProxy,
@@ -4602,7 +4713,9 @@
               }, "短链真实支付链接");
               if (submitted) {
                 await pushRoxyPaymentTask(paypalUrl, prepared);
-                uploadedThirdPartyAccount = thirdPartyAccount;
+                if (!uploadedThirdPartyAccount) {
+                  uploadedThirdPartyAccount = thirdPartyAccount;
+                }
                 if (stopAfterThirdPartySubmit) {
                   throw new ThirdPartySubmitOnlyComplete();
                 }
@@ -4615,6 +4728,7 @@
           automationSucceeded = true;
           return finishAfterThirdPartySubmit({
             tabId: tab.id,
+            thirdPartyAccount,
             sessionEmail: chatGptSessionEmail,
             registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
             proxy: registrationProxy,
@@ -4635,6 +4749,7 @@
         await removeUsedCardInput(prepared);
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
+          thirdPartyAccount,
           sessionEmail: chatGptSessionEmail,
           registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
           proxy: registrationProxy
@@ -4724,6 +4839,16 @@
           logMessage("手机号注册后邮箱验证失败，流程终止: " + formatError(error));
           return { ok: false };
         }
+      }
+      const thirdPartyAccount = String(registrationAccount).trim();
+      let trialCheckAccessToken = "";
+      if (phoneRegistration) {
+        try {
+          trialCheckAccessToken = await getChatGptAccessTokenFromTab(tab.id);
+        } catch (error) {
+          logMessage("读取 ChatGPT accessToken 失败，仍尝试提交第三方账号: " + formatError(error));
+        }
+        await submitPhoneRegistrationAccountAfterRegistration(thirdPartyAccount, trialCheckAccessToken);
       }
 
       setActiveStep(2);
@@ -5317,7 +5442,7 @@
         return code;
       }
       lastStatus = result.text || (result.json ? JSON.stringify(result.json).slice(0, 120) : "");
-      logMessage(`Hero SMS: 第 ${attempt} 次未取到验证码，继续等待${lastStatus ? ` (${lastStatus})` : ""}`);
+      logMessage(`Hero SMS: 第 ${attempt} 次未取到验证码，继续等待`);
       await delay(POLL_DELAY_MS);
     }
     await setHeroSmsStatus(activationId, 8);
