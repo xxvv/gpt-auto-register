@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 import time
 
 import requests
@@ -22,6 +22,7 @@ class RoxyConfig:
     api_host: str = "http://127.0.0.1:50000"
     force_open: bool = False
     headless: bool = False
+    proxy: dict[str, Any] | None = None
 
     @classmethod
     def from_payload(cls, payload: dict) -> "RoxyConfig":
@@ -47,7 +48,45 @@ class RoxyConfig:
             api_host=api_host.rstrip("/"),
             force_open=bool(payload.get("force_open") or payload.get("forceOpen")),
             headless=bool(payload.get("headless")),
+            proxy=payload.get("proxy") if isinstance(payload.get("proxy"), dict) else None,
         )
+
+
+def roxy_proxy_info(proxy: dict[str, Any] | None) -> dict[str, Any]:
+    if not proxy or not proxy.get("enabled"):
+        return {
+            "moduleId": 0,
+            "proxyMethod": "custom",
+            "proxyCategory": "noproxy",
+            "ipType": "IPV4",
+            "host": "",
+            "port": "",
+            "proxyUserName": "",
+            "proxyPassword": "",
+            "refreshUrl": "",
+            "checkChannel": "IPRust.io",
+        }
+
+    protocol = str(proxy.get("type") or "http").strip().upper()
+    if protocol in {"SOCKS", "SOCKS5"}:
+        protocol = "SOCKS5"
+    elif protocol not in {"HTTP", "HTTPS", "SOCKS5"}:
+        protocol = "HTTP"
+
+    use_auth = bool(proxy.get("use_auth") or proxy.get("username"))
+    return {
+        "moduleId": 0,
+        "proxyMethod": "custom",
+        "proxyCategory": protocol,
+        "ipType": "IPV4",
+        "protocol": protocol,
+        "host": str(proxy.get("host") or "").strip(),
+        "port": str(proxy.get("port") or "").strip(),
+        "proxyUserName": str(proxy.get("username") or "").strip() if use_auth else "",
+        "proxyPassword": str(proxy.get("password") or "") if use_auth else "",
+        "refreshUrl": str(proxy.get("refresh_url") or proxy.get("refreshUrl") or ""),
+        "checkChannel": str(proxy.get("check_channel") or proxy.get("checkChannel") or "IPRust.io"),
+    }
 
 
 class RoxyApiClient:
@@ -93,6 +132,14 @@ class RoxyApiClient:
     def close_browser(self) -> dict:
         return self._request("POST", "/browser/close", json={"dirId": self.config.dir_id})
 
+    def modify_browser_proxy(self, proxy: dict[str, Any] | None) -> dict:
+        payload = {
+            "workspaceId": self.config.workspace_id,
+            "dirId": self.config.dir_id,
+            "proxyInfo": roxy_proxy_info(proxy),
+        }
+        return self._request("POST", "/browser/mdf", json=payload)
+
 
 class RoxySeleniumSession:
     def __init__(self, config: RoxyConfig, log: Optional[LogFn] = None):
@@ -105,6 +152,9 @@ class RoxySeleniumSession:
     def open(self) -> dict:
         self.log("检查 Roxy API 健康状态")
         self.client.health()
+        if self.config.proxy is not None:
+            self.log("Sync Roxy proxy profile setting")
+            self.client.modify_browser_proxy(self.config.proxy)
         self.log("打开 Roxy 浏览器窗口")
         self.open_info = self.client.open_browser()
         self.log(f"Roxy 窗口已打开，调试地址: {self.open_info.get('http')}")

@@ -52,6 +52,44 @@ const DEFAULT_SELECTOR_VALUES = {
 
 const $ = (id) => document.getElementById(id);
 
+function parseProxyUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parsed = new URL(raw.includes("://") ? raw : `http://${raw}`);
+  if (!parsed.hostname || !parsed.port) {
+    throw new Error("Proxy URL must include host and port");
+  }
+  return {
+    enabled: true,
+    type: parsed.protocol.replace(":", "") || "http",
+    host: parsed.hostname,
+    port: Number(parsed.port),
+    use_auth: Boolean(parsed.username),
+    username: decodeURIComponent(parsed.username || ""),
+    password: decodeURIComponent(parsed.password || "")
+  };
+}
+
+function readProxyConfig() {
+  const enabled = $("proxyEnabledCheckbox") ? $("proxyEnabledCheckbox").checked : false;
+  if (!enabled) {
+    return { enabled: false, type: "http", host: "", port: 0, use_auth: false, username: "", password: "" };
+  }
+  const manual = $("proxyUrlInput") ? parseProxyUrl($("proxyUrlInput").value) : null;
+  if (manual) {
+    return manual;
+  }
+  return null;
+}
+
+function formatProxy(proxy) {
+  if (!proxy || !proxy.enabled || !proxy.host) {
+    return "Proxy: disabled";
+  }
+  const auth = proxy.use_auth && proxy.username ? `${proxy.username}@` : "";
+  return `Proxy: ${proxy.type || "http"}://${auth}${proxy.host}:${proxy.port}`;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadSavedConfig();
   bindEvents();
@@ -92,6 +130,7 @@ function bindEvents() {
 function readConfig() {
   return {
     settings: readAllSettings(),
+    proxy: readProxyConfig(),
     api_host: $("apiHost").value.trim() || "http://127.0.0.1:50000",
     token: $("token").value.trim(),
     workspace_id: Number($("workspaceId").value || 0),
@@ -277,6 +316,11 @@ function renderStatus(data) {
   const handles = snapshot.window_handles || [];
   $("windowCount").textContent = Array.isArray(handles) && handles.length ? String(handles.length) : "-";
   $("jsResult").textContent = snapshot.js_result === undefined ? "-" : JSON.stringify(snapshot.js_result);
+  const proxyStatus = $("proxyStatus");
+  if (proxyStatus) {
+    proxyStatus.textContent = formatProxy(data.current_proxy);
+    proxyStatus.classList.toggle("empty", !(data.current_proxy && data.current_proxy.enabled));
+  }
 
   ["btnOpen", "btnNavigate", "btnRunJs", "btnSmoke"].forEach((id) => {
     const element = $(id);

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roxy Selenium Step4 Console</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Roxy Selenium Step4 Console</h1>
+        <p>PayPal 第4步后自动化</p>
+      </div>
+      <div id="runBadge" class="badge">空闲</div>
+    </header>
+
+    <section class="panel config-panel">
+      <label>
+        <span>Roxy Token</span>
+        <input id="roxyTokenInput" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        <span>窗口 ID</span>
+        <input id="windowIdInput" type="text" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        <span>工作空间 ID</span>
+        <input id="workspaceIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="可选，建议填写">
+      </label>
+      <button id="healthButton" class="secondary" type="button">检查 Roxy</button>
+    </section>
+
+    <section class="queue-grid">
+      <label class="panel">
+        <span>URL 队列（一行一个）</span>
+        <textarea id="urlQueueInput" rows="12" spellcheck="false" placeholder="https://www.paypal.com/..."></textarea>
+      </label>
+      <label class="panel">
+        <span>手机号/短信接口</span>
+        <textarea id="phoneQueueInput" rows="12" spellcheck="false" placeholder="+14484490908|http://sms-api...&#10;+14484490909----http://sms-api..."></textarea>
+      </label>
+    </section>
+
+    <section class="actions">
+      <button id="startButton" type="button">开始执行</button>
+      <button id="stopButton" class="danger" type="button">停止</button>
+      <button id="clearLogsButton" class="secondary" type="button">清空日志</button>
+    </section>
+
+    <section class="stats">
+      <div><strong id="totalStat">0</strong><span>总数</span></div>
+      <div><strong id="completedStat">0</strong><span>完成</span></div>
+      <div><strong id="successStat">0</strong><span>成功</span></div>
+      <div><strong id="failStat">0</strong><span>失败</span></div>
+    </section>
+
+    <section class="panel">
+      <div class="log-head">
+        <div>
+          <span>运行日志</span>
+          <label class="log-auto-scroll">
+            <input id="autoScrollLogsInput" type="checkbox" checked>
+            <span>自动滚动到底部</span>
+          </label>
+        </div>
+        <span id="currentUrlText"></span>
+      </div>
+      <pre id="logOutput"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

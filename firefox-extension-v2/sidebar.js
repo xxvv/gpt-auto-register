@@ -44,6 +44,10 @@
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_ACCOUNTS_UPDATE_API = `${THIRD_PARTY_ACCOUNTS_API}/update`;
   const THIRD_PARTY_API_KEY = "aa102911";
+  const ROXY_PUSH_API = "http://127.0.0.1:8765/api/push";
+  const ROXY_PUSH_TOKEN = "6d0ea1fa0dfa0c6ff8b13cc7b1c5dd3f";
+  const ROXY_PUSH_WORKSPACE_ID = "122926";
+  const ROXY_PUSH_WINDOW_ID = "4e51f65e12163f8edff39944a1ac2410";
   const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
   const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
   const CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback";
@@ -81,6 +85,7 @@
   const BRAZIL_PIX_POLL_TIMEOUT_MS = 300000;
   const BRAZIL_PIX_FAILED_STATUSES = new Set(["failed", "expired", "canceled"]);
   const PROTOCOL_PAYMENT_JOBS_API = "https://plus.iceaix.com/api/jobs";
+  const TRIAL_PAYMENT_CHECK_API = "https://plus.iceaix.com/api/trial/check";
   const PROTOCOL_PAYMENT_PPLINK_RETRY = 3;
   const PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS = 180;
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
@@ -107,7 +112,7 @@
   const state = {
     fillSettings: createDefaultFillSettings(),
     fillSettingsExpanded: false,
-    randomCardEnabled: false,
+    randomCardEnabled: true,
     useCurrentIpLocation: false,
     registrationMethod: DEFAULT_REGISTRATION_METHOD,
     heroApiKey: "",
@@ -119,6 +124,7 @@
     teamProviderDomain: DEFAULT_TEAM_PROVIDER_DOMAIN,
     deleteThirdPartyAccountEnabled: true,
     paymentFlowEnabled: true,
+    stopAfterThirdPartySubmitEnabled: false,
     continueAuthorizationEnabled: false,
     codexSmsVoucherCode: "",
     lastSuccessfulAuthorizationAccount: null,
@@ -1002,6 +1008,12 @@
     return state.paymentFlowEnabled;
   }
 
+  function isStopAfterThirdPartySubmitEnabled() {
+    const input = document.getElementById("stopAfterThirdPartySubmitCheckbox");
+    state.stopAfterThirdPartySubmitEnabled = input ? Boolean(input.checked) : false;
+    return state.stopAfterThirdPartySubmitEnabled;
+  }
+
   function isDebugModeEnabled() {
     const input = document.getElementById("debugModeCheckbox");
     state.debugModeEnabled = input ? Boolean(input.checked) : false;
@@ -1160,6 +1172,52 @@
     }
     logMessage("巴西 PIX: PIX 付款码已生成");
     return qrCodeData;
+  }
+
+  async function checkTrialPaymentEligibility(accessToken, proxyJp) {
+    const token = String(accessToken || "").trim();
+    if (!token) {
+      throw new Error("支付资格检查缺少 accessToken");
+    }
+    logMessage("支付资格检查: 正在调用 trial/check");
+    let response;
+    try {
+      response = await fetch(TRIAL_PAYMENT_CHECK_API, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          token,
+          proxy_jp: String(proxyJp || "").trim()
+        })
+      });
+    } catch (error) {
+      throw new Error(`支付资格检查网络错误: ${formatError(error)}`);
+    }
+    const data = await readJsonResponse(response, "支付资格检查");
+    const amountCents = Number(data && data.amount_cents);
+    const hasAmountCents = data && data.amount_cents !== undefined && data.amount_cents !== null && Number.isFinite(amountCents);
+    const eligible = hasAmountCents && amountCents === 0;
+    const status = String(data && data.status || "").trim();
+    const currency = String(data && data.currency || "").trim();
+    logMessage(`支付资格检查响应: amount_cents=${Number.isFinite(amountCents) ? amountCents : "null"}${currency ? ` ${currency}` : ""}, eligible=${data && data.eligible}, blocked=${data && data.blocked}, status=${status || "-"}`);
+    if (!response.ok || data.ok === false) {
+      return {
+        ok: false,
+        data,
+        amountCents,
+        error: data.error || data.message || `HTTP ${response.status}`
+      };
+    }
+    return {
+      ok: true,
+      eligible,
+      data,
+      amountCents,
+      currency,
+      status
+    };
   }
 
   async function findUsableBrazilPixCdk(codes) {
@@ -1527,9 +1585,10 @@
     return ext.tabs.get(createdTab.id);
   }
 
-  async function finalizeBrazilPixPaymentSuccess(pixResult, context) {
+  async function finalizeBrazilPixPaymentSuccess(pixResult, context, options = {}) {
     const resumeContext = normalizeBrazilPixResumeContext(context);
     const thirdPartyAccount = resumeContext ? resumeContext.thirdPartyAccount : "";
+    let thirdPartySubmitted = false;
     if (thirdPartyAccount) {
       try {
         logMessage("巴西 PIX 支付成功，正在提交到第三方接口...");
@@ -1539,6 +1598,7 @@
           payurl: ""
         });
         if (thirdPartyResult.ok) {
+          thirdPartySubmitted = true;
           logMessage("第三方接口提交成功（巴西 PIX，支付链接为空）");
         } else {
           logMessage("第三方接口提交失败，账号仍按 PIX 支付成功处理: " + (thirdPartyResult.error || "未知错误"));
@@ -1550,9 +1610,10 @@
       logMessage("巴西 PIX: 未记录第三方账号，跳过第三方接口提交");
     }
 
-    if (resumeContext && !resumeContext.phoneRegistration && resumeContext.specifiedAccountEntry) {
+    if (!options.skipSpecifiedAccountRemoval && resumeContext && !resumeContext.phoneRegistration && resumeContext.specifiedAccountEntry) {
       await removeSpecifiedAccountAfterPaymentSuccess(resumeContext.specifiedAccountEntry, resumeContext.registrationAccount);
     }
+    return { thirdPartySubmitted };
   }
 
   async function continueBrazilPixPayment() {
@@ -1583,9 +1644,14 @@
 
       logMessage("继续巴西 PIX 支付流程...");
       const pixResult = await runBrazilPixPaymentFlow(tab.id);
-      await finalizeBrazilPixPaymentSuccess(pixResult, nextContext);
+      const stopAfterThirdPartySubmit = isStopAfterThirdPartySubmitEnabled();
+      const finalizeResult = await finalizeBrazilPixPaymentSuccess(pixResult, nextContext, {
+        skipSpecifiedAccountRemoval: stopAfterThirdPartySubmit
+      });
       await clearBrazilPixResumeContext();
-      if (nextContext && nextContext.thirdPartyAccount) {
+      if (finalizeResult && finalizeResult.thirdPartySubmitted && stopAfterThirdPartySubmit) {
+        await finishAfterThirdPartySubmit(nextContext);
+      } else if (nextContext && nextContext.thirdPartyAccount) {
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
           sessionEmail: nextContext.sessionEmail,
@@ -2001,6 +2067,110 @@
     } catch (e) {
       return { ok: false, status: 0, data: null, error: e.message || "third-party submit failed" };
     }
+  }
+
+  async function submitThirdPartyAccountForPayment(accountInfo, label) {
+    const submitLabel = label ? `（${label}）` : "";
+    try {
+      logMessage(`正在提交到第三方接口${submitLabel}...`);
+      const thirdPartyResult = await submitThirdPartyAccount(accountInfo);
+      if (thirdPartyResult.ok) {
+        logMessage(`第三方接口提交成功${submitLabel}`);
+        return true;
+      }
+      logMessage(`第三方接口提交失败${submitLabel}，继续支付流程: ${thirdPartyResult.error || "未知错误"}`);
+      return false;
+    } catch (error) {
+      logMessage(`第三方接口提交异常${submitLabel}，继续支付流程: ${formatError(error)}`);
+      return false;
+    }
+  }
+
+  function getRoxyPhoneQueueText(prepared) {
+    const phoneKey = prepared && prepared.phoneKey ? prepared.phoneKey : null;
+    const raw = String(phoneKey && phoneKey.raw || "").trim();
+    if (raw) {
+      return raw;
+    }
+    const phone = String(phoneKey && phoneKey.phone || prepared && prepared.phone || "").trim();
+    const smsUrl = String(phoneKey && phoneKey.smsUrl || "").trim();
+    if (phone && smsUrl) {
+      return `${phone}|${smsUrl}`;
+    }
+    return "";
+  }
+
+  async function pushRoxyPaymentTask(paypalUrl, prepared) {
+    const urlQueueText = String(paypalUrl || "").trim();
+    const phoneQueueText = getRoxyPhoneQueueText(prepared);
+    if (!urlQueueText) {
+      logMessage("Roxy 任务推送跳过: PayPal URL 为空");
+      return false;
+    }
+    if (!phoneQueueText) {
+      logMessage("Roxy 任务推送跳过: 当前手机号任务为空");
+      return false;
+    }
+    try {
+      logMessage("正在推送 Roxy 任务...");
+      const resp = await fetch(ROXY_PUSH_API, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          roxyToken: ROXY_PUSH_TOKEN,
+          workspaceId: ROXY_PUSH_WORKSPACE_ID,
+          windowId: ROXY_PUSH_WINDOW_ID,
+          urlQueueText,
+          phoneQueueText
+        })
+      });
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (_) {}
+      if (resp.ok && (!data || data.ok !== false)) {
+        logMessage(`Roxy 任务推送成功: HTTP ${resp.status}${data && data.status ? "，已返回状态" : ""}`);
+        return true;
+      }
+      const error = data && (data.error || data.message) ? (data.error || data.message) : `HTTP ${resp.status}`;
+      logMessage(`Roxy 任务推送失败，继续支付流程: ${error}`);
+      return false;
+    } catch (error) {
+      logMessage(`Roxy 任务推送异常，继续支付流程: ${formatError(error)}`);
+      return false;
+    }
+  }
+
+  async function finishAfterThirdPartySubmit(options) {
+    const context = options && typeof options === "object" ? options : {};
+    logMessage("已开启第三方接口提交成功后结束流程，本次流程按成功结束");
+    if (!context.phoneRegistration && context.specifiedAccountEntry) {
+      await removeSpecifiedAccountAfterPaymentSuccess(context.specifiedAccountEntry, context.registrationAccount);
+    }
+    const account = String(context.sessionEmail || context.registrationAccount || "").trim();
+    if (account) {
+      await rememberSuccessfulAuthorizationAccount({
+        account,
+        email: account,
+        registrationMethod: context.registrationMethod,
+        proxy: context.proxy
+      });
+    }
+    return { ok: true, thirdPartySubmitOnly: true };
+  }
+
+  class ThirdPartySubmitOnlyComplete extends Error {
+    constructor() {
+      super("第三方接口提交成功后结束流程");
+      this.name = "ThirdPartySubmitOnlyComplete";
+    }
+  }
+
+  function isThirdPartySubmitOnlyComplete(error) {
+    return error instanceof ThirdPartySubmitOnlyComplete ||
+      (error && error.name === "ThirdPartySubmitOnlyComplete");
   }
 
   function extractThirdPartyError(resp, data) {
@@ -3182,7 +3352,7 @@
         selector: 'button[type="submit"]',
         timeoutMs: 30000
       }, "手机号提交按钮点击失败");
-
+      await delay();
       await requirePageResult(tabId, "__gptAutoRegisterWaitForUrlPrefix", {
         prefix: "https://auth.openai.com/create-account/password",
         timeoutMs: 90000
@@ -3379,7 +3549,7 @@
     }
 
     try {
-      const responsiveWindowWidth = AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH + 470;
+      const responsiveWindowWidth = AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH + 870;
       await ext.windows.update(windowId, {
         focused: true,
         width: responsiveWindowWidth,
@@ -4103,6 +4273,7 @@
     const countrySel = document.getElementById("country").value;
     const phoneRegistration = isPhoneRegistrationMethod();
     const paymentFlowEnabled = isPaymentFlowEnabled();
+    const stopAfterThirdPartySubmit = isStopAfterThirdPartySubmitEnabled();
     const protocolPayment = paymentFlowEnabled && isProtocolPaymentMethod();
     let specifiedAccountEntry = null;
     try {
@@ -4177,8 +4348,14 @@
           : registrationAccount
       ).trim();
       let chatGptSessionEmail = "";
+      let trialCheckAccessToken = "";
       try {
-        chatGptSessionEmail = await getChatGptSessionUserEmailFromTab(tab.id);
+        const chatGptSession = await getChatGptSessionFromTab(tab.id);
+        chatGptSessionEmail = String(chatGptSession && chatGptSession.userEmail || "").trim();
+        trialCheckAccessToken = String(chatGptSession && chatGptSession.accessToken || "").trim();
+        if (!chatGptSessionEmail) {
+          throw new Error("ChatGPT session user.email: null");
+        }
         logMessage(`ChatGPT session user.email: ${chatGptSessionEmail}`);
       } catch (error) {
         logMessage(`读取 ChatGPT session user.email 失败，授权收尾时会重试: ${formatError(error)}`);
@@ -4210,7 +4387,28 @@
           logMessage("指定账号创建日志记录失败，继续协议支付: " + formatError(error));
         }
 
-        const accessToken = await getChatGptAccessTokenFromTab(tab.id);
+        const accessToken = trialCheckAccessToken || await getChatGptAccessTokenFromTab(tab.id);
+        try {
+          const trialCheck = await checkTrialPaymentEligibility(accessToken, "");
+          if (!trialCheck.ok) {
+            logMessage("协议支付资格检查失败，流程终止: " + (trialCheck.error || "未知错误"));
+            if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
+            return { ok: false };
+          }
+          if (!trialCheck.eligible) {
+            const amountText = Number.isFinite(trialCheck.amountCents)
+              ? `${trialCheck.amountCents}${trialCheck.currency ? ` ${trialCheck.currency}` : ""}`
+              : "未知";
+            logMessage(`协议支付资格检查未通过，amount_cents=${amountText}，只有 amount_cents 为 0 才继续协议支付流程`);
+            if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
+            return { ok: false };
+          }
+          logMessage("协议支付资格检查通过，amount_cents=0，继续协议支付流程");
+        } catch (error) {
+          logMessage("协议支付资格检查异常，流程终止: " + formatError(error));
+          if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
+          return { ok: false };
+        }
         try {
           logMessage("正在提交到第三方接口（协议支付，支付链接为空）...");
           const thirdPartyResult = await submitThirdPartyAccount({
@@ -4221,6 +4419,18 @@
           if (thirdPartyResult.ok) {
             uploadedThirdPartyAccount = thirdPartyAccount;
             logMessage("第三方接口提交成功（协议支付）");
+            if (stopAfterThirdPartySubmit) {
+              automationSucceeded = true;
+              return finishAfterThirdPartySubmit({
+                tabId: tab.id,
+                sessionEmail: chatGptSessionEmail,
+                registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+                proxy: registrationProxy,
+                phoneRegistration,
+                specifiedAccountEntry,
+                registrationAccount
+              });
+            }
           } else {
             logMessage("第三方接口提交失败，继续协议支付: " + (thirdPartyResult.error || "未知错误"));
           }
@@ -4287,14 +4497,28 @@
           const pixResult = await runBrazilPixPaymentFlow(tab.id);
           automationSucceeded = Boolean(pixResult && pixResult.ok);
           if (automationSucceeded) {
-            await finalizeBrazilPixPaymentSuccess(pixResult, pixResumeContext);
-            await clearBrazilPixResumeContext();
-            await handleSuccessfulAccountAuthorization({
-              tabId: tab.id,
-              sessionEmail: chatGptSessionEmail,
-              registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
-              proxy: registrationProxy
+            const finalizeResult = await finalizeBrazilPixPaymentSuccess(pixResult, pixResumeContext, {
+              skipSpecifiedAccountRemoval: stopAfterThirdPartySubmit
             });
+            await clearBrazilPixResumeContext();
+            if (finalizeResult && finalizeResult.thirdPartySubmitted && stopAfterThirdPartySubmit) {
+              return finishAfterThirdPartySubmit({
+                tabId: tab.id,
+                sessionEmail: chatGptSessionEmail,
+                registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+                proxy: registrationProxy,
+                phoneRegistration,
+                specifiedAccountEntry,
+                registrationAccount
+              });
+            } else {
+              await handleSuccessfulAccountAuthorization({
+                tabId: tab.id,
+                sessionEmail: chatGptSessionEmail,
+                registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+                proxy: registrationProxy
+              });
+            }
           }
         } catch (error) {
           await saveBrazilPixResumeContext(pixResumeContext);
@@ -4318,27 +4542,36 @@
       }
 
       const selectedPaymentLink = await applyCheckoutLinkResult(result, { mode: payUrlMode });
-      logMessage("支付链接已写入，准备提交第三方接口并进入支付流程");
+      const isShortMode = normalizePayUrlMode(payUrlMode) === "short";
+      logMessage(isShortMode
+        ? "支付链接已写入，短链模式将在第四步获取真实支付 URL 后提交第三方接口"
+        : "支付链接已写入，准备提交第三方接口并进入支付流程");
       try {
         if (!phoneRegistration) logSpecifiedAccountCreated(specifiedAccountEntry, registrationAccount);
       } catch (error) {
         logMessage("指定账号创建日志记录失败，继续支付流程: " + formatError(error));
       }
-      try {
-        logMessage("正在提交到第三方接口...");
-        const thirdPartyResult = await submitThirdPartyAccount({
+      if (!isShortMode) {
+        const submitted = await submitThirdPartyAccountForPayment({
           account: thirdPartyAccount,
           accessToken: result.accessToken,
           payurl: selectedPaymentLink
         });
-        if (thirdPartyResult.ok) {
+        if (submitted) {
           uploadedThirdPartyAccount = thirdPartyAccount;
-          logMessage("第三方接口提交成功");
-        } else {
-          logMessage("第三方接口提交失败，继续支付流程: " + (thirdPartyResult.error || "未知错误"));
+          if (stopAfterThirdPartySubmit) {
+            automationSucceeded = true;
+            return finishAfterThirdPartySubmit({
+              tabId: tab.id,
+              sessionEmail: chatGptSessionEmail,
+              registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+              proxy: registrationProxy,
+              phoneRegistration,
+              specifiedAccountEntry,
+              registrationAccount
+            });
+          }
         }
-      } catch (error) {
-        logMessage("第三方接口提交异常，继续支付流程: " + formatError(error));
       }
 
       prepared.payUrl = selectedPaymentLink;
@@ -4346,12 +4579,45 @@
       prepared.shortPayUrl = state.lastShortPayUrl;
       prepared.checkoutRegion = state.lastCheckoutRegion;
       prepared.payUrlMode = state.payUrlMode;
+      prepared.thirdPartyAccount = thirdPartyAccount;
+      prepared.thirdPartyAccessToken = result.accessToken;
       let payFlowResult = false;
       try {
         payFlowResult = await runPayPalFlowWithCaptchaWindowRetry(tab.id, prepared, {
-          currentWindowId: automationWindowId
+          currentWindowId: automationWindowId,
+          onPayPalUrlReady: isShortMode
+            ? async (paypalUrl) => {
+              if (uploadedThirdPartyAccount) {
+                return;
+              }
+              const submitted = await submitThirdPartyAccountForPayment({
+                account: thirdPartyAccount,
+                accessToken: result.accessToken,
+                payurl: paypalUrl
+              }, "短链真实支付链接");
+              if (submitted) {
+                await pushRoxyPaymentTask(paypalUrl, prepared);
+                uploadedThirdPartyAccount = thirdPartyAccount;
+                if (stopAfterThirdPartySubmit) {
+                  throw new ThirdPartySubmitOnlyComplete();
+                }
+              }
+            }
+            : null
         });
       } catch (error) {
+        if (isThirdPartySubmitOnlyComplete(error)) {
+          automationSucceeded = true;
+          return finishAfterThirdPartySubmit({
+            tabId: tab.id,
+            sessionEmail: chatGptSessionEmail,
+            registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
+            proxy: registrationProxy,
+            phoneRegistration,
+            specifiedAccountEntry,
+            registrationAccount
+          });
+        }
         logMessage("支付流程异常，按支付失败处理: " + formatError(error));
         if (prepared && prepared.smsCodeEntered) {
           logPaymentFailurePhone(prepared.phoneKey, formatError(error));
@@ -4696,18 +4962,13 @@
   }
 
   async function preparePaymentInputs(requirePayUrl, options = {}) {
-    const cardEntry = getNextCardInputEntry(document.getElementById("cardInput").value);
     const payUrlEntry = getNextPayUrlInputEntry(document.getElementById("payUrlInput").value);
     const payUrl = payUrlEntry ? payUrlEntry.url : "";
-    if (!cardEntry) {
-      throw new Error("请输入卡片信息");
-    }
-    const card = await parseCardInput(cardEntry.line);
-    if (state.randomCardEnabled) {
-      const generatedCardNumber = generateRandomLuhnCardNumber(card.card);
-      card.card = generatedCardNumber;
-      logMessage(`已为本次流程临时随机生成 Luhn 有效卡号: ${generatedCardNumber}`);
-    }
+    const randomCardEnabled = true;
+    state.randomCardEnabled = true;
+    const flowCountry = getFlowCountry();
+    const card = createRandomPaymentCard(flowCountry);
+    logMessage(`已为本次流程随机生成完整卡片信息: ${card.card}`);
     if (requirePayUrl && !payUrl) {
       throw new Error("请输入 PayURL");
     }
@@ -4722,7 +4983,6 @@
     const storedLongPayUrl = String(state.lastLongPayUrl || "").trim();
     const storedShortPayUrl = String(state.lastShortPayUrl || "").trim();
     const payUrlMatchesStoredCheckout = Boolean(payUrl && (payUrl === storedLongPayUrl || payUrl === storedShortPayUrl));
-    const flowCountry = getFlowCountry();
     logMessage(`准备第3/5步流程国家: ${flowCountry}`);
     const phoneKey = await preparePhoneKeyForFlow(flowCountry);
     state.phoneKey = phoneKey;
@@ -4740,7 +5000,7 @@
     await persistState();
     return {
       card,
-      cardInputLine: cardEntry.line,
+      cardInputLine: "",
       flowCountry,
       phoneKey,
       phone: preparedPhone,
@@ -4752,7 +5012,7 @@
       payUrlMode,
       settings: sanitizeFillSettings(state.fillSettings),
       paypalEmail,
-      randomCardEnabled: Boolean(state.randomCardEnabled)
+      randomCardEnabled
     };
   }
 
@@ -5252,6 +5512,9 @@
       return;
     }
     const cardInput = document.getElementById("cardInput");
+    if (!cardInput) {
+      return;
+    }
     const lines = String(cardInput.value || "").split(/\r?\n/);
     const remainingLines = [];
     let removed = false;
@@ -5367,16 +5630,16 @@
     }
     await applyCurrentIpLocationToPrepared(prepared);
     await updateTabUrl(tabId, prepared.payUrl);
-    return runPayPalFlowFromCurrentPayUrl(tabId, prepared);
+    return runPayPalFlowFromCurrentPayUrl(tabId, prepared, options);
   }
 
-  async function runPayPalFlowFromCurrentPayUrl(tabId, prepared) {
+  async function runPayPalFlowFromCurrentPayUrl(tabId, prepared, options = {}) {
     const payUrlReady = await runPayUrlPage(tabId, prepared);
     if (!payUrlReady) {
       return false;
     }
     await ensureProxyForStage("第四步");
-    await runPayPalLoginPage(tabId, prepared);
+    await runPayPalLoginPage(tabId, prepared, options);
     await runPayPalSignupPage(tabId, prepared);
     await advancePhoneCursorAfterSuccess(prepared.phoneKey);
     logMessage("PayPal 步骤已完成，短信验证码已输入");
@@ -5480,7 +5743,7 @@
 
   function defaultShortCheckoutAddress(region) {
     const addresses = {
-      JP: { country: "JP", postalCode: "150-0001", administrativeArea: "Tokyo", locality: "Shibuya", addressLine1: "Jingumae" },
+      JP: { country: "JP", postalCode: "101-8656", administrativeArea: "Tokyo", locality: "Tokyo", addressLine1: "666 Main St" },
       BR: { country: "BR", postalCode: "01310-100", administrativeArea: "SP", locality: "Sao Paulo", addressLine1: "Avenida Paulista 1000" },
       // US: { country: "US", postalCode: "10001", administrativeArea: "NY", locality: "New York", addressLine1: "350 5th Ave" },
     };
@@ -5563,7 +5826,7 @@
       }
       const result = await executePageFunction(tabId, functionName, {
         ...payload,
-        timeoutMs: 3000
+        timeoutMs: 2000
       }, { allFrames: true }).catch((error) => {
         logMessage(`${label} 跳过: ${formatError(error)}`);
         return null;
@@ -5693,10 +5956,14 @@
     return captchaSolved;
   }
 
-  async function runPayPalLoginPage(tabId, prepared) {
+  async function runPayPalLoginPage(tabId, prepared, options = {}) {
     setActiveStep(4);
     logMessage("步骤4: 等待进入 paypal.com");
-    await waitForUrlPrefix(tabId, "https://www.paypal.com", 30000);
+    const paypalUrl = await waitForUrlPrefix(tabId, "https://www.paypal.com", 30000);
+    prepared.step4PaymentUrl = paypalUrl;
+    if (typeof options.onPayPalUrlReady === "function") {
+      await options.onPayPalUrlReady(paypalUrl);
+    }
     await delay();
     await ensureContentScript(tabId);
     await delay();
@@ -6596,6 +6863,64 @@
     return parsed;
   }
 
+  function createRandomPaymentCard(flowCountry = getFlowCountry()) {
+    const expiryInfo = createRandomCardExpiry();
+    const name = generateRandomName();
+    const firstName = extractFirstName(name);
+    const lastName = extractLastName(name);
+    const billingName = [firstName, lastName].filter(Boolean).join(" ");
+    const address = createDefaultCardAddress(flowCountry);
+    return {
+      card: generateRandomLuhnCardNumber("4242420000000000"),
+      year: expiryInfo.year,
+      month: expiryInfo.month,
+      cvv: createRandomCardCvv(),
+      phone: "",
+      url: "",
+      name,
+      billingName,
+      firstName,
+      lastName,
+      address: address.address,
+      city: address.city,
+      state: address.state,
+      postcode: address.postcode,
+      country: address.country,
+      expiryDisplay: expiryInfo.display,
+      expiryInput: expiryInfo.input
+    };
+  }
+
+  function createRandomCardExpiry() {
+    const now = new Date();
+    const monthOffset = 24 + Math.floor(Math.random() * 48);
+    const expiryDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+    return parseExpiry(`${expiryDate.getMonth() + 1}/${expiryDate.getFullYear()}`);
+  }
+
+  function createRandomCardCvv() {
+    return String(100 + Math.floor(Math.random() * 900));
+  }
+
+  function createDefaultCardAddress(flowCountry) {
+    if (normalizeFlowCountry(flowCountry) === "JP") {
+      return {
+        address: "666 Main St",
+        city: "Tokyo",
+        state: "Tokyo",
+        postcode: "101-8656",
+        country: "JP"
+      };
+    }
+    return {
+      address: "350 5th Ave",
+      city: "New York",
+      state: "NY",
+      postcode: "10001",
+      country: "US"
+    };
+  }
+
   function generateRandomLuhnCardNumber(sourceCard) {
     const normalizedSource = String(sourceCard || "").replace(/\D+/g, "");
     const length = normalizedSource.length || 16;
@@ -7146,6 +7471,9 @@
 
     entries.forEach(([elementKey, stateKey, selectorIndex]) => {
       const element = document.getElementById(elementKey);
+      if (!element) {
+        return;
+      }
       element.addEventListener("input", () => {
         if (typeof selectorIndex === "number") {
           const nextSelectors = normalizeSelectorList(state.fillSettings[stateKey], DEFAULT_FILL_SETTINGS[stateKey]);
@@ -7162,36 +7490,49 @@
   function renderFillSettings() {
     const settings = sanitizeFillSettings(state.fillSettings);
     state.fillSettings = settings;
-    document.getElementById("fillSettingsPanel").hidden = !state.fillSettingsExpanded;
-    document.getElementById("toggleFillSettingsButton").setAttribute("aria-expanded", String(state.fillSettingsExpanded));
-    document.getElementById("toggleFillSettingsButton").textContent = state.fillSettingsExpanded ? "收起" : "设置";
-    document.getElementById("phoneSelectorInput").value = settings.phoneSelector[0];
-    document.getElementById("phoneSelectorAltInput").value = settings.phoneSelector[1];
-    document.getElementById("cardNumberSelectorInput").value = settings.cardNumberSelector[0];
-    document.getElementById("cardNumberSelectorAltInput").value = settings.cardNumberSelector[1];
-    document.getElementById("cardExpirySelectorInput").value = settings.cardExpirySelector[0];
-    document.getElementById("cardExpirySelectorAltInput").value = settings.cardExpirySelector[1];
-    document.getElementById("cardCvvSelectorInput").value = settings.cardCvvSelector[0];
-    document.getElementById("cardCvvSelectorAltInput").value = settings.cardCvvSelector[1];
-    document.getElementById("billingNameSelectorInput").value = settings.billingNameSelector[0];
-    document.getElementById("billingNameSelectorAltInput").value = settings.billingNameSelector[1];
-    document.getElementById("firstNameSelectorInput").value = settings.firstNameSelector[0];
-    document.getElementById("firstNameSelectorAltInput").value = settings.firstNameSelector[1];
-    document.getElementById("lastNameSelectorInput").value = settings.lastNameSelector[0];
-    document.getElementById("lastNameSelectorAltInput").value = settings.lastNameSelector[1];
-    document.getElementById("billingLine1SelectorInput").value = settings.billingLine1Selector[0];
-    document.getElementById("billingLine1SelectorAltInput").value = settings.billingLine1Selector[1];
-    document.getElementById("billingCitySelectorInput").value = settings.billingCitySelector[0];
-    document.getElementById("billingCitySelectorAltInput").value = settings.billingCitySelector[1];
-    document.getElementById("billingStateSelectorInput").value = settings.billingStateSelector[0];
-    document.getElementById("billingStateSelectorAltInput").value = settings.billingStateSelector[1];
-    document.getElementById("billingPostalCodeSelectorInput").value = settings.billingPostalCodeSelector[0];
-    document.getElementById("billingPostalCodeSelectorAltInput").value = settings.billingPostalCodeSelector[1];
-    document.getElementById("countrySelectorInput").value = settings.countrySelector[0];
-    document.getElementById("countrySelectorAltInput").value = settings.countrySelector[1];
-    document.getElementById("passwordSelectorInput").value = settings.passwordSelector[0];
-    document.getElementById("passwordSelectorAltInput").value = settings.passwordSelector[1];
-    document.getElementById("passwordValueInput").value = settings.passwordValue;
+    const panel = document.getElementById("fillSettingsPanel");
+    const toggleButton = document.getElementById("toggleFillSettingsButton");
+    if (panel) {
+      panel.hidden = !state.fillSettingsExpanded;
+    }
+    if (toggleButton) {
+      toggleButton.setAttribute("aria-expanded", String(state.fillSettingsExpanded));
+      toggleButton.textContent = state.fillSettingsExpanded ? "收起" : "设置";
+    }
+    setInputValue("phoneSelectorInput", settings.phoneSelector[0]);
+    setInputValue("phoneSelectorAltInput", settings.phoneSelector[1]);
+    setInputValue("cardNumberSelectorInput", settings.cardNumberSelector[0]);
+    setInputValue("cardNumberSelectorAltInput", settings.cardNumberSelector[1]);
+    setInputValue("cardExpirySelectorInput", settings.cardExpirySelector[0]);
+    setInputValue("cardExpirySelectorAltInput", settings.cardExpirySelector[1]);
+    setInputValue("cardCvvSelectorInput", settings.cardCvvSelector[0]);
+    setInputValue("cardCvvSelectorAltInput", settings.cardCvvSelector[1]);
+    setInputValue("billingNameSelectorInput", settings.billingNameSelector[0]);
+    setInputValue("billingNameSelectorAltInput", settings.billingNameSelector[1]);
+    setInputValue("firstNameSelectorInput", settings.firstNameSelector[0]);
+    setInputValue("firstNameSelectorAltInput", settings.firstNameSelector[1]);
+    setInputValue("lastNameSelectorInput", settings.lastNameSelector[0]);
+    setInputValue("lastNameSelectorAltInput", settings.lastNameSelector[1]);
+    setInputValue("billingLine1SelectorInput", settings.billingLine1Selector[0]);
+    setInputValue("billingLine1SelectorAltInput", settings.billingLine1Selector[1]);
+    setInputValue("billingCitySelectorInput", settings.billingCitySelector[0]);
+    setInputValue("billingCitySelectorAltInput", settings.billingCitySelector[1]);
+    setInputValue("billingStateSelectorInput", settings.billingStateSelector[0]);
+    setInputValue("billingStateSelectorAltInput", settings.billingStateSelector[1]);
+    setInputValue("billingPostalCodeSelectorInput", settings.billingPostalCodeSelector[0]);
+    setInputValue("billingPostalCodeSelectorAltInput", settings.billingPostalCodeSelector[1]);
+    setInputValue("countrySelectorInput", settings.countrySelector[0]);
+    setInputValue("countrySelectorAltInput", settings.countrySelector[1]);
+    setInputValue("passwordSelectorInput", settings.passwordSelector[0]);
+    setInputValue("passwordSelectorAltInput", settings.passwordSelector[1]);
+    setInputValue("passwordValueInput", settings.passwordValue);
+  }
+
+  function setInputValue(elementId, value) {
+    const input = document.getElementById(elementId);
+    if (input) {
+      input.value = value;
+    }
   }
 
   function restoreState() {
@@ -7208,7 +7549,8 @@
         const savedRunCount = Math.floor(Number(saved.runCount));
         runCountInput.value = String(Number.isFinite(savedRunCount) && savedRunCount >= 1 ? savedRunCount : DEFAULT_RUN_COUNT);
       }
-      if (saved.cardInput) document.getElementById("cardInput").value = saved.cardInput;
+      const cardInput = document.getElementById("cardInput");
+      if (saved.cardInput && cardInput) cardInput.value = saved.cardInput;
       if (saved.payUrlInput) document.getElementById("payUrlInput").value = saved.payUrlInput;
       state.payUrlMode = normalizePayUrlMode(saved.payUrlMode);
       document.getElementById("payUrlModeSelect").value = state.payUrlMode;
@@ -7236,6 +7578,8 @@
       document.getElementById("deleteThirdPartyAccountCheckbox").checked = state.deleteThirdPartyAccountEnabled;
       state.paymentFlowEnabled = saved.paymentFlowEnabled === undefined ? true : Boolean(saved.paymentFlowEnabled);
       document.getElementById("paymentFlowEnabledCheckbox").checked = state.paymentFlowEnabled;
+      state.stopAfterThirdPartySubmitEnabled = Boolean(saved.stopAfterThirdPartySubmitEnabled);
+      document.getElementById("stopAfterThirdPartySubmitCheckbox").checked = state.stopAfterThirdPartySubmitEnabled;
       state.continueAuthorizationEnabled = Boolean(saved.continueAuthorizationEnabled);
       document.getElementById("continueAuthorizationCheckbox").checked = state.continueAuthorizationEnabled;
       state.codexSmsVoucherCode = typeof saved.codexSmsVoucherCode === "string" ? saved.codexSmsVoucherCode : "";
@@ -7268,10 +7612,12 @@
       state.currentProxy = isRuntimeProxy(saved.currentProxy) ? saved.currentProxy : null;
       state.currentIpLocation = normalizeSavedIpLocation(saved.currentIpLocation);
       renderProxyStatus();
-      state.randomCardEnabled = Boolean(saved.randomCardEnabled);
-      document.getElementById("randomCardCheckbox").checked = state.randomCardEnabled;
+      state.randomCardEnabled = true;
+      const randomCardCheckbox = document.getElementById("randomCardCheckbox");
+      if (randomCardCheckbox) randomCardCheckbox.checked = state.randomCardEnabled;
       state.useCurrentIpLocation = Boolean(saved.useCurrentIpLocation);
-      document.getElementById("useCurrentIpLocationCheckbox").checked = state.useCurrentIpLocation;
+      const useCurrentIpLocationCheckbox = document.getElementById("useCurrentIpLocationCheckbox");
+      if (useCurrentIpLocationCheckbox) useCurrentIpLocationCheckbox.checked = state.useCurrentIpLocation;
       state.phoneKeyInput = typeof saved.phoneKeyInput === "string" ? saved.phoneKeyInput : "";
       state.phoneKeyCursor = Number.isInteger(saved.phoneKeyCursor) && saved.phoneKeyCursor >= 0
         ? saved.phoneKeyCursor
@@ -7293,13 +7639,16 @@
   }
 
   function persistState() {
+    const cardInput = document.getElementById("cardInput");
+    const randomCardCheckbox = document.getElementById("randomCardCheckbox");
+    const useCurrentIpLocationCheckbox = document.getElementById("useCurrentIpLocationCheckbox");
     const nextState = {
       country: document.getElementById("country").value,
       flowCountry: normalizeFlowCountry(document.getElementById("flowCountrySelect").value),
       runCount: getRunCount(),
-      cardInput: document.getElementById("cardInput").value,
-      randomCardEnabled: document.getElementById("randomCardCheckbox").checked,
-      useCurrentIpLocation: document.getElementById("useCurrentIpLocationCheckbox").checked,
+      cardInput: cardInput ? cardInput.value : "",
+      randomCardEnabled: true,
+      useCurrentIpLocation: useCurrentIpLocationCheckbox ? useCurrentIpLocationCheckbox.checked : Boolean(state.useCurrentIpLocation),
       registrationMethod: normalizeRegistrationMethod(document.getElementById("registrationMethodSelect").value),
       heroApiKey: document.getElementById("heroApiKeyInput").value.trim(),
       heroService: HERO_DEFAULT_SERVICE,
@@ -7309,6 +7658,7 @@
       teamProviderDomain: normalizeTeamProviderDomain(document.getElementById("teamProviderSelect").value),
       deleteThirdPartyAccountEnabled: document.getElementById("deleteThirdPartyAccountCheckbox").checked,
       paymentFlowEnabled: document.getElementById("paymentFlowEnabledCheckbox").checked,
+      stopAfterThirdPartySubmitEnabled: document.getElementById("stopAfterThirdPartySubmitCheckbox").checked,
       continueAuthorizationEnabled: document.getElementById("continueAuthorizationCheckbox").checked,
       codexSmsVoucherCode: document.getElementById("codexSmsVoucherInput").value.trim(),
       lastSuccessfulAuthorizationAccount: normalizeAuthorizationAccount(state.lastSuccessfulAuthorizationAccount),
@@ -7428,6 +7778,11 @@
       persistState();
       logMessage(state.paymentFlowEnabled ? "已开启支付流程" : "已关闭支付流程，注册成功后即按流程成功收尾");
     });
+    document.getElementById("stopAfterThirdPartySubmitCheckbox").addEventListener("change", () => {
+      state.stopAfterThirdPartySubmitEnabled = document.getElementById("stopAfterThirdPartySubmitCheckbox").checked;
+      persistState();
+      logMessage(state.stopAfterThirdPartySubmitEnabled ? "第三方接口提交成功后将结束流程" : "第三方接口提交成功后将继续原流程");
+    });
     document.getElementById("debugModeCheckbox").addEventListener("change", () => {
       state.debugModeEnabled = document.getElementById("debugModeCheckbox").checked;
       persistState();
@@ -7477,17 +7832,29 @@
       persistState();
     });
     document.getElementById("runCountInput").addEventListener("input", persistState);
-    document.getElementById("cardInput").addEventListener("input", persistState);
-    document.getElementById("randomCardCheckbox").addEventListener("change", () => {
-      state.randomCardEnabled = document.getElementById("randomCardCheckbox").checked;
-      persistState();
-    });
-    document.getElementById("generateRandomCardButton").addEventListener("click", () => runWithErrorHandling(generateRandomCardInputNumber));
-    document.getElementById("useCurrentIpLocationCheckbox").addEventListener("change", () => {
-      state.useCurrentIpLocation = document.getElementById("useCurrentIpLocationCheckbox").checked;
-      persistState();
-      logMessage(state.useCurrentIpLocation ? "已启用当前 IP 定位填表" : "已关闭当前 IP 定位填表，将使用默认卡片地址");
-    });
+    const cardInput = document.getElementById("cardInput");
+    if (cardInput) {
+      cardInput.addEventListener("input", persistState);
+    }
+    const randomCardCheckbox = document.getElementById("randomCardCheckbox");
+    if (randomCardCheckbox) {
+      randomCardCheckbox.addEventListener("change", () => {
+        state.randomCardEnabled = randomCardCheckbox.checked;
+        persistState();
+      });
+    }
+    const generateRandomCardButton = document.getElementById("generateRandomCardButton");
+    if (generateRandomCardButton) {
+      generateRandomCardButton.addEventListener("click", () => runWithErrorHandling(generateRandomCardInputNumber));
+    }
+    const useCurrentIpLocationCheckbox = document.getElementById("useCurrentIpLocationCheckbox");
+    if (useCurrentIpLocationCheckbox) {
+      useCurrentIpLocationCheckbox.addEventListener("change", () => {
+        state.useCurrentIpLocation = useCurrentIpLocationCheckbox.checked;
+        persistState();
+        logMessage(state.useCurrentIpLocation ? "已启用当前 IP 定位填表" : "已关闭当前 IP 定位填表，将使用默认卡片地址");
+      });
+    }
     document.getElementById("payUrlInput").addEventListener("input", persistState);
     document.getElementById("phoneKeyInput").addEventListener("input", () => {
       state.phoneKeyInput = document.getElementById("phoneKeyInput").value.trim();
@@ -7500,17 +7867,23 @@
       renderNextPhoneStatus();
       persistState();
     });
-    document.getElementById("toggleFillSettingsButton").addEventListener("click", () => {
-      state.fillSettingsExpanded = !state.fillSettingsExpanded;
-      renderFillSettings();
-      persistState();
-    });
-    document.getElementById("resetFillSettingsButton").addEventListener("click", () => {
-      state.fillSettings = createDefaultFillSettings();
-      renderFillSettings();
-      persistState();
-      logMessage("已恢复默认填充设置");
-    });
+    const toggleFillSettingsButton = document.getElementById("toggleFillSettingsButton");
+    if (toggleFillSettingsButton) {
+      toggleFillSettingsButton.addEventListener("click", () => {
+        state.fillSettingsExpanded = !state.fillSettingsExpanded;
+        renderFillSettings();
+        persistState();
+      });
+    }
+    const resetFillSettingsButton = document.getElementById("resetFillSettingsButton");
+    if (resetFillSettingsButton) {
+      resetFillSettingsButton.addEventListener("click", () => {
+        state.fillSettings = createDefaultFillSettings();
+        renderFillSettings();
+        persistState();
+        logMessage("已恢复默认填充设置");
+      });
+    }
     bindFillSettingsInputs();
   }
 

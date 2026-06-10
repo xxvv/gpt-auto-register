@@ -1,5 +1,5 @@
-from app.roxy_server import serve_roxy_console
+from roxy_server.server import serve
 
 
 if __name__ == "__main__":
-    serve_roxy_console()
+    serve()

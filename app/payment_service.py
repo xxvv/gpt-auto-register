@@ -334,6 +334,7 @@ def replace_webshare_static_proxy(
     payment_cfg=None,
     *,
     prefer_http: bool = False,
+    country_code: str = "US",
 ) -> dict[str, Any]:
     payment_cfg = payment_cfg or cfg.payment
     if getattr(payment_cfg, "proxy_debug_mode", False):
@@ -344,7 +345,8 @@ def replace_webshare_static_proxy(
         return proxy
 
     client = session or requests
-    print("🧭 Webshare: 开始为当前任务替换美国静态 IP")
+    normalized_country = str(country_code or "US").strip().upper() or "US"
+    print(f"🧭 Webshare: 开始为当前任务替换 {normalized_country} 静态 IP")
     items = fetch_webshare_proxy_list(session=client, payment_cfg=payment_cfg)
     current_item = items[0]
     current_proxy = _webshare_item_to_runtime_proxy(
@@ -353,11 +355,14 @@ def replace_webshare_static_proxy(
     )
     if not current_proxy:
         raise RuntimeError("Webshare 代理列表缺少可用 host/port")
-    print(f"🧭 Webshare: 当前代理 {describe_proxy(current_proxy)}，准备替换为美国 IP")
+    print(
+        f"🧭 Webshare: 当前代理 {describe_proxy(current_proxy)}，"
+        f"准备替换为 {normalized_country} IP"
+    )
 
     body: dict[str, Any] = {
         "to_replace": {"type": "ip_address", "ip_addresses": [current_proxy["host"]]},
-        "replace_with": [{"type": "country", "country_code": "US", "count": 1}],
+        "replace_with": [{"type": "country", "country_code": normalized_country, "count": 1}],
         "dry_run": False,
     }
     params = {}
@@ -408,7 +413,7 @@ def replace_webshare_static_proxy(
     )
     if not refreshed_proxy:
         raise RuntimeError("Webshare 替换后代理列表缺少可用 host/port")
-    print(f"✅ Webshare 已替换为美国静态代理: {describe_proxy(refreshed_proxy)}")
+    print(f"✅ Webshare 已替换为 {normalized_country} 静态代理: {describe_proxy(refreshed_proxy)}")
     return refreshed_proxy
 
 

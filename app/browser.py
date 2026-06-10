@@ -48,6 +48,8 @@ from .utils import (
 
 CHATGPT_HOME_URL = "https://chatgpt.com/"
 CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login"
+PASSKEY_ENROLL_URL_PREFIX = "https://auth.openai.com/create-account-enroll-passkey"
+PASSKEY_ENROLL_SKIP_SELECTOR = '[data-dd-action-name="skip create account enroll passkey"]'
 
 _PASSWORD_INPUT_SELECTORS = [
     (By.CSS_SELECTOR, 'input[autocomplete="new-password"]'),
@@ -129,6 +131,119 @@ def _find_visible_elements(driver, selectors):
         if visible_elements:
             return visible_elements
     return visible_elements
+
+
+def _simulate_click(driver, element) -> None:
+    """Click like the Firefox extension content script: scroll, focus, mouse events."""
+    try:
+        driver.execute_script(
+            """
+            const el = arguments[0];
+            if (!el) return;
+            el.scrollIntoView({block: 'center', inline: 'center'});
+            try { el.focus(); } catch (_) {}
+            const rect = el.getBoundingClientRect();
+            const clientX = rect.left + rect.width / 2;
+            const clientY = rect.top + rect.height / 2;
+            for (const type of ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click']) {
+              el.dispatchEvent(new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX,
+                clientY,
+                button: 0,
+                buttons: type === 'mousedown' ? 1 : 0
+              }));
+            }
+            """,
+            element,
+        )
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", element)
+        except Exception:
+            try:
+                element.click()
+            except Exception:
+                try:
+                    ActionChains(driver).move_to_element(element).click().perform()
+                except Exception:
+                    return
+
+
+def _set_native_value(driver, element, value, *, blur: bool = True) -> bool:
+    """Set input/select value through DOM prototype setters and fire React-friendly events."""
+    try:
+        driver.execute_script(
+            """
+            const el = arguments[0];
+            const value = String(arguments[1] ?? '');
+            if (!el) return false;
+            el.focus();
+            const proto =
+              el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype :
+              el instanceof HTMLSelectElement ? HTMLSelectElement.prototype :
+              HTMLInputElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (el instanceof HTMLSelectElement) {
+              const option = Array.from(el.options).find((item) =>
+                String(item.value || '').toLowerCase() === value.toLowerCase() ||
+                String(item.textContent || '').trim().toLowerCase() === value.toLowerCase()
+              );
+              el.value = option ? option.value : value;
+            } else if (descriptor && descriptor.set) {
+              descriptor.set.call(el, value);
+            } else {
+              el.value = value;
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            if (arguments[2]) el.blur();
+            return true;
+            """,
+            element,
+            value,
+            blur,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _click_button_by_text(driver, pattern: str, timeout: int = 15) -> bool:
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        try:
+            clicked = driver.execute_script(
+                """
+                const regex = new RegExp(arguments[0], 'i');
+                function visibleEnabled(el) {
+                  const style = window.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  return style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    !el.disabled &&
+                    rect.width > 0 &&
+                    rect.height > 0;
+                }
+                const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+                const button = buttons.find((candidate) =>
+                  visibleEnabled(candidate) && regex.test(candidate.textContent || candidate.value || '')
+                );
+                if (!button) return false;
+                button.scrollIntoView({block: 'center', inline: 'center'});
+                button.click();
+                return true;
+                """,
+                pattern,
+            )
+            if clicked:
+                return True
+        except Exception:
+            pass
+        time.sleep(BROWSER_POLL_INTERVAL)
+    return False
 
 
 def _is_email_verification_page(driver, require_visible_input: bool = False) -> bool:
@@ -397,30 +512,62 @@ def _wait_for_password_submit_result(
     return "unknown"
 
 
-def _click_signup_or_login_entry(driver) -> bool:
-    print("🔍 检查是否需要点击 注册/登录 按钮...")
+def _click_signup_or_login_entry(driver, monitor_callback=None) -> bool:
+    print("🔍 检查是否需要点击注册入口按钮...")
     try:
-        signup_btns = driver.find_elements(
-            By.XPATH,
-            '//button[contains(., "Sign up")] | //button[contains(., "注册")] | //div[contains(text(), "Sign up")] | //div[contains(text(), "注册")]',
-        )
-        login_btns = driver.find_elements(
-            By.XPATH,
-            '//button[contains(., "Log in")] | //button[contains(., "登录")] | //div[contains(text(), "Log in")] | //div[contains(text(), "登录")]',
-        )
+        entry_xpaths = [
+            '//button[contains(., "Sign up")] | //a[contains(., "Sign up")] | //button[contains(., "注册")] | //a[contains(., "注册")]',
+            '//button[contains(., "Create account")] | //a[contains(., "Create account")] | //button[contains(., "Log in")] | //a[contains(., "Log in")]',
+        ]
+        entry_candidates = []
+        for xpath in entry_xpaths:
+            try:
+                entry_candidates.extend(driver.find_elements(By.XPATH, xpath))
+            except Exception:
+                continue
+        for element in entry_candidates:
+            try:
+                if element.is_displayed() and element.is_enabled():
+                    _simulate_click(driver, element)
+                    print("  ✅ 已点击注册入口按钮")
+                    _sleep_with_heartbeat(
+                        driver,
+                        BROWSER_TRANSITION_WAIT,
+                        monitor_callback=monitor_callback,
+                        step_name="signup_entry_click_wait",
+                    )
+                    return True
+            except Exception:
+                continue
 
-        target_btn = None
-        if signup_btns:
-            target_btn = signup_btns[0]
-            print("  -> 找到 注册(Sign up) 按钮")
-        elif login_btns:
-            target_btn = login_btns[0]
-            print("  -> 找到 登录(Log in) 按钮")
+        selectors = [
+            'button[data-testid="signup-button"]',
+            'a[data-testid="signup-button"]',
+        ]
+        for selector in selectors:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        _simulate_click(driver, element)
+                        print("  ✅ 已点击注册入口按钮")
+                        _sleep_with_heartbeat(
+                            driver,
+                            BROWSER_TRANSITION_WAIT,
+                            monitor_callback=monitor_callback,
+                            step_name="signup_entry_click_wait",
+                        )
+                        return True
+                except Exception:
+                    continue
 
-        if target_btn and target_btn.is_displayed():
-            driver.execute_script("arguments[0].click();", target_btn)
-            print("  ✅ 已点击入口按钮")
-            time.sleep(BROWSER_TRANSITION_WAIT)
+        if _click_button_by_text(driver, "注册|Sign up|Create account", timeout=5):
+            print("  ✅ 已按文本点击注册入口按钮")
+            _sleep_with_heartbeat(
+                driver,
+                BROWSER_TRANSITION_WAIT,
+                monitor_callback=monitor_callback,
+                step_name="signup_entry_click_wait",
+            )
             return True
     except Exception as e:
         print(f"  ⚠️ 检查入口按钮时出错 (非致命): {e}")
@@ -486,7 +633,7 @@ def _wait_for_signup_email_input(
                 monitor_callback=monitor_callback,
                 step_name="signup_email_input_refresh_wait",
             )
-            _click_signup_or_login_entry(driver)
+            _click_signup_or_login_entry(driver, monitor_callback=monitor_callback)
         else:
             _sleep_with_heartbeat(
                 driver,
@@ -1581,7 +1728,7 @@ def click_button_with_retry(driver, selector, max_retries=None, monitor_callback
             button = WebDriverWait(driver, 30).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
             )
-            driver.execute_script("arguments[0].click();", button)
+            _simulate_click(driver, button)
             return True
         except Exception:
             print(f"  第 {attempt + 1} 次点击失败，正在重试...")
@@ -1624,9 +1771,16 @@ def _fill_input_with_verification(
         except Exception:
             pass
 
-        time.sleep(2)
-        type_slowly(element, expected)
-        time.sleep(2)
+        time.sleep(0.5)
+        native_set = False
+        driver = getattr(element, "_parent", None) or getattr(element, "parent", None)
+        if driver is not None:
+            native_set = _set_native_value(driver, element, expected)
+
+        if not native_set:
+            type_slowly(element, expected)
+
+        time.sleep(0.5)
 
         actual_value = str(element.get_attribute("value") or "")
         if actual_value == expected:
@@ -1674,6 +1828,12 @@ def _submit_email_until_next_step(
         if not _fill_input_with_verification(email_input, email, "邮箱"):
             print("❌ 邮箱输入校验失败")
             return "unknown"
+
+        try:
+            if _fill_merged_profile_form_if_present(driver, timeout=1):
+                print("🧩 邮箱页同时检测到资料输入框，已按扩展流程一起填写")
+        except Exception as exc:
+            print(f"⚠️ 邮箱页资料预填跳过: {exc}")
 
         _sleep_with_heartbeat(
             driver,
@@ -1818,6 +1978,14 @@ _PROFILE_DAY_SELECTORS = [
     (By.XPATH, '//label[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "day")]/following::input[1]'),
 ]
 
+_PROFILE_BIRTHDAY_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="birthday"]'),
+    (By.CSS_SELECTOR, 'input[name="dateOfBirth"]'),
+    (By.CSS_SELECTOR, 'input[id="dateOfBirth"]'),
+    (By.CSS_SELECTOR, 'input[autocomplete="bday"]'),
+    (By.CSS_SELECTOR, 'input[type="date"]'),
+]
+
 
 def _first_visible_element(driver, selectors):
     for by, selector in selectors:
@@ -1840,6 +2008,10 @@ def _detect_profile_birth_fields_once(driver):
     age_input = _first_visible_element(driver, _PROFILE_AGE_SELECTORS)
     if age_input:
         return {"mode": "age", "age_input": age_input}
+
+    birthday_input = _first_visible_element(driver, _PROFILE_BIRTHDAY_SELECTORS)
+    if birthday_input:
+        return {"mode": "birthday_single", "birthday_input": birthday_input}
 
     year_input = _first_visible_element(driver, _PROFILE_YEAR_SELECTORS)
     month_input = _first_visible_element(driver, _PROFILE_MONTH_SELECTORS)
@@ -1924,6 +2096,13 @@ def _fill_profile_form_fields(driver, form_fields=None):
         print("🎯 检测到年龄输入框，改为直接输入年龄...", flush=True)
         _fill_input_value(driver, profile_fields["age_input"], age, delay=0.1)
         print(f"✅ 已输入年龄: {age}", flush=True)
+    elif profile_fields["mode"] == "birthday_single":
+        birthday_value = f"{birthday_year}-{birthday_month}-{birthday_day}"
+        print("🎯 检测到单个生日输入框，按 YYYY-MM-DD 填写...", flush=True)
+        _fill_input_value(
+            driver, profile_fields["birthday_input"], birthday_value, delay=0.1
+        )
+        print(f"✅ 已输入生日: {birthday_value}", flush=True)
     else:
         print("🎯 检测到生日输入框，按年月日填写...", flush=True)
         _fill_input_value(
@@ -2087,7 +2266,84 @@ def _fill_input_value(driver, element, value: str, delay=0.1):
     except Exception:
         pass
 
-    type_slowly(element, value, delay=delay)
+    if not _set_native_value(driver, element, value):
+        type_slowly(element, value, delay=delay)
+
+
+def _click_about_you_try_again_if_present(driver, timeout: int = 15) -> bool:
+    current_url = _current_url_lower(driver)
+    if "auth.openai.com/about-you" not in current_url:
+        return False
+
+    end_time = time.time() + timeout
+    selectors = [
+        (By.CSS_SELECTOR, '[data-dd-action-name="Try again"]'),
+        (
+            By.XPATH,
+            '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "try again")]',
+        ),
+    ]
+    while time.time() < end_time:
+        for by, selector in selectors:
+            try:
+                elements = driver.find_elements(by, selector)
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        _simulate_click(driver, element)
+                        print("🔁 about-you 页面检测到 Try again，已点击")
+                        return True
+                except Exception:
+                    continue
+        time.sleep(BROWSER_POLL_INTERVAL)
+
+    return False
+
+
+def _click_passkey_skip_if_present(driver, timeout: int = 15) -> bool:
+    current_url = str(_current_url_lower(driver))
+    if not current_url.startswith(PASSKEY_ENROLL_URL_PREFIX):
+        return False
+
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, PASSKEY_ENROLL_SKIP_SELECTOR)
+        except Exception:
+            elements = []
+        for element in elements:
+            try:
+                if element.is_displayed() and element.is_enabled():
+                    _simulate_click(driver, element)
+                    print("🔐 检测到 passkey 注册页面，已点击跳过")
+                    time.sleep(BROWSER_ACTION_WAIT)
+                    return True
+            except Exception:
+                continue
+        time.sleep(BROWSER_POLL_INTERVAL)
+
+    return False
+
+
+def wait_for_chatgpt_after_registration(driver, timeout: int = 68, monitor_callback=None) -> bool:
+    """Mirror extension waitForChatGptAfterRegistration, including passkey skip."""
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        current_url = _current_url_lower(driver)
+        if current_url.startswith("https://chatgpt.com"):
+            return True
+        if current_url.startswith(PASSKEY_ENROLL_URL_PREFIX):
+            _click_passkey_skip_if_present(driver)
+        _sleep_with_heartbeat(
+            driver,
+            1.5,
+            monitor_callback=monitor_callback,
+            step_name="chatgpt_after_registration_wait",
+            interval=1.5,
+        )
+    return False
 
 
 def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
@@ -2144,7 +2400,7 @@ def fill_signup_form(driver, email: str, password: str, monitor_callback=None):
             except Exception:
                 pass
 
-        _click_signup_or_login_entry(driver)
+        _click_signup_or_login_entry(driver, monitor_callback=monitor_callback)
 
         next_step = _submit_email_until_next_step(
             driver,
@@ -2641,22 +2897,38 @@ def fill_profile_info(driver):
         bool: 是否成功
     """
     try:
-        form_fields = _wait_for_profile_form_or_logged_in(driver, timeout=60)
-        if form_fields is None:
-            print("✅ 未检测到资料页，当前已进入登录态/完成页，跳过资料填写", flush=True)
-            return True
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            form_fields = _wait_for_profile_form_or_logged_in(driver, timeout=60)
+            if form_fields is None:
+                print("✅ 未检测到资料页，当前已进入登录态/完成页，跳过资料填写", flush=True)
+                return True
 
-        _fill_profile_form_fields(driver, form_fields=form_fields)
+            _fill_profile_form_fields(driver, form_fields=form_fields)
 
-        print("🔘 点击最终提交按钮...", flush=True)
-        wait = WebDriverWait(driver, MAX_WAIT_TIME)
-        continue_btn = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))
-        )
-        continue_btn.click()
-        print("✅ 已提交注册信息", flush=True)
+            print("🔘 点击最终提交按钮...", flush=True)
+            wait = WebDriverWait(driver, MAX_WAIT_TIME)
+            continue_btn = wait.until(
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, 'button[type="submit"], button[data-testid="submit"]')
+                )
+            )
+            _simulate_click(driver, continue_btn)
+            print(
+                "✅ 已提交注册信息"
+                if attempt == 1
+                else f"✅ 已重新提交注册信息（第 {attempt}/{max_attempts} 次）",
+                flush=True,
+            )
+            time.sleep(BROWSER_POST_SUBMIT_WAIT)
 
-        return True
+            if not _click_about_you_try_again_if_present(driver):
+                return True
+
+            time.sleep(1.5)
+
+        print("❌ about-you 页面 Try again 重试次数已达上限", flush=True)
+        return False
 
     except Exception as e:
         print(f"❌ 填写资料失败: {e}", flush=True)
@@ -2729,6 +3001,11 @@ def verify_logged_in(driver, timeout=90):
     while time.time() < end_time:
         try:
             current_url = _current_url_lower(driver)
+
+            if current_url.startswith(PASSKEY_ENROLL_URL_PREFIX):
+                _click_passkey_skip_if_present(driver)
+                time.sleep(BROWSER_VERIFY_POLL_INTERVAL)
+                continue
 
             # 若仍处于认证路径，继续等待跳转
             if any(key in current_url for key in ["/auth", "login", "signup"]):

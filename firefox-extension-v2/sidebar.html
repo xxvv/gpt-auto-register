@@ -196,6 +196,10 @@
       <input id="paymentFlowEnabledCheckbox" type="checkbox" checked>
       <span>执行支付流程</span>
     </label>
+    <label class="checkbox-option" for="stopAfterThirdPartySubmitCheckbox">
+      <input id="stopAfterThirdPartySubmitCheckbox" type="checkbox">
+      <span>第三方接口提交成功后结束流程</span>
+    </label>
     <label class="checkbox-option" for="debugModeCheckbox">
       <input id="debugModeCheckbox" type="checkbox">
       <span>调试模式：保留窗口</span>
@@ -243,43 +247,6 @@
       value="30"
       placeholder="30"
     >
-  </div>
-
-  <div class="panel">
-    <label for="cardInput">卡片信息</label>
-    <textarea id="cardInput" rows="6" spellcheck="false" placeholder="card----year/month----cvv----url----name----address,city state postcode,US"></textarea>
-    <label class="checkbox-option" for="randomCardCheckbox">
-      <input id="randomCardCheckbox" type="checkbox">
-      <span>随机生成卡片</span>
-    </label>
-    <label class="checkbox-option" for="useCurrentIpLocationCheckbox">
-      <input id="useCurrentIpLocationCheckbox" type="checkbox">
-      <span>使用当前 IP 定位填充地址</span>
-    </label>
-    <div class="actions">
-      <button id="generateRandomCardButton" class="secondary" type="button">生成随机卡号</button>
-      <button id="toggleFillSettingsButton" class="secondary" type="button" aria-expanded="false">设置</button>
-      <button id="resetFillSettingsButton" class="secondary" type="button">恢复默认</button>
-    </div>
-    <section id="fillSettingsPanel" class="settings" hidden>
-      <p class="hint">默认按页面字段 ID 填充，手机号优先取上面的手机区域，并自动去掉 +1。</p>
-      <div class="settings-grid">
-        <label class="settings-field"><span>手机号</span><input id="phoneSelectorInput" type="text" spellcheck="false"><input id="phoneSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>卡号</span><input id="cardNumberSelectorInput" type="text" spellcheck="false"><input id="cardNumberSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>过期时间</span><input id="cardExpirySelectorInput" type="text" spellcheck="false"><input id="cardExpirySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>CVV</span><input id="cardCvvSelectorInput" type="text" spellcheck="false"><input id="cardCvvSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>Billing Name</span><input id="billingNameSelectorInput" type="text" spellcheck="false"><input id="billingNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>First Name</span><input id="firstNameSelectorInput" type="text" spellcheck="false"><input id="firstNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>Last Name</span><input id="lastNameSelectorInput" type="text" spellcheck="false"><input id="lastNameSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>Address</span><input id="billingLine1SelectorInput" type="text" spellcheck="false"><input id="billingLine1SelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>City</span><input id="billingCitySelectorInput" type="text" spellcheck="false"><input id="billingCitySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>State</span><input id="billingStateSelectorInput" type="text" spellcheck="false"><input id="billingStateSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>Postcode</span><input id="billingPostalCodeSelectorInput" type="text" spellcheck="false"><input id="billingPostalCodeSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>Country</span><input id="countrySelectorInput" type="text" spellcheck="false"><input id="countrySelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>密码字段</span><input id="passwordSelectorInput" type="text" spellcheck="false"><input id="passwordSelectorAltInput" type="text" spellcheck="false" placeholder="备用选择器"></label>
-        <label class="settings-field"><span>默认密码</span><input id="passwordValueInput" type="text" spellcheck="false"></label>
-      </div>
-    </section>
   </div>
 
   <div class="panel">
