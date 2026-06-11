@@ -40,6 +40,7 @@
   });
   const CODE_API = "https://getemail.nnai.uk/api/code";
   const HERO_SMS_API = "https://hero-sms.com/stubs/handler_api.php";
+  const SMSBOWER_SMS_API = "https://smsbower.page/stubs/handler_api.php";
   const THIRD_PARTY_ACCOUNTS_API = "https://gpt2.nnai.uk/api/third-party/accounts";
   const THIRD_PARTY_ACCOUNTS_DELETE_API = `${THIRD_PARTY_ACCOUNTS_API}/delete`;
   const THIRD_PARTY_ACCOUNTS_UPDATE_API = `${THIRD_PARTY_ACCOUNTS_API}/update`;
@@ -72,6 +73,25 @@
   const DEFAULT_REGISTRATION_METHOD = "email";
   const PHONE_REGISTRATION_PASSWORD = "Aa123456789..";
   const HERO_DEFAULT_SERVICE = "dr";
+  const DEFAULT_SMS_PROVIDER = "hero";
+  const SMS_PROVIDER_CONFIG = Object.freeze({
+    hero: Object.freeze({
+      key: "hero",
+      label: "Hero SMS",
+      apiUrl: HERO_SMS_API,
+      defaultService: HERO_DEFAULT_SERVICE,
+      numberAction: "getNumberV2",
+      statusAction: "getStatusV2"
+    }),
+    smsbower: Object.freeze({
+      key: "smsbower",
+      label: "SMSBower",
+      apiUrl: SMSBOWER_SMS_API,
+      defaultService: HERO_DEFAULT_SERVICE,
+      numberAction: "getNumberV2",
+      statusAction: "getStatus"
+    })
+  });
   const HERO_SMS_POLL_TIMEOUT_MS = 60000;
   const DEFAULT_FLOW_COUNTRY = "US";
   const DEFAULT_PAY_URL_MODE = "long";
@@ -115,6 +135,8 @@
     randomCardEnabled: true,
     useCurrentIpLocation: false,
     registrationMethod: DEFAULT_REGISTRATION_METHOD,
+    smsProvider: DEFAULT_SMS_PROVIDER,
+    smsProviderApiKeys: {},
     heroApiKey: "",
     heroService: HERO_DEFAULT_SERVICE,
     heroCountry: "",
@@ -170,6 +192,8 @@
   let usZip3StateRangesPromise = null;
   let heroCountryOptions = [];
   let heroCountriesPromise = null;
+  const smsCountryOptionsByProvider = {};
+  const smsCountriesPromiseByProvider = {};
   let automationThreadCounter = 0;
 
   function getWebshareApiKeys() {
@@ -3576,6 +3600,7 @@
     let activationShouldCancel = true;
     const phoneNumber = heroNumber.phoneNumber;
     const activationId = heroNumber.activationId;
+    const smsProvider = state.smsProvider;
     const randomName = generateRandomName();
     const randomAge = generateRandomAge();
     const randomBirthday = generateRandomBirthday();
@@ -3660,6 +3685,7 @@
         account: phoneNumber,
         phone: phoneNumber,
         activationId,
+        smsProvider,
         registrationMethod: "phone"
       };
     } catch (error) {
@@ -3755,8 +3781,16 @@
       }, {
         loadTimeoutMs: 30000
       });
+      await delay();
+      logMessage("尝试再次点击btn");
+      await executeContentFunctionRaw(tabId, "__gptAutoRegisterClick", {
+        selector: ['button[type="submit"]', 'button[data-testid="submit"]'],
+        timeoutMs: 5000
+      }, {
+        loadTimeoutMs: 5000
+      }, "__gptAutoRegisterClick");
+
       logMessage(attempt === 1 ? "姓名和年龄已提交，等待进入 chatgpt.com" : `姓名和年龄已重新提交，第 ${attempt} 次，等待进入 chatgpt.com`);
-      await delay(3000);
 
       const clickedTryAgain = await clickAboutYouTryAgainIfPresent(tabId);
       if (!clickedTryAgain) {
@@ -5427,8 +5461,17 @@
     }
     const settings = getHeroSettings();
     if (!settings.apiKey) {
-      throw new Error("手机号注册需要填写 Hero SMS API Key");
+      throw new Error(`手机号注册需要填写 ${settings.providerLabel} API Key`);
     }
+  }
+
+  function normalizeSmsProvider(value) {
+    const provider = String(value || "").trim().toLowerCase();
+    return SMS_PROVIDER_CONFIG[provider] ? provider : DEFAULT_SMS_PROVIDER;
+  }
+
+  function getSmsProviderConfig(provider = state.smsProvider) {
+    return SMS_PROVIDER_CONFIG[normalizeSmsProvider(provider)] || SMS_PROVIDER_CONFIG[DEFAULT_SMS_PROVIDER];
   }
 
   function parseHeroCountries(payload) {
@@ -5462,6 +5505,7 @@
     if (!select) {
       return;
     }
+    heroCountryOptions = smsCountryOptionsByProvider[normalizeSmsProvider(state.smsProvider)] || [];
     const selectedCountry = String(state.heroCountry || select.value || "").trim();
     const query = String((document.getElementById("heroCountrySearchInput") || {}).value || state.heroCountrySearch || "")
       .trim()
@@ -5487,11 +5531,24 @@
   }
 
   async function loadHeroCountries() {
-    if (heroCountriesPromise) {
-      return heroCountriesPromise;
+    const settings = getHeroSettings();
+    const provider = settings.provider;
+    const cacheKey = `${provider}:${settings.apiKey || ""}`;
+    if (!settings.apiKey && provider === "smsbower") {
+      smsCountryOptionsByProvider[provider] = [];
+      renderHeroCountryOptions();
+      logMessage(`${settings.providerLabel} 国家列表需要先填写 API Key`);
+      return [];
     }
-    heroCountriesPromise = (async () => {
-      const url = new URL(HERO_SMS_API);
+    if (smsCountriesPromiseByProvider[cacheKey]) {
+      heroCountriesPromise = smsCountriesPromiseByProvider[cacheKey];
+      return smsCountriesPromiseByProvider[cacheKey];
+    }
+    smsCountriesPromiseByProvider[cacheKey] = (async () => {
+      const url = new URL(settings.apiUrl);
+      if (settings.apiKey) {
+        url.searchParams.set("api_key", settings.apiKey);
+      }
       url.searchParams.set("action", "getCountries");
       const response = await fetch(url.toString(), {
         method: "GET",
@@ -5499,48 +5556,69 @@
       });
       const text = await response.text();
       if (!response.ok) {
-        throw new Error(`Hero SMS 国家列表 HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
+        throw new Error(`${settings.providerLabel} 国家列表 HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
       }
       let payload = null;
       try {
         payload = text ? JSON.parse(text) : null;
       } catch (_) {
-        throw new Error("Hero SMS 国家列表响应不是有效 JSON");
+        throw new Error(`${settings.providerLabel} 国家列表响应不是有效 JSON`);
       }
       heroCountryOptions = parseHeroCountries(payload);
+      smsCountryOptionsByProvider[provider] = heroCountryOptions;
       renderHeroCountryOptions();
-      logMessage(`Hero SMS: 已加载 ${heroCountryOptions.length} 个国家`);
+      logMessage(`${settings.providerLabel}: 已加载 ${heroCountryOptions.length} 个国家`);
       return heroCountryOptions;
     })().catch((error) => {
-      heroCountriesPromise = null;
+      smsCountriesPromiseByProvider[cacheKey] = null;
       renderHeroCountryOptions();
-      logMessage("Hero SMS 国家列表加载失败: " + formatError(error));
+      logMessage(`${settings.providerLabel} 国家列表加载失败: ` + formatError(error));
       return [];
     });
-    return heroCountriesPromise;
+    heroCountriesPromise = smsCountriesPromiseByProvider[cacheKey];
+    return smsCountriesPromiseByProvider[cacheKey];
   }
 
   function getHeroSettings() {
+    const providerSelect = document.getElementById("smsProviderSelect");
     const apiKeyInput = document.getElementById("heroApiKeyInput");
     const countrySelect = document.getElementById("heroCountrySelect");
     const maxPriceInput = document.getElementById("heroMaxPriceInput");
-    const apiKey = String(apiKeyInput ? apiKeyInput.value : state.heroApiKey || "").trim();
-    const service = HERO_DEFAULT_SERVICE;
+    const provider = normalizeSmsProvider(providerSelect ? providerSelect.value : state.smsProvider);
+    const providerConfig = getSmsProviderConfig(provider);
+    const savedProviderKeys = state.smsProviderApiKeys && typeof state.smsProviderApiKeys === "object" ? state.smsProviderApiKeys : {};
+    const apiKey = String(apiKeyInput ? apiKeyInput.value : savedProviderKeys[provider] || state.heroApiKey || "").trim();
+    const service = providerConfig.defaultService || HERO_DEFAULT_SERVICE;
     const country = String(countrySelect ? countrySelect.value : state.heroCountry || "").trim();
     const maxPrice = String(maxPriceInput ? maxPriceInput.value : state.heroMaxPrice || "").trim();
+    state.smsProvider = provider;
+    if (providerSelect) {
+      providerSelect.value = provider;
+    }
     state.heroApiKey = apiKey;
+    state.smsProviderApiKeys = { ...savedProviderKeys, [provider]: apiKey };
     state.heroService = service;
     state.heroCountry = country;
     state.heroMaxPrice = maxPrice;
-    return { apiKey, service, country, maxPrice };
+    return {
+      provider,
+      providerLabel: providerConfig.label,
+      apiUrl: providerConfig.apiUrl,
+      numberAction: providerConfig.numberAction,
+      statusAction: providerConfig.statusAction,
+      apiKey,
+      service,
+      country,
+      maxPrice
+    };
   }
 
   function buildHeroSmsUrl(action, params = {}) {
     const settings = getHeroSettings();
     if (!settings.apiKey) {
-      throw new Error("Hero SMS API Key 为空");
+      throw new Error(`${settings.providerLabel} API Key 为空`);
     }
-    const url = new URL(HERO_SMS_API);
+    const url = new URL(settings.apiUrl);
     url.searchParams.set("action", action);
     url.searchParams.set("api_key", settings.apiKey);
     Object.entries(params).forEach(([key, value]) => {
@@ -5553,6 +5631,7 @@
   }
 
   async function fetchHeroSms(action, params = {}) {
+    const settings = getHeroSettings();
     const response = await fetch(buildHeroSmsUrl(action, params), {
       method: "GET",
       cache: "no-store"
@@ -5563,9 +5642,9 @@
       json = text ? JSON.parse(text) : null;
     } catch (_) {}
     if (!response.ok) {
-      throw new Error(`Hero SMS ${action} HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
+      throw new Error(`${settings.providerLabel} ${action} HTTP ${response.status}: ${text.slice(0, 160) || response.statusText}`);
     }
-    return { text: String(text || "").trim(), json };
+    return { text: String(text || "").trim(), json, providerLabel: settings.providerLabel };
   }
 
   function heroValue(payload, keys) {
@@ -5591,7 +5670,7 @@
       }
       const error = heroValue(data, ["error", "message", "msg"]);
       if (error) {
-        throw new Error(`Hero SMS 获取手机号失败: ${error}`);
+        throw new Error(`${result.providerLabel || "接码平台"} 获取手机号失败: ${error}`);
       }
     }
 
@@ -5603,23 +5682,23 @@
         phoneNumber: accessMatch[2].trim().replace(/[^\d+]/g, "")
       };
     }
-    throw new Error(`Hero SMS 获取手机号失败: ${text || "空响应"}`);
+    throw new Error(`${result.providerLabel || "接码平台"} 获取手机号失败: ${text || "空响应"}`);
   }
 
   async function getHeroNumber() {
     const settings = getHeroSettings();
     if (!settings.apiKey) {
-      throw new Error("手机号注册需要填写 Hero SMS API Key");
+      throw new Error(`手机号注册需要填写 ${settings.providerLabel} API Key`);
     }
-    logMessage(`Hero SMS: 获取手机号，service=${settings.service}${settings.country ? `, country=${settings.country}` : ""}${settings.maxPrice ? `, maxPrice=${settings.maxPrice}` : ""}`);
+    logMessage(`${settings.providerLabel}: 获取手机号，service=${settings.service}${settings.country ? `, country=${settings.country}` : ""}${settings.maxPrice ? `, maxPrice=${settings.maxPrice}` : ""}`);
     const params = { service: settings.service };
     if (settings.country) params.country = settings.country;
     if (settings.maxPrice) params.maxPrice = settings.maxPrice;
-    const number = parseHeroNumberResult(await fetchHeroSms("getNumberV2", params));
+    const number = parseHeroNumberResult(await fetchHeroSms(settings.numberAction, params));
     if (!number.phoneNumber || !number.activationId) {
-      throw new Error("Hero SMS 获取手机号响应缺少手机号或激活 ID");
+      throw new Error(`${settings.providerLabel} 获取手机号响应缺少手机号或激活 ID`);
     }
-    logMessage(`Hero SMS: 已获取手机号 ${number.phoneNumber}，激活 ID ${number.activationId}`);
+    logMessage(`${settings.providerLabel}: 已获取手机号 ${number.phoneNumber}，激活 ID ${number.activationId}`);
     return number;
   }
 
@@ -5666,34 +5745,36 @@
     if (!activationId) {
       return false;
     }
+    const settings = getHeroSettings();
     try {
       await fetchHeroSms("setStatus", { id: activationId, status });
-      logMessage(`Hero SMS: 已设置激活 ${activationId} 状态为 ${status}`);
+      logMessage(`${settings.providerLabel}: 已设置激活 ${activationId} 状态为 ${status}`);
       return true;
     } catch (error) {
-      logMessage(`Hero SMS: 设置激活状态失败 ${activationId}/${status}: ${formatError(error)}`);
+      logMessage(`${settings.providerLabel}: 设置激活状态失败 ${activationId}/${status}: ${formatError(error)}`);
       return false;
     }
   }
 
   async function pollHeroSmsCode(activationId) {
+    const settings = getHeroSettings();
     const deadline = Date.now() + HERO_SMS_POLL_TIMEOUT_MS;
     let attempt = 0;
     let lastStatus = "";
     while (Date.now() <= deadline) {
       attempt += 1;
-      const result = await fetchHeroSms("getStatusV2", { id: activationId });
+      const result = await fetchHeroSms(settings.statusAction, { id: activationId });
       const code = extractHeroSmsCode(result);
       if (code) {
-        logMessage(`Hero SMS: 已获取短信验证码 ${code}`);
+        logMessage(`${settings.providerLabel}: 已获取短信验证码 ${code}`);
         return code;
       }
       lastStatus = result.text || (result.json ? JSON.stringify(result.json).slice(0, 120) : "");
-      logMessage(`Hero SMS: 第 ${attempt} 次未取到验证码，继续等待`);
+      logMessage(`${settings.providerLabel}: 第 ${attempt} 次未取到验证码，继续等待${lastStatus ? ` (${lastStatus})` : ""}`);
       await delay(POLL_DELAY_MS);
     }
     await setHeroSmsStatus(activationId, 8);
-    throw new Error(`Hero SMS 2 分钟未获取到验证码，已取消激活${lastStatus ? `，最后状态: ${lastStatus}` : ""}`);
+    throw new Error(`${settings.providerLabel} 2 分钟未获取到验证码，已取消激活${lastStatus ? `，最后状态: ${lastStatus}` : ""}`);
   }
 
   function getPayUrlEntries(rawInput) {
@@ -6362,7 +6443,7 @@
     }
     logMessage("点击了按钮");
     await delay();
-    
+
     const loginEmailSelector = '#login_email, #onboardingFlowEmail';
     logMessage("等待插件邮箱输入框");
     await executePageFunction(tabId, "__gptAutoRegisterClick", {
@@ -6389,7 +6470,7 @@
     } else {
       logMessage("未找到 PayPal login_email，跳过邮箱输入");
     }
-  
+
   }
 
   async function runPayPalSignupPage(tabId, prepared) {
@@ -6544,7 +6625,7 @@
 
   async function waitForPayPalHermesPage(tabId, prepared, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
-    
+
     // const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
@@ -6568,7 +6649,7 @@
           timeoutMs: 10000
         }, "未找到 PayPal money-flow 关闭按钮 #modalClose");
         logMessage("已点击 PayPal money-flow 关闭按钮，继续等待 Hermes 页面");
-        
+
         await delay(5000);
         continue;
       }
@@ -7944,7 +8025,14 @@
       document.getElementById("teamProviderSelect").value = state.teamProviderDomain;
       state.registrationMethod = normalizeRegistrationMethod(saved.registrationMethod);
       document.getElementById("registrationMethodSelect").value = state.registrationMethod;
+      state.smsProvider = normalizeSmsProvider(saved.smsProvider);
+      document.getElementById("smsProviderSelect").value = state.smsProvider;
+      state.smsProviderApiKeys = saved.smsProviderApiKeys && typeof saved.smsProviderApiKeys === "object" ? saved.smsProviderApiKeys : {};
       state.heroApiKey = typeof saved.heroApiKey === "string" ? saved.heroApiKey : "";
+      if (state.heroApiKey && !state.smsProviderApiKeys.hero) {
+        state.smsProviderApiKeys = { ...state.smsProviderApiKeys, hero: state.heroApiKey };
+      }
+      state.heroApiKey = String(state.smsProviderApiKeys[state.smsProvider] || state.heroApiKey || "").trim();
       document.getElementById("heroApiKeyInput").value = state.heroApiKey;
       state.heroService = HERO_DEFAULT_SERVICE;
       state.heroCountry = typeof saved.heroCountry === "string" ? saved.heroCountry : "";
@@ -8029,6 +8117,11 @@
       randomCardEnabled: true,
       useCurrentIpLocation: useCurrentIpLocationCheckbox ? useCurrentIpLocationCheckbox.checked : Boolean(state.useCurrentIpLocation),
       registrationMethod: normalizeRegistrationMethod(document.getElementById("registrationMethodSelect").value),
+      smsProvider: normalizeSmsProvider(document.getElementById("smsProviderSelect").value),
+      smsProviderApiKeys: {
+        ...(state.smsProviderApiKeys && typeof state.smsProviderApiKeys === "object" ? state.smsProviderApiKeys : {}),
+        [normalizeSmsProvider(document.getElementById("smsProviderSelect").value)]: document.getElementById("heroApiKeyInput").value.trim()
+      },
       heroApiKey: document.getElementById("heroApiKeyInput").value.trim(),
       heroService: HERO_DEFAULT_SERVICE,
       heroCountry: document.getElementById("heroCountrySelect").value.trim(),
@@ -8131,7 +8224,23 @@
     document.getElementById("registrationMethodSelect").addEventListener("change", () => {
       const method = getRegistrationMethod();
       persistState();
-      logMessage(method === "phone" ? "注册方式已切换为手机号，将使用 Hero SMS 获取手机号" : "注册方式已切换为邮箱");
+      logMessage(method === "phone" ? `Registration method switched to phone, SMS provider: ${getSmsProviderConfig().label}` : "Registration method switched to email");
+    });
+    document.getElementById("smsProviderSelect").addEventListener("change", () => {
+      const previousProvider = state.smsProvider;
+      const previousCountry = state.heroCountry;
+      const apiKeyInput = document.getElementById("heroApiKeyInput");
+      const keys = state.smsProviderApiKeys && typeof state.smsProviderApiKeys === "object" ? state.smsProviderApiKeys : {};
+      state.smsProviderApiKeys = { ...keys, [previousProvider]: apiKeyInput.value.trim() };
+      state.smsProvider = normalizeSmsProvider(document.getElementById("smsProviderSelect").value);
+      state.heroApiKey = String(state.smsProviderApiKeys[state.smsProvider] || "").trim();
+      apiKeyInput.value = state.heroApiKey;
+      state.heroCountry = "";
+      document.getElementById("heroCountrySelect").value = "";
+      renderHeroCountryOptions();
+      loadHeroCountries();
+      persistState();
+      logMessage(`SMS provider switched to ${getSmsProviderConfig().label}${previousCountry ? ", country filter reset" : ""}`);
     });
     document.getElementById("heroCountrySearchInput").addEventListener("input", () => {
       state.heroCountrySearch = document.getElementById("heroCountrySearchInput").value.trim();
@@ -8141,11 +8250,22 @@
       getHeroSettings();
       persistState();
     });
-    ["heroApiKeyInput", "heroMaxPriceInput"].forEach((elementId) => {
-      document.getElementById(elementId).addEventListener("input", () => {
-        getHeroSettings();
-        persistState();
-      });
+    document.getElementById("heroApiKeyInput").addEventListener("input", () => {
+      getHeroSettings();
+      const provider = normalizeSmsProvider(state.smsProvider);
+      smsCountryOptionsByProvider[provider] = [];
+      Object.keys(smsCountriesPromiseByProvider)
+        .filter((key) => key.startsWith(`${provider}:`))
+        .forEach((key) => {
+          smsCountriesPromiseByProvider[key] = null;
+        });
+      renderHeroCountryOptions();
+      loadHeroCountries();
+      persistState();
+    });
+    document.getElementById("heroMaxPriceInput").addEventListener("input", () => {
+      getHeroSettings();
+      persistState();
     });
     document.getElementById("deleteThirdPartyAccountCheckbox").addEventListener("change", () => {
       state.deleteThirdPartyAccountEnabled = document.getElementById("deleteThirdPartyAccountCheckbox").checked;
