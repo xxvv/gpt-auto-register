@@ -3,22 +3,30 @@
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const PROXY_AUTH_KEY = "gptAutoRegisterProxyAuth";
+  const CONTAINER_PROXY_KEY = "gptAutoRegisterContainerProxies";
   const ICLOUD_CLIENT_STATE_KEY = "gptAutoRegisterICloudClientState";
   const ICLOUD_DEFAULT_SETUP_URL = "https://setup.icloud.com/setup/ws/1";
   const ICLOUD_CN_SETUP_URL = "https://setup.icloud.com.cn/setup/ws/1";
   const ICLOUD_HME_NOTE = "Generated through GPT Auto Register v2";
   let proxyAuth = {};
+  let containerProxies = {};
   const automationUserAgentsByWindowId = new Map();
 
-  ext.storage.local.get(PROXY_AUTH_KEY).then((saved) => {
+  ext.storage.local.get([PROXY_AUTH_KEY, CONTAINER_PROXY_KEY]).then((saved) => {
     proxyAuth = saved && saved[PROXY_AUTH_KEY] ? saved[PROXY_AUTH_KEY] : {};
+    containerProxies = saved && saved[CONTAINER_PROXY_KEY] ? saved[CONTAINER_PROXY_KEY] : {};
   });
 
   ext.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || !changes[PROXY_AUTH_KEY]) {
+    if (areaName !== "local") {
       return;
     }
-    proxyAuth = changes[PROXY_AUTH_KEY].newValue || {};
+    if (changes[PROXY_AUTH_KEY]) {
+      proxyAuth = changes[PROXY_AUTH_KEY].newValue || {};
+    }
+    if (changes[CONTAINER_PROXY_KEY]) {
+      containerProxies = changes[CONTAINER_PROXY_KEY].newValue || {};
+    }
   });
 
   ext.runtime.onMessage.addListener((message) => {
@@ -42,10 +50,16 @@
     }
 
     if (message.action === "apply") {
-      return applyFirefoxProxy(message.proxy);
+      return applyFirefoxProxy(message.proxy, message);
     }
     if (message.action === "clear") {
-      return clearFirefoxProxy();
+      return clearFirefoxProxy(message);
+    }
+    if (message.action === "bindContainer") {
+      return bindContainerProxy(message.cookieStoreId, message.proxy);
+    }
+    if (message.action === "clearContainer") {
+      return clearContainerProxy(message.cookieStoreId);
     }
     return Promise.resolve({ ok: false, error: `Unknown proxy action: ${message.action || ""}` });
   });
@@ -55,11 +69,12 @@
       if (!shouldUseProxyAuth(details)) {
         return {};
       }
+      const auth = getProxyAuthForDetails(details);
 
       return {
         authCredentials: {
-          username: String(proxyAuth.username || ""),
-          password: String(proxyAuth.password || "")
+          username: String(auth.username || ""),
+          password: String(auth.password || "")
         }
       };
     },
@@ -86,6 +101,10 @@
     ["blocking", "requestHeaders"]
   );
 
+  if (ext.proxy && ext.proxy.onRequest && typeof ext.proxy.onRequest.addListener === "function") {
+    ext.proxy.onRequest.addListener(handleProxyRequest, { urls: ["<all_urls>"] });
+  }
+
   if (ext.windows && ext.windows.onRemoved) {
     ext.windows.onRemoved.addListener((windowId) => {
       automationUserAgentsByWindowId.delete(Number(windowId));
@@ -93,6 +112,10 @@
   }
 
   function shouldUseProxyAuth(details) {
+    const containerProxy = getContainerProxyForDetails(details);
+    if (containerProxy && containerProxy.username) {
+      return true;
+    }
     if (!details || !details.isProxy || !proxyAuth || !proxyAuth.enabled) {
       return false;
     }
@@ -117,6 +140,47 @@
     }
 
     return true;
+  }
+
+  function getProxyAuthForDetails(details) {
+    const containerProxy = getContainerProxyForDetails(details);
+    if (containerProxy && containerProxy.username) {
+      return containerProxy;
+    }
+    return proxyAuth || {};
+  }
+
+  function getContainerProxyForDetails(details) {
+    const cookieStoreId = String(details && details.cookieStoreId || "").trim();
+    if (!cookieStoreId || !containerProxies || typeof containerProxies !== "object") {
+      return null;
+    }
+    const proxy = containerProxies[cookieStoreId];
+    return isRuntimeProxy(proxy) ? proxy : null;
+  }
+
+  function handleProxyRequest(details) {
+    const proxy = getContainerProxyForDetails(details) || getGlobalProxyForRequest();
+    if (!proxy) {
+      return { type: "direct" };
+    }
+    return buildProxyInfo(proxy);
+  }
+
+  function getGlobalProxyForRequest() {
+    return proxyAuth && proxyAuth.enabled && isRuntimeProxy(proxyAuth) ? proxyAuth : null;
+  }
+
+  function buildProxyInfo(proxy) {
+    const proxyType = String(proxy.type || "http").toLowerCase();
+    return {
+      type: proxyType === "socks5" ? "socks" : proxyType,
+      host: String(proxy.host || "").trim(),
+      port: Number(proxy.port || 0),
+      proxyDNS: proxyType === "socks5",
+      username: String(proxy.username || ""),
+      password: String(proxy.password || "")
+    };
   }
 
   async function handleICloudHmeMessage(message) {
@@ -301,7 +365,10 @@
     }
   }
 
-  async function applyFirefoxProxy(proxy) {
+  async function applyFirefoxProxy(proxy, options = {}) {
+    if (options && options.cookieStoreId) {
+      return bindContainerProxy(options.cookieStoreId, proxy);
+    }
     const runtimeProxy = requireRuntimeProxy(proxy);
     const proxyType = String(runtimeProxy.type || "http").toLowerCase();
     if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
@@ -314,7 +381,9 @@
 
     await ext.storage.local.set({
       [PROXY_AUTH_KEY]: {
-        enabled: Boolean(runtimeProxy.username),
+        enabled: true,
+        authEnabled: Boolean(runtimeProxy.username),
+        type: String(runtimeProxy.type || "http").toLowerCase(),
         host: runtimeProxy.host,
         port: runtimeProxy.port,
         username: runtimeProxy.username || "",
@@ -343,7 +412,35 @@
     return { ok: true };
   }
 
-  async function clearFirefoxProxy() {
+  async function bindContainerProxy(cookieStoreId, proxy) {
+    const id = String(cookieStoreId || "").trim();
+    if (!id) {
+      throw new Error("缺少 Firefox 容器 cookieStoreId");
+    }
+    const runtimeProxy = requireRuntimeProxy(proxy);
+    const next = { ...(containerProxies || {}) };
+    next[id] = { ...runtimeProxy };
+    containerProxies = next;
+    await ext.storage.local.set({ [CONTAINER_PROXY_KEY]: next });
+    return { ok: true };
+  }
+
+  async function clearContainerProxy(cookieStoreId) {
+    const id = String(cookieStoreId || "").trim();
+    if (!id) {
+      return { ok: true };
+    }
+    const next = { ...(containerProxies || {}) };
+    delete next[id];
+    containerProxies = next;
+    await ext.storage.local.set({ [CONTAINER_PROXY_KEY]: next });
+    return { ok: true };
+  }
+
+  async function clearFirefoxProxy(options = {}) {
+    if (options && options.cookieStoreId) {
+      return clearContainerProxy(options.cookieStoreId);
+    }
     if (!ext.proxy || !ext.proxy.settings || typeof ext.proxy.settings.clear !== "function") {
       throw new Error("Firefox proxy API 不可用，请确认已重新加载扩展并授予 proxy 权限");
     }
@@ -353,7 +450,7 @@
   }
 
   function requireRuntimeProxy(proxy) {
-    if (!proxy || !proxy.enabled) {
+    if (!isRuntimeProxy(proxy)) {
       throw new Error("代理数据缺少 enabled");
     }
     const host = String(proxy.host || "").trim();
@@ -362,5 +459,14 @@
       throw new Error("代理数据缺少 host/port");
     }
     return proxy;
+  }
+
+  function isRuntimeProxy(proxy) {
+    if (!proxy || !proxy.enabled) {
+      return false;
+    }
+    const host = String(proxy.host || "").trim();
+    const port = Number(proxy.port || 0);
+    return Boolean(host && port > 0);
   }
 }());

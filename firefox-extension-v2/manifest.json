@@ -5,10 +5,12 @@
   "description": "GPT registration, PayURL, and PayPal payment automation wizard",
   "permissions": [
     "tabs",
+    "cookies",
     "storage",
     "clipboardWrite",
     "scripting",
     "activeTab",
+    "contextualIdentities",
     "proxy",
     "webRequest",
     "webRequestBlocking",

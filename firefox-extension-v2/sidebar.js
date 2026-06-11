@@ -170,6 +170,125 @@
   let usZip3StateRangesPromise = null;
   let heroCountryOptions = [];
   let heroCountriesPromise = null;
+  let automationThreadCounter = 0;
+
+  function getWebshareApiKeys() {
+    const input = document.getElementById("webshareApiKeyInput");
+    const rawValue = input ? input.value : state.webshareApiKey;
+    state.webshareApiKey = String(rawValue || "");
+    return parseWebshareApiKeys(rawValue);
+  }
+
+  function getThreadWebshareApiKey(threadContext) {
+    const apiKey = String(threadContext && threadContext.webshareApiKey || "").trim();
+    return apiKey || requireWebshareApiKey();
+  }
+
+  function createBatchThreadPlans(totalCount, options = {}) {
+    const keys = getWebshareApiKeys();
+    const proxyRequired = options.proxyRequired !== false && isProxyEnabled();
+    if (proxyRequired && !keys.length) {
+      throw new Error("请先输入 Webshare API Key；多线程模式下一个 Key 对应一个线程");
+    }
+    const maxThreads = proxyRequired ? keys.length : 1;
+    const count = Math.max(0, Math.floor(Number(totalCount) || 0));
+    return Array.from({ length: Math.min(count, maxThreads) }, (_, index) => ({
+      threadIndex: index + 1,
+      webshareApiKey: keys[index] || ""
+    }));
+  }
+
+  async function runThreadedBatch(totalCount, threadPlans, runTask) {
+    let nextIndex = 1;
+    const results = [];
+    async function worker(plan) {
+      const threadContext = await createAutomationThreadContext(plan);
+      try {
+        while (nextIndex <= totalCount && !state.cancelAutomationBatchRequested) {
+          const index = nextIndex;
+          nextIndex += 1;
+          results[index - 1] = await runTask(index, threadContext);
+        }
+      } finally {
+        await cleanupAutomationThreadContext(threadContext);
+      }
+    }
+    await Promise.all(threadPlans.map((plan) => worker(plan)));
+    return results;
+  }
+
+  function createThreadLogPrefix(threadContext) {
+    if (!threadContext || !threadContext.threadIndex) {
+      return "";
+    }
+    return `[线程 ${threadContext.threadIndex}] `;
+  }
+
+  function logThreadMessage(threadContext, message) {
+    logMessage(`${createThreadLogPrefix(threadContext)}${message}`);
+  }
+
+  async function createAutomationThreadContext(options = {}) {
+    const threadIndex = Number.isInteger(options.threadIndex) && options.threadIndex > 0
+      ? options.threadIndex
+      : ++automationThreadCounter;
+    const context = {
+      threadId: `thread-${Date.now()}-${threadIndex}-${Math.random().toString(36).slice(2, 8)}`,
+      threadIndex,
+      webshareApiKey: String(options.webshareApiKey || "").trim(),
+      cookieStoreId: String(options.cookieStoreId || "").trim(),
+      containerName: String(options.containerName || `GPT Auto Register ${threadIndex}`).trim(),
+      containerOwned: false,
+      currentProxy: cloneRuntimeProxy(options.currentProxy)
+    };
+    await ensureAutomationThreadContainer(context);
+    return context;
+  }
+
+  async function ensureAutomationThreadContainer(threadContext) {
+    if (!threadContext) {
+      return null;
+    }
+    if (threadContext.cookieStoreId) {
+      return threadContext.cookieStoreId;
+    }
+    if (!ext.contextualIdentities || typeof ext.contextualIdentities.create !== "function") {
+      throw new Error("Firefox 容器 API 不可用，请确认已授予 contextualIdentities 权限并重新加载扩展");
+    }
+    const identity = await ext.contextualIdentities.create({
+      name: threadContext.containerName,
+      color: "blue",
+      icon: "circle"
+    });
+    const cookieStoreId = String(identity && identity.cookieStoreId || "").trim();
+    if (!cookieStoreId) {
+      throw new Error("Firefox 容器创建失败，未返回 cookieStoreId");
+    }
+    threadContext.cookieStoreId = cookieStoreId;
+    threadContext.containerOwned = true;
+    logThreadMessage(threadContext, `已创建 Firefox 容器 ${cookieStoreId}`);
+    return cookieStoreId;
+  }
+
+  async function cleanupAutomationThreadContext(threadContext) {
+    if (!threadContext || !threadContext.cookieStoreId) {
+      return;
+    }
+    try {
+      await clearFirefoxProxyState({ threadContext });
+    } catch (error) {
+      logThreadMessage(threadContext, `清理容器代理失败: ${formatError(error)}`);
+    }
+    if (!threadContext.containerOwned || !ext.contextualIdentities || typeof ext.contextualIdentities.remove !== "function") {
+      return;
+    }
+    try {
+      await ext.contextualIdentities.remove(threadContext.cookieStoreId);
+      logThreadMessage(threadContext, `已删除 Firefox 容器 ${threadContext.cookieStoreId}`);
+    } catch (error) {
+      logThreadMessage(threadContext, `删除 Firefox 容器失败: ${formatError(error)}`);
+    }
+  }
 
   function randomDelayMs(minMs = 3000, maxMs = 5000) {
     const min = Math.ceil(Number(minMs) || 3000);
@@ -492,54 +611,62 @@
     }
   }
 
-  async function ensureProxyForStage(stage) {
+  async function ensureProxyForStage(stage, options = {}) {
+    const threadContext = options.threadContext || null;
     if (!isProxyEnabled()) {
-      logMessage(`代理未开启，跳过${stage}代理设置`);
+      logThreadMessage(threadContext, `代理未开启，跳过${stage}代理设置`);
       return false;
     }
 
     const country = getProxyCountryForStage(stage);
     if (stage === "第三步" && country === "KEEP_STEP1") {
-      logMessage(`${stage}: 选择不修改代理，沿用第一步当前代理`);
+      logThreadMessage(threadContext, `${stage}: 选择不修改代理，沿用第一步当前代理`);
       if (isCurrentIpLocationEnabled()) {
         await refreshIpLocation(`${stage}: `);
       }
       return false;
     }
     if (stage === "第四步" && country === "KEEP_STEP3") {
-      logMessage(`${stage}: 选择不修改代理，沿用第三步当前代理`);
+      logThreadMessage(threadContext, `${stage}: 选择不修改代理，沿用第三步当前代理`);
       if (isCurrentIpLocationEnabled()) {
         await refreshIpLocation(`${stage}: `);
       }
       return false;
     }
     if (country === "NONE") {
-      if (isRuntimeProxy(state.currentProxy)) {
-        logMessage(`${stage}: 代理国家设置为'无'，正在清除当前 Firefox 代理`);
-        await clearFirefoxProxyState();
+      if (isRuntimeProxy(getActiveRuntimeProxy(threadContext))) {
+        logThreadMessage(threadContext, `${stage}: 代理国家设置为'无'，正在清除当前 Firefox 代理`);
+        await clearFirefoxProxyState({ threadContext });
+        setActiveRuntimeProxy(threadContext, null);
         state.currentProxy = null;
         state.currentIpLocation = null;
         renderProxyStatus();
         await persistState();
-        logMessage(`${stage}: 当前 Firefox 代理已清除`);
+        logThreadMessage(threadContext, `${stage}: 当前 Firefox 代理已清除`);
       } else {
-        logMessage(`${stage}: 代理国家设置为'无'，跳过代理设置`);
+        logThreadMessage(threadContext, `${stage}: 代理国家设置为'无'，跳过代理设置`);
       }
       return false;
     }
 
     const protocol = getProxyProtocol();
-    const apiKey = requireWebshareApiKey();
-    logMessage(`${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
-    logMessage(`${stage}: 正在先清除当前 Firefox 代理`);
-    await clearFirefoxProxyState();
-    state.currentProxy = null;
+    const apiKey = getThreadWebshareApiKey(threadContext);
+    logThreadMessage(threadContext, `${stage}: 正在设置代理，国家 ${country}，协议 ${protocol}`);
+    logThreadMessage(threadContext, `${stage}: 正在先清除当前 Firefox 代理`);
+    await clearFirefoxProxyState({ threadContext });
+    setActiveRuntimeProxy(threadContext, null);
+    if (!threadContext) {
+      state.currentProxy = null;
+    }
     renderProxyStatus();
     await persistState();
-    logMessage(`${stage}: 当前 Firefox 代理已清除，开始替换对应国家代理`);
+    logThreadMessage(threadContext, `${stage}: 当前 Firefox 代理已清除，开始替换对应国家代理`);
     const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
-    await applyFirefoxProxy(proxy);
-    state.currentProxy = proxy;
+    await applyFirefoxProxy(proxy, { threadContext });
+    setActiveRuntimeProxy(threadContext, proxy);
+    if (!threadContext) {
+      state.currentProxy = proxy;
+    }
     if (stage === "第三步" && isCurrentIpLocationEnabled()) {
       await refreshIpLocation(`${stage}: `);
     } else {
@@ -547,7 +674,7 @@
     }
     renderProxyStatus();
     await persistState();
-    logMessage(`${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
+    logThreadMessage(threadContext, `${stage}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
     return true;
   }
 
@@ -611,31 +738,42 @@
     }
   }
 
-  async function cleanupAutomationProxy(reason) {
+  async function cleanupAutomationProxy(reason, options = {}) {
+    const threadContext = options.threadContext || null;
     try {
-      await clearFirefoxProxyState();
-      state.currentProxy = null;
+      await clearFirefoxProxyState({ threadContext });
+      setActiveRuntimeProxy(threadContext, null);
+      if (!threadContext) {
+        state.currentProxy = null;
+      }
       state.currentIpLocation = null;
       renderProxyStatus();
       await persistState();
-      logMessage(`${reason || "任务结束"}，已清理 Firefox 代理`);
+      logThreadMessage(threadContext, `${reason || "任务结束"}，已清理 Firefox 代理`);
     } catch (error) {
-      logMessage(`${reason || "任务结束"}，清理代理失败: ${formatError(error)}`);
+      logThreadMessage(threadContext, `${reason || "任务结束"}，清理代理失败: ${formatError(error)}`);
     }
   }
 
-  async function applyFirefoxProxy(proxy) {
+  async function applyFirefoxProxy(proxy, options = {}) {
     const runtimeProxy = requireRuntimeProxy(proxy);
     const proxyType = String(runtimeProxy.type || "http").toLowerCase();
     if (!["http", "https", "socks", "socks4", "socks5"].includes(proxyType)) {
       throw new Error(`Firefox 不支持的代理类型: ${runtimeProxy.type}`);
     }
 
-    await sendProxyMessage({ action: "apply", proxy: runtimeProxy });
+    await sendProxyMessage({
+      action: "apply",
+      proxy: runtimeProxy,
+      cookieStoreId: options.threadContext ? options.threadContext.cookieStoreId : options.cookieStoreId
+    });
   }
 
-  async function clearFirefoxProxyState() {
-    await sendProxyMessage({ action: "clear" });
+  async function clearFirefoxProxyState(options = {}) {
+    await sendProxyMessage({
+      action: "clear",
+      cookieStoreId: options.threadContext ? options.threadContext.cookieStoreId : options.cookieStoreId
+    });
   }
 
   async function sendProxyMessage(payload) {
@@ -790,6 +928,20 @@
     const host = String(proxy.host || "").trim();
     const port = Number(proxy.port || 0);
     return Boolean(host && port > 0);
+  }
+
+  function getActiveRuntimeProxy(threadContext) {
+    return threadContext && isRuntimeProxy(threadContext.currentProxy)
+      ? threadContext.currentProxy
+      : state.currentProxy;
+  }
+
+  function setActiveRuntimeProxy(threadContext, proxy) {
+    if (threadContext) {
+      threadContext.currentProxy = cloneRuntimeProxy(proxy);
+    } else {
+      state.currentProxy = cloneRuntimeProxy(proxy);
+    }
   }
 
   function renderProxyStatus() {
@@ -1338,12 +1490,7 @@
 
     logMessage("协议支付: 使用第2行 Webshare Key 获取美国代理");
     const usProxy = await replaceWebshareProxyDirect(keys.usApiKey, "US", "http");
-    await applyFirefoxProxy(usProxy);
-    state.currentProxy = usProxy;
-    state.currentIpLocation = null;
-    renderProxyStatus();
-    await persistState();
-    logMessage(`协议支付: 美国代理已写入 Firefox ${formatProxy(usProxy)}`);
+    logMessage(`协议支付: 美国代理已准备 ${formatProxy(usProxy)}`);
 
     return {
       proxyJp: formatProxyUrlForProtocol(japanProxy, "socks5"),
@@ -2862,6 +3009,7 @@
 
   async function authorizeCodexAccount(accountContext, options = {}) {
     const context = normalizeAuthorizationAccount(accountContext);
+    const threadContext = options.threadContext || null;
     if (!context) {
       throw new Error("没有可授权的最近成功账号");
     }
@@ -2874,52 +3022,62 @@
       throw new Error("授权正在执行中");
     }
 
-    state.authorizationRunning = true;
-    setAuthorizationStatus(`授权中: ${context.account}`, { persist: true });
+    if (!options.allowConcurrent) {
+      state.authorizationRunning = true;
+    }
+    setAuthorizationStatus(`${createThreadLogPrefix(threadContext)}授权中: ${context.account}`, { persist: true });
     renderAutomationBatchControls();
 
     let proxyAppliedForAuthorization = false;
     try {
       if (isRuntimeProxy(context.proxy)) {
-        await applyFirefoxProxy(context.proxy);
-        state.currentProxy = cloneRuntimeProxy(context.proxy);
+        await applyFirefoxProxy(context.proxy, { threadContext });
+        setActiveRuntimeProxy(threadContext, context.proxy);
+        if (!threadContext) {
+          state.currentProxy = cloneRuntimeProxy(context.proxy);
+        }
         proxyAppliedForAuthorization = true;
         renderProxyStatus();
         await persistState();
-        logMessage(`Codex 授权: 已切换到注册时代理 ${formatProxy(context.proxy)}`);
+        logThreadMessage(threadContext, `Codex 授权: 已切换到注册时代理 ${formatProxy(context.proxy)}`);
       } else {
-        await clearFirefoxProxyState();
-        state.currentProxy = null;
+        await clearFirefoxProxyState({ threadContext });
+        setActiveRuntimeProxy(threadContext, null);
+        if (!threadContext) {
+          state.currentProxy = null;
+        }
         state.currentIpLocation = null;
         renderProxyStatus();
         await persistState();
-        logMessage("Codex 授权: 注册时未使用代理，已清除当前 Firefox 代理");
+        logThreadMessage(threadContext, "Codex 授权: 注册时未使用代理，已清除当前 Firefox 代理");
       }
       const pkce = await createPkcePair();
       const oauthState = createOauthState();
       const authorizeUrl = buildCodexAuthorizeUrl(oauthState, pkce.challenge);
       const oauthTab = await updatePrivateAuthorizationTab(authorizeUrl, options);
-      logMessage(`Codex 授权: 已在当前隐私窗口打开授权页面 ${context.account}`);
+      logThreadMessage(threadContext, `Codex 授权: 已在当前窗口打开授权页面 ${context.account}`);
       const code = await driveCodexOAuthTab(oauthTab.id, context, oauthState, voucherCode);
-      logMessage("Codex 授权: 已获取 authorization code，交换 token");
+      logThreadMessage(threadContext, "Codex 授权: 已获取 authorization code，交换 token");
       const tokens = await exchangeCodexOAuthCode(code, pkce.verifier);
       const refreshToken = String(tokens.refresh_token || "").trim();
-      logMessage("Codex 授权: token 获取成功，正在更新第三方 rt_token");
+      logThreadMessage(threadContext, "Codex 授权: token 获取成功，正在更新第三方 rt_token");
       const updateResult = await updateThirdPartyRtToken(context.account, refreshToken);
       if (!updateResult.ok) {
         throw new Error(`第三方 rt_token 更新失败: ${updateResult.error || `HTTP ${updateResult.status}`}`);
       }
-      setAuthorizationStatus(`成功: ${context.account}`, { persist: true });
-      logMessage(`Codex 授权成功，已更新第三方 rt_token: ${context.account}`);
+      setAuthorizationStatus(`${createThreadLogPrefix(threadContext)}成功: ${context.account}`, { persist: true });
+      logThreadMessage(threadContext, `Codex 授权成功，已更新第三方 rt_token: ${context.account}`);
       return { ok: true, account: context.account };
     } catch (error) {
-      setAuthorizationStatus(`失败: ${context.account}，${formatError(error)}`, { persist: true });
+      setAuthorizationStatus(`${createThreadLogPrefix(threadContext)}失败: ${context.account}，${formatError(error)}`, { persist: true });
       throw error;
     } finally {
       if (proxyAppliedForAuthorization && options.cleanupProxyAfter) {
-        await cleanupAutomationProxy("授权任务已关闭");
+        await cleanupAutomationProxy("授权任务已关闭", { threadContext });
       }
-      state.authorizationRunning = false;
+      if (!options.allowConcurrent) {
+        state.authorizationRunning = false;
+      }
       renderAuthorizationControls();
       renderAutomationBatchControls();
       await persistState();
@@ -3038,6 +3196,8 @@
       await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
         cleanupProxyAfter: false,
+        allowConcurrent: Boolean(context && context.threadContext),
+        threadContext: context && context.threadContext,
         tabId,
         windowId: context && context.windowId
       });
@@ -3459,7 +3619,7 @@
       await delay();
       logMessage(`检测密码输入框`);
       await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-        selector: 'input[name="new-password"]',
+        selector: ['input[name="new-password"]','input[name="current-password"]'],
         value: PHONE_REGISTRATION_PASSWORD,
         timeoutMs: 30000
       }, "未找到新密码输入框");
@@ -3589,13 +3749,11 @@
       }
 
       await delay(1000);
-      await scrollTabToBottom(tabId);
-      await delay(1000);
       await executePageFunction(tabId, "__gptAutoRegisterClick", {
-        selector: 'button[type="submit"], button[data-testid="submit"]',
-        timeoutMs: 15000
+        selector: ['button[type="submit"]', 'button[data-testid="submit"]'],
+        timeoutMs: 30000
       }, {
-        loadTimeoutMs: 15000
+        loadTimeoutMs: 30000
       });
       logMessage(attempt === 1 ? "姓名和年龄已提交，等待进入 chatgpt.com" : `姓名和年龄已重新提交，第 ${attempt} 次，等待进入 chatgpt.com`);
       await delay(3000);
@@ -3666,15 +3824,31 @@
     logMessage("Firefox 扩展无法直接打开原生 DevTools/响应式设计模式；如需工具箱，请在隐私窗口按 Ctrl+Shift+I，再按 Ctrl+Shift+M");
   }
 
-  async function createPrivateAutomationWindow(url) {
-    const createdWindow = await ext.windows.create({
+  async function createPrivateAutomationWindow(url, options = {}) {
+    const threadContext = options.threadContext || null;
+    if (threadContext) {
+      await ensureAutomationThreadContainer(threadContext);
+    }
+    const createData = {
       url: "about:blank",
       incognito: true,
       focused: true
-    });
+    };
+    const cookieStoreId = String(
+      options.cookieStoreId ||
+      (threadContext && threadContext.cookieStoreId) ||
+      ""
+    ).trim();
+    if (cookieStoreId) {
+      createData.cookieStoreId = cookieStoreId;
+      createData.incognito = false;
+    }
+    const createdWindow = await ext.windows.create(createData);
     const tab = createdWindow && createdWindow.tabs && createdWindow.tabs[0];
     if (!createdWindow || createdWindow.id === undefined || !tab || !tab.id) {
-      throw new Error("创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
+      throw new Error(cookieStoreId
+        ? "创建容器窗口失败，请确认 Firefox 已启用容器并授予 contextualIdentities 权限"
+        : "创建隐私窗口失败，请确认扩展已允许在隐私窗口运行");
     }
     await ext.tabs.update(tab.id, { url, active: true });
     await preparePrivateAutomationDebugView(createdWindow.id);
@@ -3895,11 +4069,24 @@
     let tab = null;
     const optionTabId = Number(options && options.tabId);
     const optionWindowId = Number(options && options.windowId);
+    const threadContext = options.threadContext || null;
+    const cookieStoreId = String(
+      options.cookieStoreId ||
+      (threadContext && threadContext.cookieStoreId) ||
+      ""
+    ).trim();
 
     if (Number.isInteger(optionTabId) && optionTabId >= 0) {
       try {
         const candidate = await ext.tabs.get(optionTabId);
-        if (candidate && candidate.id !== undefined && candidate.incognito) {
+        if (
+          candidate &&
+          candidate.id !== undefined &&
+          (
+            candidate.incognito ||
+            (cookieStoreId && candidate.cookieStoreId === cookieStoreId)
+          )
+        ) {
           tab = candidate;
         }
       } catch (error) {
@@ -3910,12 +4097,23 @@
     if (!tab && Number.isInteger(optionWindowId) && optionWindowId >= 0) {
       try {
         const windowInfo = await ext.windows.get(optionWindowId);
-        if (windowInfo && windowInfo.incognito) {
+        if (windowInfo && (windowInfo.incognito || cookieStoreId)) {
           tab = await getActiveTabInWindow(optionWindowId);
+          if (tab && cookieStoreId && tab.cookieStoreId !== cookieStoreId) {
+            tab = null;
+          }
         }
       } catch (error) {
         console.warn("Failed to get authorization window", error);
       }
+    }
+
+    if (!tab && cookieStoreId && Number.isInteger(optionWindowId) && optionWindowId >= 0) {
+      tab = await ext.tabs.create({
+        windowId: optionWindowId,
+        cookieStoreId,
+        active: true
+      });
     }
 
     if (!tab) {
@@ -3929,8 +4127,12 @@
       }
     }
 
-    if (!tab || tab.id === undefined || !tab.incognito) {
-      throw new Error("未找到可用于授权的隐私标签页");
+    if (
+      !tab ||
+      tab.id === undefined ||
+      (!tab.incognito && (!cookieStoreId || tab.cookieStoreId !== cookieStoreId))
+    ) {
+      throw new Error(cookieStoreId ? "未找到可用于授权的容器标签页" : "未找到可用于授权的隐私标签页");
     }
 
     if (tab.windowId !== undefined) {
@@ -4114,37 +4316,46 @@
     renderAutomationBatchControls();
 
     const runCount = getRunCount();
+    let threadPlans = [];
+    try {
+      threadPlans = createBatchThreadPlans(runCount);
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      state.teamRegistrationRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+      return { ok: false };
+    }
     resetRunStats(runCount);
     let completedCount = 0;
     let successCount = 0;
     let failCount = 0;
     try {
-      logMessage(`准备连续执行 ${runCount} 次 Team 注册`);
-      for (let index = 1; index <= runCount; index += 1) {
-        logMessage(`===== Team 注册第 ${index}/${runCount} 次开始 =====`);
+      logMessage(`准备并发执行 ${runCount} 次 Team 注册，线程数 ${threadPlans.length}`);
+      await runThreadedBatch(runCount, threadPlans, async (index, threadContext) => {
+        logThreadMessage(threadContext, `===== Team 注册第 ${index}/${runCount} 次开始 =====`);
         try {
-          const result = await runSingleTeamRegistrationFlow();
-          completedCount = index;
+          const result = await runSingleTeamRegistrationFlow({ threadContext });
+          completedCount += 1;
           if (result && result.ok) {
             successCount += 1;
             updateRunStats("success");
-            logMessage(`===== Team 注册第 ${index}/${runCount} 次结束 =====`);
+            logThreadMessage(threadContext, `===== Team 注册第 ${index}/${runCount} 次结束 =====`);
           } else {
             failCount += 1;
             updateRunStats("fail");
-            logMessage(`Team 注册第 ${index}/${runCount} 次失败结束`);
+            logThreadMessage(threadContext, `Team 注册第 ${index}/${runCount} 次失败结束`);
           }
         } catch (error) {
-          completedCount = index;
+          completedCount += 1;
           failCount += 1;
           updateRunStats("fail");
-          logMessage(`Team 注册第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
+          logThreadMessage(threadContext, `Team 注册第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
         }
         if (state.cancelAutomationBatchRequested) {
-          logMessage(`已取消后续 Team 注册，停止在第 ${completedCount}/${runCount} 次之后`);
-          break;
+          logThreadMessage(threadContext, `已取消后续 Team 注册，停止在第 ${completedCount}/${runCount} 次之后`);
         }
-      }
+      });
       if (state.cancelAutomationBatchRequested && completedCount < runCount) {
         logMessage(
           `Team 注册连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
@@ -4159,7 +4370,8 @@
     }
   }
 
-  async function runSingleTeamRegistrationFlow() {
+  async function runSingleTeamRegistrationFlow(options = {}) {
+    const threadContext = options.threadContext || null;
     setActiveStep(1);
 
     const teamProviderDomain = getTeamProviderDomain();
@@ -4169,17 +4381,17 @@
     let automationSucceeded = false;
 
     try {
-      logMessage(`Team 注册: 使用 provider ${teamProviderDomain}，随机邮箱 ${email}`);
+      logThreadMessage(threadContext, `Team 注册: 使用 provider ${teamProviderDomain}，随机邮箱 ${email}`);
       try {
-        await ensureProxyForStage("第一步");
+        await ensureProxyForStage("第一步", { threadContext });
       } catch (error) {
         throw new Error(`第一步代理设置失败: ${formatError(error)}`);
       }
 
-      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com/");
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com/", { threadContext });
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
-      logMessage("Team 注册: 已打开 chatgpt.com");
+      logThreadMessage(threadContext, "Team 注册: 已打开 chatgpt.com");
 
       const pageLoaded = await waitForPageComplete(tab.id, 90000);
       if (!pageLoaded) {
@@ -4245,13 +4457,15 @@
         registrationMethod: "email",
         planType: normalizeAccountPlanType(session && session.accountPlanType) || "team",
         teamProviderDomain,
-        proxy: cloneRuntimeProxy(state.currentProxy)
+        proxy: cloneRuntimeProxy(getActiveRuntimeProxy(threadContext))
       });
       if (isContinueAuthorizationEnabled()) {
         logMessage("Team 注册: 已勾选继续授权，开始 Codex 授权");
         await authorizeCodexAccount(authorizationAccount, {
           smsVoucherCode: getCodexSmsVoucherCode(),
           cleanupProxyAfter: false,
+          allowConcurrent: Boolean(threadContext),
+          threadContext,
           tabId: tab.id,
           windowId: automationWindowId
         });
@@ -4272,7 +4486,7 @@
       }
       return { ok: false, email, error: formatError(error) };
     } finally {
-      await cleanupAutomationProxy("Team 注册任务已关闭");
+      await cleanupAutomationProxy("Team 注册任务已关闭", { threadContext });
       await closeAutomationWindow(automationWindowId, {
         failed: !automationSucceeded
       });
@@ -4323,41 +4537,54 @@
         runCount = specifiedAccounts.length;
       }
     }
+    let threadPlans = [];
+    try {
+      threadPlans = createBatchThreadPlans(runCount);
+    } catch (error) {
+      logMessage("错误: " + formatError(error));
+      state.automationBatchRunning = false;
+      state.cancelAutomationBatchRequested = false;
+      renderAutomationBatchControls();
+      return;
+    }
+    const specifiedAccountQueue = specifiedAccounts.slice(0, runCount).map((email) => ({ line: email, email }));
     resetRunStats(runCount);
     let completedCount = 0;
     let successCount = 0;
     let failCount = 0;
     try {
-      logMessage(`准备连续执行 ${runCount} 次完整流程`);
-      for (let index = 1; index <= runCount; index += 1) {
-        logMessage(`===== 第 ${index}/${runCount} 次开始 =====`);
+      logMessage(`准备并发执行 ${runCount} 次完整流程，线程数 ${threadPlans.length}`);
+      await runThreadedBatch(runCount, threadPlans, async (index, threadContext) => {
+        logThreadMessage(threadContext, `===== 第 ${index}/${runCount} 次开始 =====`);
         try {
-          const result = await startAutomation();
-          completedCount = index;
+          const result = await startAutomation({
+            threadContext,
+            specifiedAccountEntry: specifiedAccountQueue[index - 1] || null
+          });
+          completedCount += 1;
           if (result && result.ok) {
             successCount += 1;
             updateRunStats("success");
-            logMessage(`===== 第 ${index}/${runCount} 次结束 =====`);
+            logThreadMessage(threadContext, `===== 第 ${index}/${runCount} 次结束 =====`);
           } else {
             failCount += 1;
             updateRunStats("fail");
-            logMessage(`第 ${index}/${runCount} 次失败结束`);
+            logThreadMessage(threadContext, `第 ${index}/${runCount} 次失败结束`);
             if (result && result.canResumeBrazilPix) {
               logMessage("巴西 PIX 支付可继续，已停止后续任务；修复接口/网络后点击继续支付");
-              break;
+              state.cancelAutomationBatchRequested = true;
             }
           }
         } catch (error) {
-          completedCount = index;
+          completedCount += 1;
           failCount += 1;
           updateRunStats("fail");
-          logMessage(`第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
+          logThreadMessage(threadContext, `第 ${index}/${runCount} 次异常结束: ${formatError(error)}`);
         }
         if (state.cancelAutomationBatchRequested) {
-          logMessage(`已取消后续任务，停止在第 ${completedCount}/${runCount} 次之后`);
-          break;
+          logThreadMessage(threadContext, `已取消后续任务，停止在第 ${completedCount}/${runCount} 次之后`);
         }
-      }
+      });
       if (state.cancelAutomationBatchRequested && completedCount < runCount) {
         logMessage(
           `连续执行已取消，已完成 ${completedCount} 次，成功 ${successCount} 次，失败 ${failCount} 次，剩余 ${runCount - completedCount} 次未执行`
@@ -4372,18 +4599,21 @@
     }
   }
 
-  async function startAutomation() {
+  async function startAutomation(options = {}) {
+    const threadContext = options.threadContext || null;
     const countrySel = document.getElementById("country").value;
     const phoneRegistration = isPhoneRegistrationMethod();
     const paymentFlowEnabled = isPaymentFlowEnabled();
     const stopAfterThirdPartySubmit = isStopAfterThirdPartySubmitEnabled();
     const protocolPayment = paymentFlowEnabled && isProtocolPaymentMethod();
-    let specifiedAccountEntry = null;
-    try {
-      specifiedAccountEntry = phoneRegistration ? null : getNextSpecifiedAccountEntry();
-    } catch (error) {
-      logMessage("错误: " + formatError(error));
-      return { ok: false };
+    let specifiedAccountEntry = phoneRegistration ? null : (options.specifiedAccountEntry || null);
+    if (!phoneRegistration && !specifiedAccountEntry) {
+      try {
+        specifiedAccountEntry = getNextSpecifiedAccountEntry();
+      } catch (error) {
+        logMessage("错误: " + formatError(error));
+        return { ok: false };
+      }
     }
     let prepared = null;
     if (paymentFlowEnabled && !protocolPayment) {
@@ -4399,19 +4629,19 @@
       logMessage("已关闭支付流程，本次完整流程将在账号注册成功后结束");
     }
 
-    logMessage("开始完整自动化流程...");
+    logThreadMessage(threadContext, "开始完整自动化流程...");
     let automationWindowId = null;
     let uploadedThirdPartyAccount = null;
     let automationSucceeded = false;
     let keepAutomationWindowForBrazilPixResume = false;
     try {
       try {
-        await ensureProxyForStage("第一步");
+        await ensureProxyForStage("第一步", { threadContext });
       } catch (error) {
         logMessage("第一步代理设置失败，流程终止: " + formatError(error));
         return { ok: false };
       }
-      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com");
+      const automationWindow = await createPrivateAutomationWindow("https://chatgpt.com", { threadContext });
       automationWindowId = automationWindow.windowId;
       const tab = automationWindow.tab;
       logMessage("步骤1: 打开 chatgpt.com");
@@ -4430,7 +4660,7 @@
         return { ok: false };
       }
       const registrationAccount = String(registration.account || registration.email || registration.phone || "").trim();
-      const registrationProxy = cloneRuntimeProxy(state.currentProxy);
+      const registrationProxy = cloneRuntimeProxy(getActiveRuntimeProxy(threadContext));
 
       if (!(await waitForChatGptAfterRegistration(tab.id))) {
         logMessage("错误: 未成功到达 chatgpt.com");
@@ -4480,6 +4710,8 @@
         logMessage("支付流程已关闭，账号注册成功，本次完整流程按成功结束");
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
+          windowId: automationWindowId,
+          threadContext,
           thirdPartyAccount,
           sessionEmail: chatGptSessionEmail,
           registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4535,6 +4767,8 @@
               automationSucceeded = true;
               return finishAfterThirdPartySubmit({
                 tabId: tab.id,
+                windowId: automationWindowId,
+                threadContext,
                 thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4570,6 +4804,8 @@
           if (!phoneRegistration) await removeSpecifiedAccountAfterPaymentSuccess(specifiedAccountEntry, registrationAccount);
           await handleSuccessfulAccountAuthorization({
             tabId: tab.id,
+            windowId: automationWindowId,
+            threadContext,
             thirdPartyAccount,
             sessionEmail: chatGptSessionEmail,
             registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4618,6 +4854,8 @@
             if (finalizeResult && finalizeResult.thirdPartySubmitted && stopAfterThirdPartySubmit) {
               return finishAfterThirdPartySubmit({
                 tabId: tab.id,
+                windowId: automationWindowId,
+                threadContext,
                 thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4629,6 +4867,8 @@
             } else {
               await handleSuccessfulAccountAuthorization({
                 tabId: tab.id,
+                windowId: automationWindowId,
+                threadContext,
                 thirdPartyAccount,
                 sessionEmail: chatGptSessionEmail,
                 registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4681,6 +4921,8 @@
             automationSucceeded = true;
             return finishAfterThirdPartySubmit({
               tabId: tab.id,
+              windowId: automationWindowId,
+              threadContext,
               thirdPartyAccount,
               sessionEmail: chatGptSessionEmail,
               registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4752,6 +4994,8 @@
         await removeUsedCardInput(prepared);
         await handleSuccessfulAccountAuthorization({
           tabId: tab.id,
+          windowId: automationWindowId,
+          threadContext,
           thirdPartyAccount,
           sessionEmail: chatGptSessionEmail,
           registrationMethod: registration.registrationMethod || (phoneRegistration ? "phone" : "email"),
@@ -4765,7 +5009,7 @@
       }
       return { ok: automationSucceeded };
     } finally {
-      await cleanupAutomationProxy("完整流程任务已关闭");
+      await cleanupAutomationProxy("完整流程任务已关闭", { threadContext });
       if (!automationSucceeded && uploadedThirdPartyAccount) {
         const cleanupReason = specifiedAccountEntry
           ? "指定账号完整流程失败，正在删除第三方账号"
