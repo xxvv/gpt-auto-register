@@ -3096,13 +3096,21 @@
       })();
     `;
     await scrollTabToBottom(tabId);
-    await executePageFunction(tabId, "__gptAutoRegisterClickButtonByText", {
-      pattern: "注册|Sign up|Create account"
-    }, {
-      loadTimeoutMs: 15000
-    });
-    logMessage("已点击注册按钮，等待 3 秒...");
-    await delay(3000);
+    try {
+      const clickResult = await executePageFunction(tabId, "__gptAutoRegisterClickButtonByText", {
+        pattern: "注册|Sign up|Create account"
+      }, {
+        loadTimeoutMs: 15000
+      });
+      if (clickResult && clickResult.ok) {
+        logMessage("已点击注册按钮，等待 3 秒...");
+        await delay(3000);
+      } else {
+        logMessage("未找到注册按钮，直接进行邮箱注册流程");
+      }
+    } catch (error) {
+      logMessage("注册按钮点击失败，继续处理: " + formatError(error));
+    }
 
     logMessage("等待 #email 输入框...");
     const waitEmailCode = `
@@ -3449,12 +3457,7 @@
       }, "手机号提交按钮点击失败");
       logMessage(`点击提交`);
       await delay();
-      await requirePageResult(tabId, "__gptAutoRegisterWaitForUrlPrefix", {
-        prefix: "https://auth.openai.com/create-account/password",
-        timeoutMs: 90000
-      }, "未进入密码设置页面");
-      logMessage(`进入输入密码页面`);
-      await delay(1000);
+      logMessage(`检测密码输入框`);
       await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
         selector: 'input[name="new-password"]',
         value: PHONE_REGISTRATION_PASSWORD,
