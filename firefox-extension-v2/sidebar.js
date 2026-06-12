@@ -202,15 +202,21 @@
     let nextIndex = 1;
     const results = [];
     async function worker(plan) {
-      const threadContext = await createAutomationThreadContext(plan);
-      try {
-        while (nextIndex <= totalCount && !state.cancelAutomationBatchRequested) {
-          const index = nextIndex;
-          nextIndex += 1;
-          results[index - 1] = await runTask(index, threadContext);
+      while (nextIndex <= totalCount && !state.cancelAutomationBatchRequested) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const threadContext = await createAutomationThreadContext(plan);
+        let taskResult = null;
+        try {
+          taskResult = await runTask(index, threadContext);
+          results[index - 1] = taskResult;
+        } finally {
+          if (taskResult && taskResult.keepContainerOpen) {
+            logThreadMessage(threadContext, "任务保留当前容器用于后续继续处理；后续任务将创建新容器");
+          } else {
+            await cleanupAutomationThreadContext(threadContext);
+          }
         }
-      } finally {
-        await cleanupAutomationThreadContext(threadContext);
       }
     }
     await Promise.all(threadPlans.map((plan) => worker(plan)));
@@ -274,19 +280,62 @@
     if (!threadContext || !threadContext.cookieStoreId) {
       return;
     }
+    const cookieStoreId = threadContext.cookieStoreId;
     try {
       await clearFirefoxProxyState({ threadContext });
     } catch (error) {
       logThreadMessage(threadContext, `清理容器代理失败: ${formatError(error)}`);
     }
+    try {
+      await closeAutomationContainerTabs(cookieStoreId);
+    } catch (error) {
+      logThreadMessage(threadContext, `关闭容器标签页失败: ${formatError(error)}`);
+    }
+    try {
+      await clearFirefoxContainerData(cookieStoreId);
+      logThreadMessage(threadContext, `已清理 Firefox 容器缓存 ${cookieStoreId}`);
+    } catch (error) {
+      logThreadMessage(threadContext, `清理 Firefox 容器缓存失败: ${formatError(error)}`);
+    }
     if (!threadContext.containerOwned || !ext.contextualIdentities || typeof ext.contextualIdentities.remove !== "function") {
       return;
     }
     try {
-      await ext.contextualIdentities.remove(threadContext.cookieStoreId);
-      logThreadMessage(threadContext, `已删除 Firefox 容器 ${threadContext.cookieStoreId}`);
+      await ext.contextualIdentities.remove(cookieStoreId);
+      threadContext.cookieStoreId = "";
+      threadContext.containerOwned = false;
+      logThreadMessage(threadContext, `已删除 Firefox 容器 ${cookieStoreId}`);
     } catch (error) {
       logThreadMessage(threadContext, `删除 Firefox 容器失败: ${formatError(error)}`);
+    }
+  }
+
+  async function closeAutomationContainerTabs(cookieStoreId) {
+    const id = String(cookieStoreId || "").trim();
+    if (!id || !ext.tabs || typeof ext.tabs.query !== "function" || typeof ext.tabs.remove !== "function") {
+      return;
+    }
+    const tabs = await ext.tabs.query({ cookieStoreId: id });
+    const tabIds = (tabs || [])
+      .map((tab) => tab && tab.id)
+      .filter((tabId) => Number.isInteger(tabId) && tabId >= 0);
+    if (tabIds.length) {
+      await ext.tabs.remove(tabIds);
+    }
+  }
+
+  async function clearFirefoxContainerData(cookieStoreId) {
+    const id = String(cookieStoreId || "").trim();
+    if (!id) {
+      return;
+    }
+    const response = await ext.runtime.sendMessage({
+      type: "gptAutoRegisterContainerData",
+      action: "clear",
+      cookieStoreId: id
+    });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "background 容器缓存清理失败");
     }
   }
 
@@ -4880,7 +4929,7 @@
           await saveBrazilPixResumeContext(pixResumeContext);
           keepAutomationWindowForBrazilPixResume = true;
           logMessage("巴西 PIX 支付失败，已保留当前账号和窗口，可点击继续支付重试: " + formatError(error));
-          return { ok: false, canResumeBrazilPix: true };
+          return { ok: false, canResumeBrazilPix: true, keepContainerOpen: true };
         }
         return { ok: automationSucceeded };
       }
@@ -5009,7 +5058,11 @@
       }
       return { ok: automationSucceeded };
     } finally {
-      await cleanupAutomationProxy("完整流程任务已关闭", { threadContext });
+      if (keepAutomationWindowForBrazilPixResume) {
+        logThreadMessage(threadContext, "巴西 PIX 可继续支付，暂不清理当前容器代理");
+      } else {
+        await cleanupAutomationProxy("完整流程任务已关闭", { threadContext });
+      }
       if (!automationSucceeded && uploadedThirdPartyAccount) {
         const cleanupReason = specifiedAccountEntry
           ? "指定账号完整流程失败，正在删除第三方账号"
@@ -6545,14 +6598,14 @@
   async function waitForPayPalHermesPage(tabId, prepared, timeoutMs) {
     logMessage("等待 PayPal 页面加载完成...");
     
-    // const hermesPrefix = "https://www.paypal.com/webapps/hermes";
+    const hermesPrefix = "https://www.paypal.com/webapps/hermes";
     const hermes2= "https://www.paypal.com/checkoutweb/billingwithoutpurchase"
     const start = Date.now();
     let lastLoggedUrl = "";
     while (Date.now() - start < timeoutMs) {
       const tab = await ext.tabs.get(tabId);
       const url = String(tab.url || "");
-      if (url.startsWith(hermes2)) {
+      if (url.startsWith(hermes2) || url.startsWith(hermesPrefix)) {
         return url;
       }
       if (isPayPalGenericErrorUrl(url) ) {
@@ -6897,6 +6950,16 @@
   async function clickPageElement(tabId, payload, errorMessage) {
     await scrollTabToBottom(tabId);
     return requirePageResult(tabId, "__gptAutoRegisterClick", payload, errorMessage);
+  }
+
+  async function pageElementExists(tabId, selector, timeoutMs = 0) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterWaitForSelector", {
+      selector,
+      timeoutMs
+    }, {
+      loadTimeoutMs: 15000
+    });
+    return Boolean(result && result.ok);
   }
 
   async function requirePageResult(tabId, functionName, payload, errorMessage, options = {}) {

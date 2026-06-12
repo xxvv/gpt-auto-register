@@ -10,6 +10,7 @@
   const ICLOUD_HME_NOTE = "Generated through GPT Auto Register v2";
   let proxyAuth = {};
   let containerProxies = {};
+  const containerRequestOrigins = new Map();
   const automationUserAgentsByWindowId = new Map();
 
   ext.storage.local.get([PROXY_AUTH_KEY, CONTAINER_PROXY_KEY]).then((saved) => {
@@ -35,10 +36,15 @@
       (
         message.type !== "gptAutoRegisterProxy" &&
         message.type !== "gptAutoRegisterICloudHme" &&
-        message.type !== "gptAutoRegisterAutomationHeaders"
+        message.type !== "gptAutoRegisterAutomationHeaders" &&
+        message.type !== "gptAutoRegisterContainerData"
       )
     ) {
       return undefined;
+    }
+
+    if (message.type === "gptAutoRegisterContainerData") {
+      return handleContainerDataMessage(message);
     }
 
     if (message.type === "gptAutoRegisterAutomationHeaders") {
@@ -84,6 +90,7 @@
 
   ext.webRequest.onBeforeSendHeaders.addListener(
     (details) => {
+      rememberContainerRequestOrigin(details);
       const requestHeaders = Array.isArray(details.requestHeaders) ? details.requestHeaders : [];
       let modified = false;
 
@@ -103,6 +110,13 @@
 
   if (ext.proxy && ext.proxy.onRequest && typeof ext.proxy.onRequest.addListener === "function") {
     ext.proxy.onRequest.addListener(handleProxyRequest, { urls: ["<all_urls>"] });
+  }
+
+  if (ext.webRequest.onBeforeRequest && typeof ext.webRequest.onBeforeRequest.addListener === "function") {
+    ext.webRequest.onBeforeRequest.addListener(
+      rememberContainerRequestOrigin,
+      { urls: ["<all_urls>"] }
+    );
   }
 
   if (ext.windows && ext.windows.onRemoved) {
@@ -218,6 +232,114 @@
       return Promise.resolve({ ok: true });
     }
     return Promise.resolve({ ok: false, error: `Unknown automation headers action: ${action}` });
+  }
+
+  async function handleContainerDataMessage(message) {
+    const action = String(message && message.action || "");
+    if (action !== "clear") {
+      return { ok: false, error: `Unknown container data action: ${action}` };
+    }
+    const cookieStoreId = String(message.cookieStoreId || "").trim();
+    if (!cookieStoreId) {
+      return { ok: false, error: "缺少 Firefox 容器 cookieStoreId" };
+    }
+    try {
+      await clearContainerBrowsingData(cookieStoreId);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: formatBackgroundError(error) };
+    }
+  }
+
+  function rememberContainerRequestOrigin(details) {
+    const cookieStoreId = String(details && details.cookieStoreId || "").trim();
+    if (!cookieStoreId || cookieStoreId === "firefox-default" || !details || !details.url) {
+      return;
+    }
+    const origin = getWebOrigin(details.url);
+    if (!origin) {
+      return;
+    }
+    let origins = containerRequestOrigins.get(cookieStoreId);
+    if (!origins) {
+      origins = new Set();
+      containerRequestOrigins.set(cookieStoreId, origins);
+    }
+    origins.add(origin);
+  }
+
+  async function clearContainerBrowsingData(cookieStoreId) {
+    await clearContainerCookies(cookieStoreId);
+    const origins = Array.from(containerRequestOrigins.get(cookieStoreId) || []);
+    if (ext.browsingData && typeof ext.browsingData.remove === "function") {
+      await ext.browsingData.remove({
+        cookieStoreId
+      }, {
+        cookies: true,
+        indexedDB: true,
+        localStorage: true
+      });
+      if (origins.length) {
+        await ext.browsingData.remove({
+          origin: origins
+        }, {
+          cache: true
+        });
+        await ext.browsingData.remove({
+          hostnames: uniqueHostnamesFromOrigins(origins)
+        }, {
+          serviceWorkers: true
+        });
+      }
+    }
+    containerRequestOrigins.delete(cookieStoreId);
+  }
+
+  async function clearContainerCookies(cookieStoreId) {
+    if (!ext.cookies || typeof ext.cookies.getAll !== "function" || typeof ext.cookies.remove !== "function") {
+      return;
+    }
+    const cookies = await ext.cookies.getAll({ storeId: cookieStoreId });
+    await Promise.all((cookies || []).map((cookie) => removeCookie(cookie, cookieStoreId)));
+  }
+
+  async function removeCookie(cookie, cookieStoreId) {
+    if (!cookie || !cookie.name || !cookie.domain) {
+      return;
+    }
+    const domain = String(cookie.domain || "").replace(/^\./, "");
+    const path = String(cookie.path || "/") || "/";
+    const protocol = cookie.secure ? "https:" : "http:";
+    const url = `${protocol}//${domain}${path}`;
+    try {
+      await ext.cookies.remove({
+        url,
+        name: cookie.name,
+        storeId: cookieStoreId
+      });
+    } catch (_) {}
+  }
+
+  function getWebOrigin(rawUrl) {
+    try {
+      const url = new URL(rawUrl);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return "";
+      }
+      return url.origin;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function uniqueHostnamesFromOrigins(origins) {
+    return Array.from(new Set((origins || []).map((origin) => {
+      try {
+        return new URL(origin).hostname;
+      } catch (_) {
+        return "";
+      }
+    }).filter(Boolean)));
   }
 
   async function getAuthenticatedICloudClientState() {

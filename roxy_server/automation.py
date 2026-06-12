@@ -136,7 +136,9 @@ def is_luhn_valid(card_number: str) -> bool:
 def generate_luhn_card_number() -> str:
     prefixes = ["4", "51", "52", "53", "54", "55"]
     prefix = random.choice(prefixes)
-    body = prefix + "".join(random.choice(string.digits) for _ in range(15 - len(prefix)))
+    body = prefix + "".join(
+        random.choice(string.digits) for _ in range(15 - len(prefix))
+    )
     return body + calculate_luhn_check_digit(body)
 
 
@@ -189,8 +191,8 @@ def generate_japan_signup_identity() -> GeneratedIdentity:
         expiry_year=str(year),
         expiry_display=f"{month:02d}/{str(year)[-2:]}",
         cvv=f"{random.randint(100, 999)}",
-        first_name="タロウ",
-        last_name="ヤマダ",
+        first_name="ミン",
+        last_name="リー",
         full_name="ミン リー",
         address="渋谷2丁目21番1号",
         city="京都市",
@@ -198,8 +200,8 @@ def generate_japan_signup_identity() -> GeneratedIdentity:
         postcode="150-0002",
         country="JP",
         date_of_birth="1991/10/28",
-        country_specific_first_name="ミン",
-        country_specific_last_name="リー",
+        country_specific_first_name="タロウ",
+        country_specific_last_name="ヤマダ",
     )
 
 
@@ -229,7 +231,9 @@ class RoxyClient:
         response.raise_for_status()
         return _response_json(response)
 
-    def open_browser(self, window_id: str, workspace_id: int | str | None = None) -> dict[str, str]:
+    def open_browser(
+        self, window_id: str, workspace_id: int | str | None = None
+    ) -> dict[str, str]:
         dir_id = str(window_id or "").strip()
         if not dir_id:
             raise ValueError("窗口 ID 不能为空")
@@ -246,7 +250,9 @@ class RoxyClient:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             data = payload if isinstance(payload, dict) else {}
-        debugger_address = str(data.get("http") or data.get("debuggerAddress") or "").strip()
+        debugger_address = str(
+            data.get("http") or data.get("debuggerAddress") or ""
+        ).strip()
         driver_path = str(data.get("driver") or data.get("driverPath") or "").strip()
         if not debugger_address or not driver_path:
             raise RuntimeError(f"Roxy /browser/open 响应缺少 http 或 driver: {payload}")
@@ -268,7 +274,9 @@ class RoxyClient:
             raise RuntimeError(f"Roxy 清空窗口本地缓存失败: {payload}")
         return payload
 
-    def clear_server_cache(self, window_id: str, workspace_id: int | str | None = None) -> dict[str, Any]:
+    def clear_server_cache(
+        self, window_id: str, workspace_id: int | str | None = None
+    ) -> dict[str, Any]:
         dir_id = str(window_id or "").strip()
         if not dir_id:
             raise ValueError("窗口 ID 不能为空")
@@ -285,7 +293,9 @@ class RoxyClient:
             raise RuntimeError(f"Roxy 清空窗口服务器缓存失败: {payload}")
         return payload
 
-    def _resolve_workspace_id(self, window_id: str, workspace_id: int | str | None) -> int:
+    def _resolve_workspace_id(
+        self, window_id: str, workspace_id: int | str | None
+    ) -> int:
         if workspace_id not in (None, ""):
             try:
                 return int(workspace_id)
@@ -305,7 +315,7 @@ class RoxyClient:
         )
         response.raise_for_status()
         payload = _response_json(response)
-        rows = (((payload or {}).get("data") or {}).get("rows") or [])
+        rows = ((payload or {}).get("data") or {}).get("rows") or []
         ids = []
         for row in rows:
             try:
@@ -328,8 +338,11 @@ class RoxyClient:
         )
         response.raise_for_status()
         payload = _response_json(response)
-        rows = (((payload or {}).get("data") or {}).get("rows") or [])
-        return any(str(row.get("dirId") or "").strip() == str(window_id).strip() for row in rows)
+        rows = ((payload or {}).get("data") or {}).get("rows") or []
+        return any(
+            str(row.get("dirId") or "").strip() == str(window_id).strip()
+            for row in rows
+        )
 
 
 def create_roxy_driver(open_info: dict[str, str]):
@@ -361,7 +374,9 @@ class PayPalStep4Automation:
         identity = generate_japan_signup_identity()
         self.log(f"打开 URL: {start_url}")
         self.driver.get(start_url)
-        self.log(f"Navigation complete, current URL: {self._current_url() or '(empty)'}")
+        self.log(
+            f"Navigation complete, current URL: {self._current_url() or '(empty)'}"
+        )
         self._wait_document_ready(45)
         self._short_delay()
         self._run_login_page(email)
@@ -394,14 +409,22 @@ class PayPalStep4Automation:
             'input[name="email"]',
         ]
         self.log(f"步骤4: 开始填充 PayPal 邮箱 {email}")
-        if self._fill_first(paypal_login_email_selectors, email, timeout=10, type_text=True, required=False):
+        if self._fill_first(
+            paypal_login_email_selectors,
+            email,
+            timeout=10,
+            type_text=True,
+            required=False,
+        ):
             self.log(f"步骤4: 已输入 PayPal 邮箱 {email}")
             self._short_delay()
             self._click_paypal_next_button(timeout=30, required=False)
         else:
             self.log("步骤4: 未找到登录邮箱输入框，继续等待 signup")
 
-    def _run_signup_page(self, email: str, phone_task: PhoneTask, identity: GeneratedIdentity) -> None:
+    def _run_signup_page(
+        self, email: str, phone_task: PhoneTask, identity: GeneratedIdentity
+    ) -> None:
         self.log("步骤5: 等待 PayPal signup 页面")
         self._wait_url_prefix("https://www.paypal.com/checkoutweb/signup", 120)
         self._fill_signup_form(email, phone_task.phone, identity)
@@ -418,7 +441,9 @@ class PayPalStep4Automation:
             self._short_delay()
             baseline = self._fetch_current_sms(phone_task)
             self.log(f"重新提交前短信验证码基线: {baseline or 'null'}")
-            self._click_any(['button[type="submit"]'], timeout=30, label="signup 重新提交按钮")
+            self._click_any(
+                ['button[type="submit"]'], timeout=30, label="signup 重新提交按钮"
+            )
             self._wait_selector("#ci-ciBasic-0", 120)
         self._short_delay()
         sms_code = self._poll_new_sms_code(phone_task, baseline)
@@ -427,25 +452,95 @@ class PayPalStep4Automation:
         self.log(f"步骤5: 短信验证码已输入 {sms_code}")
         self._finish_consent_or_return()
 
-    def _fill_signup_form(self, email: str, phone: str, identity: GeneratedIdentity) -> None:
+    def _fill_signup_form(
+        self, email: str, phone: str, identity: GeneratedIdentity
+    ) -> None:
         self.log("步骤5: 使用 v2 日本 signup 填充")
-        country_result = self._set_select_if_needed(["#country", "#billingCountry"], identity.country, timeout=60)
+        country_result = self._set_select_if_needed(
+            ["#country", "#billingCountry"], identity.country, timeout=60
+        )
         if country_result.get("changed"):
             self.log(f"步骤5: 国家已改为 {identity.country}，等待页面刷新")
             self._short_delay()
         else:
             self.log(f"步骤5: 国家为 {identity.country} 不用修改")
         self._fill_first(["#email"], email, timeout=30)
-        self._fill_first(["#phone", 'input[type="tel"]', 'input[autocomplete="tel"]'], phone, timeout=30)
+        self._fill_first(
+            ["#phone", 'input[type="tel"]', 'input[autocomplete="tel"]'],
+            phone,
+            timeout=30,
+        )
         field_map = [
-            (["#cardNumber", "#cardnumber", 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'], identity.card_number),
-            (["#cardExpiry", "#cardExpiration", 'input[name="cardExpiry"]', 'input[autocomplete="cc-exp"]'], identity.expiry_display),
-            (["#cardCvv", "#cardCvc", "#cvv", "#cvc", 'input[autocomplete="cc-csc"]'], identity.cvv),
-            (["#billingName", 'input[name="billingName"]', 'input[autocomplete="cc-name"]'], identity.full_name),
-            (["#firstName"], identity.first_name),
-            (["#lastName"], identity.last_name),
-            (["#billingLine1", "#billingAddressLine1", 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]'], identity.address),
-            (["#billingCity", "#billingLocality", 'input[name="city"]', 'input[autocomplete="billing address-level2"]'], identity.city),
+            (
+                [
+                    "#cardNumber",
+                    "#cardnumber",
+                    'input[name="cardNumber"]',
+                    'input[autocomplete="cc-number"]',
+                ],
+                identity.card_number,
+            ),
+            (
+                [
+                    "#cardExpiry",
+                    "#cardExpiration",
+                    'input[name="cardExpiry"]',
+                    'input[autocomplete="cc-exp"]',
+                ],
+                identity.expiry_display,
+            ),
+            (
+                [
+                    "#cardCvv",
+                    "#cardCvc",
+                    "#cvv",
+                    "#cvc",
+                    'input[autocomplete="cc-csc"]',
+                ],
+                identity.cvv,
+            ),
+            (
+                [
+                    "#billingName",
+                    'input[name="billingName"]',
+                    'input[autocomplete="cc-name"]',
+                ],
+                identity.full_name,
+            ),
+            (
+                [
+                    "#firstName",
+                    'input[name="firstName"]',
+                    'input[autocomplete="given-name"]',
+                ],
+                identity.first_name,
+            ),
+            (
+                [
+                    "#lastName",
+                    'input[name="lastName"]',
+                    'input[autocomplete="family-name"]',
+                ],
+                identity.last_name,
+            ),
+            (
+                [
+                    "#billingLine1",
+                    "#billingAddressLine1",
+                    'input[name="addressLine1"]',
+                    'input[autocomplete="billing address-line1"]',
+                ],
+                identity.address,
+            ),
+            (
+                [
+                    "#billingCity",
+                    "#billingLocality",
+                    'input[name="city"]',
+                    'input[autocomplete="billing address-level2"]',
+                ],
+                identity.city,
+            ),
             (
                 [
                     "#billingState",
@@ -459,10 +554,32 @@ class PayPalStep4Automation:
                 ],
                 identity.state,
             ),
-            (["#billingPostalCode", "#postalCode", "#zip", 'input[name="postalCode"]', 'input[autocomplete="billing postal-code"]'], identity.postcode),
-            (["#dateOfBirth", 'input[name="dateOfBirth"]', 'input[autocomplete="bday"]'], identity.date_of_birth),
-            (["#countrySpecificFirstName", 'input[name="countrySpecificFirstName"]'], identity.country_specific_first_name),
-            (["#countrySpecificLastName", 'input[name="countrySpecificLastName"]'], identity.country_specific_last_name),
+            (
+                [
+                    "#billingPostalCode",
+                    "#postalCode",
+                    "#zip",
+                    'input[name="postalCode"]',
+                    'input[autocomplete="billing postal-code"]',
+                ],
+                identity.postcode,
+            ),
+            (
+                [
+                    "#dateOfBirth",
+                    'input[name="dateOfBirth"]',
+                    'input[autocomplete="bday"]',
+                ],
+                identity.date_of_birth,
+            ),
+            (
+                ["#countrySpecificFirstName", 'input[name="countrySpecificFirstName"]'],
+                identity.country_specific_first_name,
+            ),
+            (
+                ["#countrySpecificLastName", 'input[name="countrySpecificLastName"]'],
+                identity.country_specific_last_name,
+            ),
             (["#password", 'input[type="password"]'], identity.password),
         ]
         filled = 0
@@ -474,7 +591,9 @@ class PayPalStep4Automation:
             else:
                 missing.append(f"{selectors[0]}={result.get('error') or result}")
         if missing:
-            self.log(f"步骤5: 已填充 signup 表单字段 {filled} 项，未找到/未填入: {', '.join(missing)}")
+            self.log(
+                f"步骤5: 已填充 signup 表单字段 {filled} 项，未找到/未填入: {', '.join(missing)}"
+            )
         else:
             self.log(f"步骤5: 已填充 signup 表单字段 {filled} 项")
 
@@ -492,14 +611,41 @@ class PayPalStep4Automation:
 
     def _fill_signup_card_fields(self, identity: GeneratedIdentity) -> None:
         field_map = [
-            (["#cardNumber", "#cardnumber", 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'], identity.card_number),
-            (["#cardExpiry", "#cardExpiration", 'input[name="cardExpiry"]', 'input[autocomplete="cc-exp"]'], identity.expiry_display),
-            (["#cardCvv", "#cardCvc", "#cvv", "#cvc", 'input[autocomplete="cc-csc"]'], identity.cvv),
+            (
+                [
+                    "#cardNumber",
+                    "#cardnumber",
+                    'input[name="cardNumber"]',
+                    'input[autocomplete="cc-number"]',
+                ],
+                identity.card_number,
+            ),
+            (
+                [
+                    "#cardExpiry",
+                    "#cardExpiration",
+                    'input[name="cardExpiry"]',
+                    'input[autocomplete="cc-exp"]',
+                ],
+                identity.expiry_display,
+            ),
+            (
+                [
+                    "#cardCvv",
+                    "#cardCvc",
+                    "#cvv",
+                    "#cvc",
+                    'input[autocomplete="cc-csc"]',
+                ],
+                identity.cvv,
+            ),
         ]
         filled = 0
         missing = []
         for selectors, value in field_map:
-            result = self._set_value_by_selector(", ".join(selectors), value, timeout=10)
+            result = self._set_value_by_selector(
+                ", ".join(selectors), value, timeout=10
+            )
             if result.get("ok"):
                 filled += 1
             else:
@@ -513,20 +659,42 @@ class PayPalStep4Automation:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             self._check_stop()
-            current_url = self._find_url_matching(
-                lambda url: _url_host_matches(url, "chatgpt.com") or _paypal_path_startswith(url, "/checkoutweb/genericError")
-                or _paypal_path_startswith(url, "/checkoutweb/billingwithoutpurchase"),
-                switch=True,
-            ) or self._current_url()
+            current_url = (
+                self._find_url_matching(
+                    lambda url: (
+                        _url_host_matches(url, "chatgpt.com")
+                        or _paypal_path_startswith(url, "/checkoutweb/genericError")
+                        or _paypal_path_startswith(
+                            url, "/checkoutweb/billingwithoutpurchase"
+                        )
+                    ),
+                    switch=True,
+                )
+                or self._current_url()
+            )
             if _url_host_matches(current_url, "chatgpt.com"):
                 self.log(f"支付流程成功，已返回 ChatGPT: {current_url}")
                 return
             if _paypal_path_startswith(current_url, "/checkoutweb/genericError"):
                 raise RuntimeError(f"PayPal 支付失败，进入错误页面: {current_url}")
-            if _paypal_path_startswith(current_url, "/checkoutweb/billingwithoutpurchase"):
-                if self._click_any(["#consentButton"], timeout=10, required=False, label="PayPal 授权按钮"):
+            if _paypal_path_startswith(
+                current_url, "/checkoutweb/billingwithoutpurchase"
+            ) or _paypal_path_startswith(
+                current_url, "https://www.paypal.com/webapps/hermes"
+            ):
+                if self._click_any(
+                    ["#consentButton"],
+                    timeout=10,
+                    required=False,
+                    label="PayPal 授权按钮",
+                ):
                     self.log("已点击 PayPal 授权按钮")
-            if self._click_any(["#modalClose"], timeout=2, required=False, label="PayPal 中间页关闭按钮"):
+            if self._click_any(
+                ["#modalClose"],
+                timeout=2,
+                required=False,
+                label="PayPal 中间页关闭按钮",
+            ):
                 self.log("已点击 PayPal 中间页关闭按钮")
             self.sleep(1)
         raise TimeoutError("等待 PayPal 授权结果超时")
@@ -575,7 +743,9 @@ class PayPalStep4Automation:
             if _url_matches_prefix(current, prefix):
                 self.log(f"Matched current page: {current}")
                 return current
-            matched = self._find_url_matching(lambda url: _url_matches_prefix(url, prefix), switch=True)
+            matched = self._find_url_matching(
+                lambda url: _url_matches_prefix(url, prefix), switch=True
+            )
             if matched:
                 self.log(f"已识别页面: {matched}")
                 return matched
@@ -586,7 +756,9 @@ class PayPalStep4Automation:
                 last_logged = visible_text
             self.sleep(1)
         detail = "; ".join(last_urls[-5:])
-        raise TimeoutError(f"等待 URL 超时: {prefix}{'，当前可见 URL: ' + detail if detail else ''}")
+        raise TimeoutError(
+            f"等待 URL 超时: {prefix}{'，当前可见 URL: ' + detail if detail else ''}"
+        )
 
     def _current_url(self) -> str:
         try:
@@ -622,7 +794,9 @@ class PayPalStep4Automation:
                 pass
         return urls
 
-    def _find_url_matching(self, predicate: Callable[[str], bool], *, switch: bool) -> str:
+    def _find_url_matching(
+        self, predicate: Callable[[str], bool], *, switch: bool
+    ) -> str:
         try:
             current_handle = self.driver.current_window_handle
         except Exception:
@@ -662,7 +836,10 @@ class PayPalStep4Automation:
         while time.monotonic() < deadline:
             self._check_stop()
             try:
-                if self.driver.execute_script("return document.readyState") == "complete":
+                if (
+                    self.driver.execute_script("return document.readyState")
+                    == "complete"
+                ):
                     return
             except Exception:
                 pass
@@ -674,7 +851,9 @@ class PayPalStep4Automation:
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
 
-    def _click_any(self, selectors: list[str], *, timeout: float, label: str, required: bool = True) -> bool:
+    def _click_any(
+        self, selectors: list[str], *, timeout: float, label: str, required: bool = True
+    ) -> bool:
         deadline = time.monotonic() + timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -691,7 +870,9 @@ class PayPalStep4Automation:
                     last_error = str(exc)
             self.sleep(0.3)
         if required:
-            raise TimeoutException(f"未找到{label}: {', '.join(selectors)} {last_error}")
+            raise TimeoutException(
+                f"未找到{label}: {', '.join(selectors)} {last_error}"
+            )
         return False
 
     def _click_element(self, element, *, label: str, selector: str = "") -> bool:
@@ -716,7 +897,9 @@ class PayPalStep4Automation:
             self.log(f"点击失败 {target}: {exc}")
             return False
 
-    def _click_paypal_next_button(self, *, timeout: float, required: bool = True) -> bool:
+    def _click_paypal_next_button(
+        self, *, timeout: float, required: bool = True
+    ) -> bool:
         selectors = [
             "#btnNext",
             "#emailSubmitButton",
@@ -726,7 +909,9 @@ class PayPalStep4Automation:
             'button[type="submit"]',
             'input[type="submit"]',
         ]
-        if self._click_any(selectors, timeout=3, required=False, label="PayPal 下一步按钮"):
+        if self._click_any(
+            selectors, timeout=3, required=False, label="PayPal 下一步按钮"
+        ):
             self.log("步骤4: 已点击 PayPal 下一步按钮")
             return True
 
@@ -736,7 +921,10 @@ class PayPalStep4Automation:
         while time.monotonic() < deadline:
             self._check_stop()
             try:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], input[type='submit']")
+                elements = self.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "button, input[type='button'], input[type='submit']",
+                )
                 for element in elements:
                     if not element.is_displayed() or not element.is_enabled():
                         continue
@@ -752,7 +940,9 @@ class PayPalStep4Automation:
                     ).lower()
                     if not any(keyword in label_text for keyword in keywords):
                         continue
-                    if not self._click_element(element, label="PayPal 下一步按钮", selector=label_text):
+                    if not self._click_element(
+                        element, label="PayPal 下一步按钮", selector=label_text
+                    ):
                         continue
                     self.log("步骤4: 已点击 PayPal 下一步按钮")
                     return True
@@ -774,7 +964,9 @@ class PayPalStep4Automation:
         required: bool = True,
     ) -> bool:
         selector = ", ".join(selectors)
-        result = self._set_value_by_selector(selector, value, timeout=timeout, type_text=type_text)
+        result = self._set_value_by_selector(
+            selector, value, timeout=timeout, type_text=type_text
+        )
         if result.get("ok"):
             return True
         if required:
@@ -783,7 +975,9 @@ class PayPalStep4Automation:
             )
         return False
 
-    def _set_select_if_needed(self, selectors: list[str], value: str, *, timeout: float) -> dict[str, Any]:
+    def _set_select_if_needed(
+        self, selectors: list[str], value: str, *, timeout: float
+    ) -> dict[str, Any]:
         selector = ", ".join(selectors)
         self._check_stop()
         try:
@@ -869,7 +1063,12 @@ class PayPalStep4Automation:
                 int(timeout * 1000),
             )
         except Exception as exc:
-            result = {"ok": False, "selector": selector, "changed": False, "error": str(exc)}
+            result = {
+                "ok": False,
+                "selector": selector,
+                "changed": False,
+                "error": str(exc),
+            }
         if not isinstance(result, dict) or not result.get("ok"):
             raise TimeoutException(f"未找到国家字段: {selector} {result}")
         return result
@@ -1040,7 +1239,11 @@ class PayPalStep4Automation:
             )
         except Exception as exc:
             return {"ok": False, "selector": selector, "error": str(exc)}
-        return result if isinstance(result, dict) else {"ok": bool(result), "selector": selector, "value": result}
+        return (
+            result
+            if isinstance(result, dict)
+            else {"ok": bool(result), "selector": selector, "value": result}
+        )
 
     def _set_element_value(self, element, value: str) -> None:
         self.driver.execute_script(
@@ -1101,7 +1304,9 @@ def run_url_task(
     open_info = client.open_browser(window_id, workspace_id)
     driver = create_roxy_driver(open_info)
     try:
-        automation = PayPalStep4Automation(driver, log=log, stop_requested=stop_requested)
+        automation = PayPalStep4Automation(
+            driver, log=log, stop_requested=stop_requested
+        )
         return automation.run(url, phone_task)
     except WebDriverException as exc:
         raise RuntimeError(f"Selenium 执行失败: {exc}") from exc
@@ -1141,9 +1346,13 @@ def _url_matches_prefix(url: str, prefix: str) -> bool:
         return True
     parsed_prefix = urlparse(expected)
     if parsed_prefix.netloc.endswith("paypal.com"):
-        return _url_host_matches(value, "paypal.com") and _parsed_path(value).startswith(parsed_prefix.path or "/")
+        return _url_host_matches(value, "paypal.com") and _parsed_path(
+            value
+        ).startswith(parsed_prefix.path or "/")
     if parsed_prefix.netloc:
-        return _url_host_matches(value, parsed_prefix.netloc) and _parsed_path(value).startswith(parsed_prefix.path or "/")
+        return _url_host_matches(value, parsed_prefix.netloc) and _parsed_path(
+            value
+        ).startswith(parsed_prefix.path or "/")
     return False
 
 

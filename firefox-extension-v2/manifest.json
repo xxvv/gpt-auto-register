@@ -6,6 +6,7 @@
   "permissions": [
     "tabs",
     "cookies",
+    "browsingData",
     "storage",
     "clipboardWrite",
     "scripting",
