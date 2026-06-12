@@ -150,14 +150,19 @@
       <option value="email">邮箱</option>
       <option value="phone">手机号</option>
     </select>
-    <label for="heroApiKeyInput">Hero SMS API Key</label>
-    <input id="heroApiKeyInput" type="password" spellcheck="false" placeholder="输入 Hero SMS API Key">
-    <label for="heroCountrySearchInput">Hero Country</label>
+    <label for="smsProviderSelect">接码渠道</label>
+    <select id="smsProviderSelect">
+      <option value="hero">Hero SMS</option>
+      <option value="smsbower">SMSBower</option>
+    </select>
+    <label for="heroApiKeyInput">接码 API Key</label>
+    <input id="heroApiKeyInput" type="password" spellcheck="false" placeholder="输入接码平台 API Key">
+    <label for="heroCountrySearchInput">接码国家</label>
     <input id="heroCountrySearchInput" type="search" spellcheck="false" placeholder="搜索国家名称或编号">
     <select id="heroCountrySelect">
       <option value="">不指定国家</option>
     </select>
-    <label for="heroMaxPriceInput">Hero Max Price</label>
+    <label for="heroMaxPriceInput">接码 Max Price</label>
     <input id="heroMaxPriceInput" type="number" min="0" step="0.01" spellcheck="false" placeholder="Optional max amount">
   </div>
 
