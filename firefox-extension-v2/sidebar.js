@@ -105,8 +105,8 @@
   const BRAZIL_PIX_POLL_TIMEOUT_MS = 300000;
   const BRAZIL_PIX_FAILED_STATUSES = new Set(["failed", "expired", "canceled"]);
   const PROTOCOL_PAYMENT_JOBS_API = "https://plus.iceaix.com/api/jobs";
-  const TRIAL_PAYMENT_CHECK_API = "https://plus.iceaix.com/api/trial/check";
-  const PROTOCOL_PAYMENT_PPLINK_RETRY = 3;
+  const PROTOCOL_PAYMENT_START_API = "https://plus.iceaix.com/api/pplink/start";
+  const PROTOCOL_PAYMENT_PPLINK_RETRY = 5;
   const PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS = 180;
   const AUTOMATION_WINDOW_CLOSE_DELAY_MS = 10000;
   const AUTOMATION_RESPONSIVE_VIEWPORT_WIDTH = 430;
@@ -1062,34 +1062,6 @@
     return apiKey;
   }
 
-  function requireProtocolWebshareApiKeys() {
-    const rawValue = document.getElementById("webshareApiKeyInput").value || "";
-    const apiKeys = parseWebshareApiKeys(rawValue);
-    if (apiKeys.length < 2) {
-      throw new Error("协议支付需要至少两行 Webshare API Key：第1行用于日本，第2行用于美国");
-    }
-    state.webshareApiKey = rawValue;
-    return {
-      japanApiKey: apiKeys[0],
-      usApiKey: apiKeys[1]
-    };
-  }
-
-  function formatProxyUrlForProtocol(proxy, protocol, options = {}) {
-    const runtimeProxy = requireRuntimeProxy(proxy);
-    const proxyType = normalizeProxyProtocol(protocol || runtimeProxy.type);
-    const host = String(runtimeProxy.host || "").trim();
-    const port = Number(runtimeProxy.port || 0);
-    if (!host || !port) {
-      throw new Error("协议代理缺少 host/port");
-    }
-    const username = String(runtimeProxy.username || "").trim();
-    const password = String(runtimeProxy.password || "").trim();
-    const auth = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : "";
-    const suffix = options.trailingSlash ? "/" : "";
-    return `${proxyType}://${auth}${host}:${port}${suffix}`;
-  }
-
   function isProxyEnabled() {
     const input = document.getElementById("proxyEnabledCheckbox");
     state.proxyEnabled = input ? Boolean(input.checked) : true;
@@ -1399,52 +1371,6 @@
     return qrCodeData;
   }
 
-  async function checkTrialPaymentEligibility(accessToken, proxyJp) {
-    const token = String(accessToken || "").trim();
-    if (!token) {
-      throw new Error("支付资格检查缺少 accessToken");
-    }
-    logMessage("支付资格检查: 正在调用 trial/check");
-    let response;
-    try {
-      response = await fetch(TRIAL_PAYMENT_CHECK_API, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          token,
-          proxy_jp: String(proxyJp || "").trim()
-        })
-      });
-    } catch (error) {
-      throw new Error(`支付资格检查网络错误: ${formatError(error)}`);
-    }
-    const data = await readJsonResponse(response, "支付资格检查");
-    const amountCents = Number(data && data.amount_cents);
-    const hasAmountCents = data && data.amount_cents !== undefined && data.amount_cents !== null && Number.isFinite(amountCents);
-    const eligible = hasAmountCents && amountCents === 0;
-    const status = String(data && data.status || "").trim();
-    const currency = String(data && data.currency || "").trim();
-    logMessage(`支付资格检查响应: amount_cents=${Number.isFinite(amountCents) ? amountCents : "null"}${currency ? ` ${currency}` : ""}, eligible=${data && data.eligible}, blocked=${data && data.blocked}, status=${status || "-"}`);
-    if (!response.ok || data.ok === false) {
-      return {
-        ok: false,
-        data,
-        amountCents,
-        error: data.error || data.message || `HTTP ${response.status}`
-      };
-    }
-    return {
-      ok: true,
-      eligible,
-      data,
-      amountCents,
-      currency,
-      status
-    };
-  }
-
   async function findUsableBrazilPixCdk(codes) {
     let lastMessage = "";
     for (let index = 0; index < codes.length; index += 1) {
@@ -1545,50 +1471,22 @@
     return phoneKey;
   }
 
-  async function prepareProtocolPaymentProxies(registrationProxy) {
-    const keys = requireProtocolWebshareApiKeys();
-    const firstStepCountry = getStep1ProxyCountry();
-    let japanProxy = null;
-    if (firstStepCountry === "JP" && isRuntimeProxy(registrationProxy)) {
-      japanProxy = {
-        ...registrationProxy,
-        type: "socks5"
-      };
-      logMessage(`协议支付: 日本代理沿用第一步代理 ${formatProxy(japanProxy)}`);
-    } else {
-      logMessage("协议支付: 第一步不是日本，使用第1行 Webshare Key 获取日本代理");
-      japanProxy = await replaceWebshareProxyDirect(keys.japanApiKey, "JP", "socks5");
-      logMessage(`协议支付: 日本代理已准备 ${formatProxy(japanProxy)}`);
-    }
-
-    logMessage("协议支付: 使用第2行 Webshare Key 获取美国代理");
-    const usProxy = await replaceWebshareProxyDirect(keys.usApiKey, "US", "http");
-    logMessage(`协议支付: 美国代理已准备 ${formatProxy(usProxy)}`);
-
-    return {
-      proxyJp: formatProxyUrlForProtocol(japanProxy, "socks5"),
-      proxyUs: formatProxyUrlForProtocol(usProxy, "http", { trailingSlash: true }),
-      japanProxy,
-      usProxy
-    };
-  }
-
   async function createProtocolPaymentJob(payload) {
-    const response = await fetch(PROTOCOL_PAYMENT_JOBS_API, {
+    const response = await fetch(PROTOCOL_PAYMENT_START_API, {
       method: "POST",
       headers: {
         "content-type": "application/json"
       },
       body: JSON.stringify(payload)
     });
-    const data = await readJsonResponse(response, "协议支付创建任务");
-    logMessage(`协议支付创建任务响应: ${JSON.stringify(data)}`);
+    const data = await readJsonResponse(response, "协议支付启动");
+    logMessage(`协议支付启动响应: ${JSON.stringify(data)}`);
     if (!response.ok) {
       throw new Error(data.error || data.message || `HTTP ${response.status}`);
     }
     const jobId = String(data.job_id || data.id || "").trim();
     if (!jobId) {
-      throw new Error("协议支付创建任务响应缺少 job_id");
+      throw new Error("协议支付启动响应缺少 job_id");
     }
     return jobId;
   }
@@ -1699,23 +1597,17 @@
       throw new Error("协议支付缺少 ChatGPT accessToken");
     }
     const phoneKey = await prepareProtocolPaymentPhoneKey();
-    const proxies = await prepareProtocolPaymentProxies(context && context.registrationProxy);
     const cdkEntry = getNextProtocolCdkEntry();
     const payload = {
-      input: accessToken,
       cdk: cdkEntry.cdk,
-      proxy: proxies.proxyUs,
-      proxy_jp: proxies.proxyJp,
+      token: accessToken,
       phone: phoneKey.phone,
-      email: "",
       sms_api: "",
-      otp: "",
-      pplink_retry: PROTOCOL_PAYMENT_PPLINK_RETRY,
-      otp_timeout: PROTOCOL_PAYMENT_OTP_TIMEOUT_SECONDS
+      pplink_retry: PROTOCOL_PAYMENT_PPLINK_RETRY
     };
-    logMessage(`协议支付创建任务请求: ${JSON.stringify({
+    logMessage(`协议支付启动请求: ${JSON.stringify({
       ...payload,
-      input: `${accessToken.slice(0, 12)}...`
+      token: `${accessToken.slice(0, 12)}...`
     })}`);
     const jobId = await createProtocolPaymentJob(payload);
     logMessage(`协议支付任务已创建: ${jobId}`);
@@ -4590,7 +4482,6 @@
         throw new Error("继续授权已开启，请填写 Codex 接码券");
       }
       if (isPaymentFlowEnabled() && isProtocolPaymentMethod()) {
-        requireProtocolWebshareApiKeys();
         getNextProtocolCdkEntry();
       }
     } catch (error) {
@@ -4813,27 +4704,6 @@
         }
 
         const accessToken = trialCheckAccessToken || await getChatGptAccessTokenFromTab(tab.id);
-        try {
-          const trialCheck = await checkTrialPaymentEligibility(accessToken, "");
-          if (!trialCheck.ok) {
-            logMessage("协议支付资格检查失败，流程终止: " + (trialCheck.error || "未知错误"));
-            if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
-            return { ok: false };
-          }
-          if (!trialCheck.eligible) {
-            const amountText = Number.isFinite(trialCheck.amountCents)
-              ? `${trialCheck.amountCents}${trialCheck.currency ? ` ${trialCheck.currency}` : ""}`
-              : "未知";
-            logMessage(`协议支付资格检查未通过，amount_cents=${amountText}，只有 amount_cents 为 0 才继续协议支付流程`);
-            if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
-            return { ok: false };
-          }
-          logMessage("协议支付资格检查通过，amount_cents=0，继续协议支付流程");
-        } catch (error) {
-          logMessage("协议支付资格检查异常，流程终止: " + formatError(error));
-          if (!phoneRegistration) keepSpecifiedAccountAfterCheckoutLinkFailure(specifiedAccountEntry);
-          return { ok: false };
-        }
         try {
           logMessage("正在提交到第三方接口（协议支付，支付链接为空）...");
           const thirdPartyResult = await submitThirdPartyAccount({
