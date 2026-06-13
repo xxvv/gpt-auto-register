@@ -149,8 +149,10 @@
     stopAfterThirdPartySubmitEnabled: false,
     continueAuthorizationEnabled: false,
     codexSmsVoucherCode: "",
+    authorizationAccountInput: "",
     lastSuccessfulAuthorizationAccount: null,
     authorizationRunning: false,
+    authorizationBatchRunning: false,
     lastAuthorizationStatus: "",
     debugModeEnabled: false,
     phoneKeyInput: "",
@@ -809,6 +811,45 @@
     } catch (error) {
       logMessage(`清除代理失败: ${formatError(error)}`);
     }
+  }
+
+  async function ensureProxyForAuthorization(label = "Codex 授权") {
+    if (!isProxyEnabled()) {
+      logMessage(`${label}: 代理未开启，跳过代理设置`);
+      return null;
+    }
+
+    const country = getStep1ProxyCountry();
+    if (country === "NONE") {
+      if (isRuntimeProxy(state.currentProxy)) {
+        logMessage(`${label}: 授权代理国家为无，正在清除当前 Firefox 代理`);
+        await clearFirefoxProxyState();
+        state.currentProxy = null;
+        state.currentIpLocation = null;
+        renderProxyStatus();
+        await persistState();
+      } else {
+        logMessage(`${label}: 授权代理国家为无，跳过代理设置`);
+      }
+      return null;
+    }
+
+    const apiKey = requireWebshareApiKey();
+    const protocol = getProxyProtocol();
+    logMessage(`${label}: 正在替换并设置代理，国家 ${country}，协议 ${protocol}`);
+    await clearFirefoxProxyState();
+    state.currentProxy = null;
+    state.currentIpLocation = null;
+    renderProxyStatus();
+    await persistState();
+
+    const proxy = await replaceWebshareProxyDirect(apiKey, country, protocol);
+    await applyFirefoxProxy(proxy);
+    state.currentProxy = proxy;
+    renderProxyStatus();
+    await persistState();
+    logMessage(`${label}: 代理设置成功，Firefox 已写入 ${formatProxy(proxy)}`);
+    return proxy;
   }
 
   async function cleanupAutomationProxy(reason, options = {}) {
@@ -2387,6 +2428,12 @@
     return state.codexSmsVoucherCode;
   }
 
+  function getAuthorizationAccountInput() {
+    const input = document.getElementById("authorizationAccountInput");
+    state.authorizationAccountInput = String(input ? input.value : state.authorizationAccountInput || "").trim();
+    return state.authorizationAccountInput;
+  }
+
   function isContinueAuthorizationEnabled() {
     const input = document.getElementById("continueAuthorizationCheckbox");
     state.continueAuthorizationEnabled = input ? Boolean(input.checked) : false;
@@ -2400,6 +2447,68 @@
   function isTeamAuthorizationAccount(value) {
     const context = value && typeof value === "object" ? value : {};
     return normalizeAccountPlanType(context.planType || context.accountPlanType) === "team";
+  }
+
+  function normalizeAuthorizationPhone(value) {
+    const text = String(value || "").trim();
+    const digits = text.replace(/\D+/g, "");
+    return digits && /^\+?\d[\d\s().-]{6,}$/.test(text) ? digits : "";
+  }
+
+  function isAuthorizationEmail(value) {
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || "").trim());
+  }
+
+  function parseAuthorizationAccountLine(line) {
+    const rawLine = String(line || "").trim();
+    if (!rawLine) {
+      return null;
+    }
+    const account = rawLine.split(/[,\s|]+/).find(Boolean) || "";
+    const normalizedPhone = normalizeAuthorizationPhone(account);
+    if (normalizedPhone) {
+      return {
+        line: rawLine,
+        account: normalizedPhone,
+        email: "",
+        phone: normalizedPhone,
+        registrationMethod: "phone"
+      };
+    }
+    if (isAuthorizationEmail(account)) {
+      return {
+        line: rawLine,
+        account,
+        email: account,
+        phone: "",
+        registrationMethod: "email"
+      };
+    }
+    return {
+      line: rawLine,
+      account,
+      email: account.includes("@") ? account : "",
+      phone: "",
+      registrationMethod: "email"
+    };
+  }
+
+  function parseAuthorizationAccountEntries(text) {
+    const seen = new Set();
+    return String(text || "")
+      .split(/\r?\n/)
+      .map(parseAuthorizationAccountLine)
+      .filter((entry) => {
+        if (!entry || !entry.account) {
+          return false;
+        }
+        const key = `${entry.registrationMethod}:${entry.account.toLowerCase()}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
   }
 
   function normalizeAuthorizationAccount(value) {
@@ -2467,7 +2576,9 @@
   function renderAuthorizationControls() {
     const checkbox = document.getElementById("continueAuthorizationCheckbox");
     const voucherInput = document.getElementById("codexSmsVoucherInput");
+    const accountInput = document.getElementById("authorizationAccountInput");
     const button = document.getElementById("authorizeCurrentAccountButton");
+    const batchButton = document.getElementById("authorizeSpecifiedAccountsButton");
     const status = document.getElementById("authorizationStatus");
     if (checkbox) {
       checkbox.checked = Boolean(state.continueAuthorizationEnabled);
@@ -2475,10 +2586,17 @@
     if (voucherInput && document.activeElement !== voucherInput) {
       voucherInput.value = state.codexSmsVoucherCode || "";
     }
+    if (accountInput && document.activeElement !== accountInput) {
+      accountInput.value = state.authorizationAccountInput || "";
+    }
+    const running = state.automationBatchRunning || state.authorizationRunning || state.authorizationBatchRunning || state.teamRegistrationRunning;
     if (button) {
-      const running = state.automationBatchRunning || state.authorizationRunning || state.teamRegistrationRunning;
       button.disabled = running;
       button.textContent = state.authorizationRunning ? "授权中" : "授权";
+    }
+    if (batchButton) {
+      batchButton.disabled = running;
+      batchButton.textContent = state.authorizationBatchRunning ? "批量授权中" : "批量授权";
     }
     if (status) {
       const account = normalizeAuthorizationAccount(state.lastSuccessfulAuthorizationAccount);
@@ -2622,6 +2740,19 @@
     });
     if (!result || !result.ok) {
       throw new Error(`${label || "授权继续按钮"}点击失败: ${(result && result.error) || "未找到按钮"}`);
+    }
+    return result;
+  }
+
+  async function clickOAuthContinueWithPhone(tabId) {
+    const result = await executePageFunction(tabId, "__gptAutoRegisterClick", {
+      selector: '[data-dd-action-name="Continue with phone"]',
+      timeoutMs: 15000
+    }, {
+      loadTimeoutMs: 15000
+    });
+    if (!result || !result.ok) {
+      throw new Error(`点击 Continue with phone 失败: ${(result && result.error) || "未找到按钮"}`);
     }
     return result;
   }
@@ -2848,9 +2979,16 @@
     return generatedEmail;
   }
 
+  function formatAuthorizationPhoneForOAuth(value) {
+    const digits = String(value || "").replace(/\D+/g, "");
+    return digits ? `+${digits}` : "";
+  }
+
   async function driveCodexOAuthTab(tabId, context, oauthState, voucherCode) {
     const accountText = String(context.account || "").trim();
     let email = String(context.email || (accountText === "current-browser-session" ? "" : accountText)).trim();
+    const phoneAuthorization = normalizeRegistrationMethod(context.registrationMethod) === "phone";
+    const authorizationPhone = formatAuthorizationPhoneForOAuth(context.phone || accountText);
     const password = getAuthorizationPassword(context);
     const teamAuthorization = isTeamAuthorizationAccount(context);
     const teamProviderDomain = getTeamProviderDomainForAccount(context);
@@ -2893,6 +3031,18 @@
         continue;
       }
 
+      if (phoneAuthorization && pageState.hasPhoneInput && !href.toLowerCase().includes("add-phone") && !href.toLowerCase().includes("phone-verification")) {
+        lastAction = "phone_login_input";
+        if (!authorizationPhone) {
+          throw new Error("手机号授权缺少手机号");
+        }
+        logMessage(`Codex 授权: 输入登录手机号 ${authorizationPhone}`);
+        await setFirstOAuthValue(tabId, ["#tel", 'input[type="tel"]'], authorizationPhone, "登录手机号");
+        await clickOAuthContinue(tabId, "登录手机号提交");
+        await delay(3000);
+        continue;
+      }
+
       if (pageState.hasPhoneInput || href.toLowerCase().includes("add-phone") || href.toLowerCase().includes("phone-verification")) {
         if (teamAuthorization) {
           throw new Error("Codex Team 授权不应进入 add-phone/phone-verification 页面");
@@ -2912,6 +3062,13 @@
       }
 
       if (pageState.hasEmailInput) {
+        if (phoneAuthorization) {
+          lastAction = "phone_login_entry";
+          logMessage("Codex 授权: 点击 Continue with phone");
+          await clickOAuthContinueWithPhone(tabId);
+          await delay(2000);
+          continue;
+        }
         lastAction = "email";
         if (!email) {
           logMessage("Codex 授权: 当前没有邮箱，跳过邮箱输入，继续等待当前浏览器登录态授权页面");
@@ -2994,6 +3151,7 @@
     renderAutomationBatchControls();
 
     let proxyAppliedForAuthorization = false;
+    let createdAuthorizationWindowId = null;
     try {
       if (isRuntimeProxy(context.proxy)) {
         await applyFirefoxProxy(context.proxy, { threadContext });
@@ -3020,6 +3178,7 @@
       const oauthState = createOauthState();
       const authorizeUrl = buildCodexAuthorizeUrl(oauthState, pkce.challenge);
       const oauthTab = await updatePrivateAuthorizationTab(authorizeUrl, options);
+      createdAuthorizationWindowId = Number(options.createdAuthorizationWindowId) || null;
       logThreadMessage(threadContext, `Codex 授权: 已在当前窗口打开授权页面 ${context.account}`);
       const code = await driveCodexOAuthTab(oauthTab.id, context, oauthState, voucherCode);
       logThreadMessage(threadContext, "Codex 授权: 已获取 authorization code，交换 token");
@@ -3039,6 +3198,13 @@
     } finally {
       if (proxyAppliedForAuthorization && options.cleanupProxyAfter) {
         await cleanupAutomationProxy("授权任务已关闭", { threadContext });
+      }
+      if (createdAuthorizationWindowId && options.closeAuthorizationWindowAfter !== false) {
+        await closeAutomationWindow(createdAuthorizationWindowId, {
+          immediate: true,
+          keepOpen: options.keepAuthorizationWindowOpen,
+          ignoreDebugMode: true
+        });
       }
       if (!options.allowConcurrent) {
         state.authorizationRunning = false;
@@ -3072,6 +3238,7 @@
       } else {
         logMessage(`手动授权账号取自当前浏览器 ChatGPT session user.email: ${sessionEmail}${planType ? `，planType=${planType}` : ""}`);
       }
+      const authorizationProxy = await ensureProxyForAuthorization("手动授权");
       const account = await rememberSuccessfulAuthorizationAccount({
         account: authorizationAccount,
         email: authorizationEmail,
@@ -3082,7 +3249,7 @@
           account: authorizationAccount,
           email: authorizationEmail
         }),
-        proxy: cloneRuntimeProxy(state.currentProxy)
+        proxy: cloneRuntimeProxy(isProxyEnabled() ? (authorizationProxy || state.currentProxy) : null)
       });
       return await authorizeCodexAccount(account, {
         smsVoucherCode: voucherCode,
@@ -3093,6 +3260,98 @@
     } catch (error) {
       logMessage("Codex 授权失败: " + formatError(error));
       return { ok: false, error: formatError(error) };
+    }
+  }
+
+  async function authorizeSpecifiedAccountsBatch() {
+    if (state.automationBatchRunning) {
+      logMessage("完整流程运行中，暂不执行批量授权");
+      return { ok: false };
+    }
+    if (state.authorizationRunning || state.authorizationBatchRunning) {
+      logMessage("授权正在执行中，暂不重复启动");
+      return { ok: false };
+    }
+
+    const entries = parseAuthorizationAccountEntries(getAuthorizationAccountInput());
+    if (!entries.length) {
+      logMessage("请在指定授权账号中填写邮箱或手机号，一行一个");
+      return { ok: false };
+    }
+    const voucherCode = getCodexSmsVoucherCode();
+    if (!voucherCode) {
+      logMessage("错误: 请输入 Codex 接码券");
+      return { ok: false };
+    }
+
+    state.authorizationBatchRunning = true;
+    state.authorizationRunning = true;
+    renderAuthorizationControls();
+    renderAutomationBatchControls();
+    await persistState();
+
+    let success = 0;
+    let fail = 0;
+    try {
+      logMessage(`批量授权开始，共 ${entries.length} 个账号`);
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const current = index + 1;
+        let authorizationProxy = null;
+        try {
+          authorizationProxy = await ensureProxyForAuthorization(`批量授权 ${current}/${entries.length}`);
+        } catch (error) {
+          fail += 1;
+          logMessage(`批量授权代理设置失败 ${current}/${entries.length}: ${entry.account}，${formatError(error)}`);
+          continue;
+        }
+        const account = normalizeAuthorizationAccount({
+          account: entry.account,
+          email: entry.email,
+          phone: entry.phone,
+          registrationMethod: entry.registrationMethod,
+          planType: "",
+          teamProviderDomain: getTeamProviderDomainForAccount(entry),
+          proxy: cloneRuntimeProxy(isProxyEnabled() ? (authorizationProxy || state.currentProxy) : null)
+        });
+        if (!account) {
+          fail += 1;
+          logMessage(`批量授权跳过 ${current}/${entries.length}: ${entry.line}`);
+          continue;
+        }
+        await rememberSuccessfulAuthorizationAccount(account);
+        logMessage(
+          account.registrationMethod === "phone"
+            ? `批量授权 ${current}/${entries.length}: 手机号 ${account.account}，使用默认密码 ${PHONE_REGISTRATION_PASSWORD}`
+            : `批量授权 ${current}/${entries.length}: 邮箱 ${account.account}`
+        );
+        try {
+          await authorizeCodexAccount(account, {
+            smsVoucherCode: voucherCode,
+            cleanupProxyAfter: false,
+            allowConcurrent: true
+          });
+          success += 1;
+        } catch (error) {
+          fail += 1;
+          logMessage(`批量授权失败 ${current}/${entries.length}: ${account.account}，${formatError(error)}`);
+        }
+        if (current < entries.length) {
+          setAuthorizationStatus(`批量授权进度: ${current}/${entries.length}，成功 ${success}，失败 ${fail}`, { persist: true });
+          await delay(1500);
+        }
+      }
+      const message = `批量授权完成: 成功 ${success}，失败 ${fail}，总计 ${entries.length}`;
+      setAuthorizationStatus(message, { persist: true });
+      logMessage(message);
+      return { ok: fail === 0, success, fail, total: entries.length };
+    } finally {
+      await cleanupAutomationProxy("批量授权任务已关闭");
+      state.authorizationBatchRunning = false;
+      state.authorizationRunning = false;
+      renderAuthorizationControls();
+      renderAutomationBatchControls();
+      await persistState();
     }
   }
 
@@ -3584,11 +3843,20 @@
       logMessage(`点击提交`);
       await delay();
       logMessage(`检测密码输入框`);
-      await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
-        selector: ['input[name="new-password"]','input[name="current-password"]'],
-        value: PHONE_REGISTRATION_PASSWORD,
-        timeoutMs: 30000
-      }, "未找到新密码输入框");
+      const np = await pageElementExists(tabId, 'input[name="new-password"]', 5000)
+      if (np) {
+          await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+          selector: 'input[name="new-password"]',
+          value: PHONE_REGISTRATION_PASSWORD,
+          timeoutMs: 30000
+        }, "未找到新密码输入框");
+      } else {
+          await requirePageResult(tabId, "__gptAutoRegisterSetValue", {
+          selector: 'input[name="current-password"]',
+          value: PHONE_REGISTRATION_PASSWORD,
+          timeoutMs: 30000
+        }, "未找到新密码输入框");
+      }
       logMessage("已输入手机号注册固定密码");
       logMessage("点击提交");
       await clickPageElement(tabId, {
@@ -3841,7 +4109,7 @@
       logMessage("已保留自动化窗口");
       return false;
     }
-    if (isDebugModeEnabled()) {
+    if (isDebugModeEnabled() && !options.ignoreDebugMode) {
       logMessage("调试模式已开启，保留自动化窗口");
       return false;
     }
@@ -4093,12 +4361,19 @@
 
     if (!tab) {
       const privateWindow = await findOpenPrivateWindow();
-      if (!privateWindow || privateWindow.id === undefined) {
-        throw new Error("未找到已打开的隐私窗口，请先打开隐私窗口再执行授权");
-      }
-      tab = await getActiveTabInWindow(privateWindow.id);
-      if (!tab && privateWindow.id !== undefined) {
-        tab = await ext.tabs.create({ windowId: privateWindow.id, active: true });
+      if (privateWindow && privateWindow.id !== undefined) {
+        tab = await getActiveTabInWindow(privateWindow.id);
+        if (!tab) {
+          tab = await ext.tabs.create({ windowId: privateWindow.id, active: true });
+        }
+      } else {
+        const created = await createPrivateAutomationWindow(url, options);
+        if (options && typeof options === "object") {
+          options.createdAuthorizationWindowId = created.windowId;
+          options.createdAuthorizationTabId = created.tab && created.tab.id;
+        }
+        logMessage("Codex 授权: 已自动创建隐私窗口");
+        return created.tab;
       }
     }
 
@@ -5183,6 +5458,10 @@
       return { ok: false };
     } finally {
       await cleanupAutomationProxy("PayURL 任务已关闭");
+      if (automationWindowId !== null && automationWindowId !== undefined) {
+        logMessage("PayURL 任务完成，等待 5 秒后关闭窗口并继续下一条");
+        await delay(5000);
+      }
       await closeAutomationWindow(automationWindowId, { failed: !paymentSucceeded });
     }
   }
@@ -7984,6 +8263,8 @@
       document.getElementById("continueAuthorizationCheckbox").checked = state.continueAuthorizationEnabled;
       state.codexSmsVoucherCode = typeof saved.codexSmsVoucherCode === "string" ? saved.codexSmsVoucherCode : "";
       document.getElementById("codexSmsVoucherInput").value = state.codexSmsVoucherCode;
+      state.authorizationAccountInput = typeof saved.authorizationAccountInput === "string" ? saved.authorizationAccountInput : "";
+      document.getElementById("authorizationAccountInput").value = state.authorizationAccountInput;
       state.lastSuccessfulAuthorizationAccount = normalizeAuthorizationAccount(saved.lastSuccessfulAuthorizationAccount);
       state.lastAuthorizationStatus = typeof saved.lastAuthorizationStatus === "string" ? saved.lastAuthorizationStatus : "";
       state.debugModeEnabled = Boolean(saved.debugModeEnabled);
@@ -8066,6 +8347,7 @@
       stopAfterThirdPartySubmitEnabled: document.getElementById("stopAfterThirdPartySubmitCheckbox").checked,
       continueAuthorizationEnabled: document.getElementById("continueAuthorizationCheckbox").checked,
       codexSmsVoucherCode: document.getElementById("codexSmsVoucherInput").value.trim(),
+      authorizationAccountInput: document.getElementById("authorizationAccountInput").value.trim(),
       lastSuccessfulAuthorizationAccount: normalizeAuthorizationAccount(state.lastSuccessfulAuthorizationAccount),
       lastAuthorizationStatus: state.lastAuthorizationStatus,
       debugModeEnabled: document.getElementById("debugModeCheckbox").checked,
@@ -8236,7 +8518,12 @@
       state.codexSmsVoucherCode = document.getElementById("codexSmsVoucherInput").value.trim();
       persistState();
     });
+    document.getElementById("authorizationAccountInput").addEventListener("input", () => {
+      state.authorizationAccountInput = document.getElementById("authorizationAccountInput").value.trim();
+      persistState();
+    });
     document.getElementById("authorizeCurrentAccountButton").addEventListener("click", () => runWithErrorHandling(authorizeCurrentBrowserSessionAccount));
+    document.getElementById("authorizeSpecifiedAccountsButton").addEventListener("click", () => runWithErrorHandling(authorizeSpecifiedAccountsBatch));
     document.getElementById("flowCountrySelect").addEventListener("change", () => {
       document.getElementById("flowCountrySelect").value = getFlowCountry();
       renderNextPhoneStatus();

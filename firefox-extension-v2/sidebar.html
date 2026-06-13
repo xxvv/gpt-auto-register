@@ -225,7 +225,15 @@
     </select>
     <label for="codexSmsVoucherInput">Codex 接码券</label>
     <input id="codexSmsVoucherInput" type="text" spellcheck="false" placeholder="用于授权手机号验证">
+    <label for="authorizationAccountInput">指定授权账号</label>
+    <textarea
+      id="authorizationAccountInput"
+      rows="4"
+      spellcheck="false"
+      placeholder="一行一个邮箱或手机号，例如：&#10;user@example.com&#10;13800138000"
+    ></textarea>
     <button id="authorizeCurrentAccountButton" class="secondary" type="button">授权</button>
+    <button id="authorizeSpecifiedAccountsButton" class="secondary" type="button">批量授权</button>
     <div id="authorizationStatus" class="proxy-status empty">授权状态: 未执行</div>
     <div class="actions">
       <button id="getPayUrlBtn" class="secondary" type="button">获取 PayURL</button>
